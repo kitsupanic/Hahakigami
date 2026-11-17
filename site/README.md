@@ -11,14 +11,16 @@ pnpm build      # writes site/build
 pnpm preview
 ```
 
-## Before launch
+## Configuration
 
-Edit `src/lib/config.ts`:
+`src/lib/config.ts`:
 
-- `DOWNLOAD_URL`: `null` renders the dashed "coming soon" Download button; set the signed build's URL to turn it into a solid red link.
-- `SITE_URL`: absolute origin (for example `https://example.com`) so the Open Graph image URL is absolute.
+- `DOWNLOAD_URL`: the latest GitHub release; `null` renders the dashed "coming soon" Download button instead.
+- `SITE_URL`: `https://hahakigami.com`, so the Open Graph image URL is absolute.
 
 ## Deploy to Cloudflare Pages
+
+Served at `https://hahakigami.com`; `hahakigami.app` redirects there.
 
 - Root directory: `site`
 - Build command: `pnpm build`
