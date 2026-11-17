@@ -16,7 +16,7 @@ Domain terms live in `GLOSSARY.md`; hard-to-reverse decisions are ADRs in `docs/
 
 ### Scan sessions
 
-Current scan and saved scan slots, invalidation, save and compare: see `docs/architecture/session-lifecycle.md` before changing scan session state.
+Per-disk scan slots, invalidation and the rescan baseline: see `docs/architecture/session-lifecycle.md` before changing scan session state.
 
 ### Review
 

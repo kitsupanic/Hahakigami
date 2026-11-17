@@ -9,10 +9,10 @@ A menu or keyboard command's handler and its `can.*` availability check must rea
 A menu command's `enabled` and its button's `disabled` map `app.can.<command>` straight through. Put any extra condition (selection state, an add in flight, a preference) into the `can` getter in createApp, not into an App.svelte expression around it.
 
 ## Hidden results are read-only
-While Home, the cleanup queue or the comparison is shown, the explorer's results are loaded but hidden. Commands must not change their selection, folder or history then. Gate such commands on the visible view (`exploring`, `!homeOpen`, and so on).
+While Home or the cleanup queue is shown, the explorer's results are loaded but hidden. Commands must not change their selection, folder or history then. Gate such commands on the visible view (`exploring`, `!homeOpen`, and so on).
 
 ## New menu commands update the Home allowlist
-When adding a command id to `commandIds`, update `enabledOnHome` in src/App.menu.test.ts on purpose. Add the id only if the command is fine on the welcome page (global, library, or visibly acting on the scan). Otherwise gate it on `!homeOpen`. Do not paste the id in just to make the test pass.
+When adding a command id to `commandIds`, update `enabledOnHome` in src/App.menu.test.ts on purpose. Add the id only if the command is fine on the welcome page (global, or visibly acting on the scan). Otherwise gate it on `!homeOpen`. Do not paste the id in just to make the test pass.
 
 ## The scan run gets its Rescan baseline through baseline.rs
 `run_scan` asks `baseline.rs` for the baseline before the scan (`acquire`) and hands the ticket back after it (`publish`). Nothing else locks the rescan cache, calls `cache::` or `events::`, or compares journal epochs and cursors. See "The baseline module" in docs/architecture/session-lifecycle.md.

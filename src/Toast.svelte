@@ -23,16 +23,6 @@
   onfocusout={() => (paused = false)}
 >
   <span class="toast-message">{toast.message}</span>
-  {#if toast.action}
-    <button
-      class="toast-action"
-      onclick={() => {
-        const run = toast.action?.run;
-        onDismiss();
-        run?.();
-      }}>{toast.action.label}</button
-    >
-  {/if}
   <button
     class="toast-dismiss"
     aria-label="Dismiss"

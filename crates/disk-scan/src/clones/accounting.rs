@@ -1,4 +1,4 @@
-//! Pure clone/hard-link attribution shared with saved-scan validation.
+//! Pure clone/hard-link attribution.
 #[cfg(unix)]
 use crate::NodePathCursor;
 use crate::{AccountingModel, NodeKind, Snapshot};
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Validated pure attribution result for scanner and archive consumers.
+/// Validated pure attribution result for scanner consumers.
 pub struct AllocationPlan {
     pub values: Vec<u64>,
     pub clone_deduction_bytes: u64,

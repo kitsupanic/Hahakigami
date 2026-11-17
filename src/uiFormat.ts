@@ -87,3 +87,41 @@ export const usageColor = (id: number) => {
   const inks = branchInks();
   return inks[Math.max(0, id - 1) % inks.length];
 };
+
+/** A scan's date for the status strip: a short label, and the exact time for its tooltip. */
+export function formatScanTimestamp(ms: number, now = new Date()) {
+  const date = new Date(ms);
+  if (!Number.isFinite(ms) || Number.isNaN(date.getTime()))
+    return { label: "Date unavailable", absolute: "Date unavailable" };
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const day =
+    date.toDateString() === now.toDateString()
+      ? "Today"
+      : date.toDateString() === yesterday.toDateString()
+        ? "Yesterday"
+        : date.toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+            ...(date.getFullYear() !== now.getFullYear()
+              ? { year: "numeric" as const }
+              : {}),
+          });
+  const clock: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  };
+  return {
+    label: `${day}, ${date.toLocaleTimeString(undefined, clock)}`,
+    absolute: date.toLocaleString(undefined, {
+      ...clock,
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      fractionalSecondDigits: 3,
+      timeZoneName: "longOffset",
+    }),
+  };
+}

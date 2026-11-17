@@ -1,12 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { flushSync } from "svelte";
-import {
-  FOLDER_SLOT,
-  type ScanChannel,
-  type ScanPort,
-  type ScanSlotsHooks,
-  type StartRequest,
+import type {
+  ScanChannel,
+  ScanPort,
+  ScanSlotsHooks,
 } from "./scanSlots.svelte";
 import { rootedScanSlots } from "./testScanSlots.svelte";
 import type { ScanSummary, Target } from "./types";
@@ -42,7 +40,6 @@ const summary = (
   entries = 2,
 ): ScanSummary => ({
   scanId,
-  origin: "live",
   rootId: 0,
   state,
   workers: 1,
@@ -65,14 +62,11 @@ let summaryAsked: string[];
 let refused: Map<string, string>;
 // While set, start_scan answers only once it resolves (its channel exists from the call on).
 let startGate: Promise<void> | null;
-// What rescan_saved_scan registers, and an event it sends before it answers.
-let savedTarget: Target;
-let savedEarlyEvent: boolean;
 // Runs while scan_summary is being fetched, to let an event beat it.
 let duringSummary: (() => void) | null;
 let summaryFails: boolean;
 // The app's side.
-let begun: { request: StartRequest; takeView: boolean; batch: boolean }[];
+let begun: { target: Target; takeView: boolean; batch: boolean }[];
 let events: { scanId: string; state: string; restarted: boolean }[];
 let fetched: string[];
 let gatesOpen: boolean;
@@ -93,13 +87,6 @@ const port: ScanPort = {
     if (startGate) await startGate;
     return id;
   },
-  async rescanSavedScan(_savedScanId, onEvent) {
-    const id = `scan-saved-${started.length + 1}`;
-    started.push(id);
-    channels.set(id, onEvent);
-    if (savedEarlyEvent) onEvent.onmessage(summary(id, "running", 9));
-    return { scanId: id, target: savedTarget };
-  },
   async cancelScan(scanId) {
     cancelled.push(scanId);
   },
@@ -114,15 +101,14 @@ const port: ScanPort = {
   },
 };
 const hooks: ScanSlotsHooks = {
-  begin(request, how) {
+  begin(target, how) {
     if (!gatesOpen) return null;
-    begun.push({ request, ...how });
+    begun.push({ target, ...how });
     return {
       current: () => !overtaken,
       accepted: () => {},
       event: (s, restarted) =>
         events.push({ scanId: s.scanId, state: s.state, restarted }),
-      target: () => {},
       fetched: (s) => fetched.push(s.scanId),
       failed: () => dealtWith,
     };
@@ -147,8 +133,6 @@ beforeEach(() => {
   summaryAsked = [];
   refused = new Map();
   startGate = null;
-  savedTarget = photos;
-  savedEarlyEvent = false;
   duringSummary = null;
   summaryFails = false;
   begun = [];
@@ -163,12 +147,12 @@ beforeEach(() => {
 afterEach(() => dispose());
 
 it("replaces only its own slot when a disk is scanned again", async () => {
-  await scans.start({ target: hd });
-  await scans.start({ target: backup });
+  await scans.start(hd);
+  await scans.start(backup);
   const other = scans.slots["/Volumes/Backup"];
   const first = idOf("hd");
   emit(first, "completed");
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(idOf("hd")).not.toBe(first);
   expect(scans.slots["/"].scanId).toBe(idOf("hd"));
   expect(scans.slots["/Volumes/Backup"]).toBe(other);
@@ -176,22 +160,22 @@ it("replaces only its own slot when a disk is scanned again", async () => {
 });
 
 it("lets a scan start only while its own slot is not scanning", async () => {
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(scans.busy(hd)).toBe(true);
   expect(scans.busy(backup)).toBe(false);
   expect(scans.folderBusy()).toBe(false);
   // A busy slot is refused without asking the backend or the app.
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(started).toHaveLength(1);
   expect(begun).toHaveLength(1);
-  await scans.start({ target: backup });
+  await scans.start(backup);
   expect(started).toHaveLength(2);
   // Every folder scan shares one slot.
-  await scans.start({ target: photos });
+  await scans.start(photos);
   expect(scans.busy(photos)).toBe(true);
   expect(scans.busy(music)).toBe(true);
   expect(scans.folderBusy()).toBe(true);
-  await scans.start({ target: music });
+  await scans.start(music);
   expect(started).toHaveLength(3);
   emit(idOf("photos"), "completed");
   expect(scans.busy(music)).toBe(false);
@@ -200,7 +184,7 @@ it("lets a scan start only while its own slot is not scanning", async () => {
 
 it("counts a scan that has not reported yet as scanning", async () => {
   summaryFails = true;
-  await expect(scans.start({ target: hd })).rejects.toThrow(
+  await expect(scans.start(hd)).rejects.toThrow(
     "Summary unavailable",
   );
   expect(scans.slots["/"].summary).toBeNull();
@@ -213,17 +197,17 @@ it("counts a scan that has not reported yet as scanning", async () => {
 
 it("rejects with the backend's refusal unless the app deals with it", async () => {
   refused.set("hd", "Other scans are holding every file.");
-  await expect(scans.start({ target: hd })).rejects.toThrow("holding every");
+  await expect(scans.start(hd)).rejects.toThrow("holding every");
   expect(scans.slots).toEqual({});
   expect(scans.starting).toBe(false);
   dealtWith = true;
-  await expect(scans.start({ target: hd })).resolves.toBeUndefined();
+  await expect(scans.start(hd)).resolves.toBeUndefined();
   expect(scans.starting).toBe(false);
 });
 
 it("starts nothing when the app's gates say no", async () => {
   gatesOpen = false;
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(started).toHaveLength(0);
   expect(scans.slots).toEqual({});
   expect(scans.starting).toBe(false);
@@ -232,8 +216,8 @@ it("starts nothing when the app's gates say no", async () => {
 it("counts starts that wait on the backend, and files a scan that reports before its start returns", async () => {
   let release!: () => void;
   startGate = new Promise<void>((resolve) => (release = resolve));
-  const first = scans.start({ target: hd });
-  const second = scans.start({ target: backup });
+  const first = scans.start(hd);
+  const second = scans.start(backup);
   await settle();
   expect(scans.starting).toBe(true);
   emit(idOf("hd"), "running", 4);
@@ -246,43 +230,24 @@ it("counts starts that wait on the backend, and files a scan that reports before
 });
 
 it("takes the summary fetched after the reply only while the start has the view and no event came first", async () => {
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(fetched).toEqual([idOf("hd")]);
   expect(scans.slots["/"].summary?.entries).toBe(2);
   // An event that beats the fetch wins.
   duringSummary = () => channels.get(idOf("backup"))!.onmessage(summary(idOf("backup"), "running", 77));
-  await scans.start({ target: backup });
+  await scans.start(backup);
   expect(scans.slots["/Volumes/Backup"].summary?.entries).toBe(77);
   expect(fetched).toEqual([idOf("hd")]);
   // A start that another one overtook never asks.
   duringSummary = null;
   overtaken = true;
-  await scans.start({ target: usb });
+  await scans.start(usb);
   expect(summaryAsked).not.toContain(idOf("usb"));
   expect(scans.slots["/Volumes/SANDISK"].summary).toBeNull();
 });
 
-it("rescans a saved scan in the folder slot and files it under the target the backend registered", async () => {
-  await scans.start({ target: photos });
-  // The folder slot scans: a saved scan's rescan has to wait for it.
-  await scans.start({ savedScanId: "saved" });
-  expect(started).toHaveLength(1);
-  emit(idOf("photos"), "completed");
-  savedTarget = { ...photos, id: "photos-saved" };
-  savedEarlyEvent = true;
-  overtaken = true;
-  await scans.start({ savedScanId: "saved" });
-  expect(started).toHaveLength(2);
-  const slot = scans.slots[FOLDER_SLOT];
-  expect(slot.scanId).toBe(idOf("saved"));
-  expect(slot.target).toBe(savedTarget);
-  // The event that came before the reply is not lost.
-  expect(slot.summary?.entries).toBe(9);
-  expect(scans.busy(hd)).toBe(false);
-});
-
 it("ignores a discarded scan's late events", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   const id = idOf("backup");
   expect(scans.discard(backup)).toBe(id);
   expect(discarded).toEqual([id]);
@@ -297,7 +262,7 @@ it("ignores a discarded scan's late events", async () => {
 });
 
 it("counts a discarded scan that is still running until its end event", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   const id = idOf("backup");
   scans.discard(backup);
   // The slot is gone and does not stop another scan; the backend still counts the walk.
@@ -313,7 +278,7 @@ it("counts a discarded scan that is still running until its end event", async ()
 it("discards a scan whose disk was ejected before its start heard back", async () => {
   let release!: () => void;
   startGate = new Promise<void>((resolve) => (release = resolve));
-  const start = scans.start({ target: backup });
+  const start = scans.start(backup);
   await settle();
   const id = idOf("backup");
   // No event and no reply yet: the slot is not filed, but the eject still counts.
@@ -332,7 +297,7 @@ it("discards a scan whose disk was ejected before its start heard back", async (
 it("discards a scan whose disk was ejected before its first event", async () => {
   let release!: () => void;
   startGate = new Promise<void>((resolve) => (release = resolve));
-  const start = scans.start({ target: backup });
+  const start = scans.start(backup);
   await settle();
   const id = idOf("backup");
   scans.discard(backup);
@@ -349,7 +314,7 @@ it("discards a scan whose disk was ejected before its first event", async () => 
 });
 
 it("has nothing to wait for when the discarded scan had ended", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   emit(idOf("backup"), "completed");
   scans.discard(backup);
   expect(scans.slots).toEqual({});
@@ -358,7 +323,7 @@ it("has nothing to wait for when the discarded scan had ended", async () => {
 
 it("changes its signature when a scan starts, ends or is dropped, not on progress", async () => {
   const empty = scans.signature;
-  await scans.start({ target: hd });
+  await scans.start(hd);
   const running = scans.signature;
   expect(running).not.toBe(empty);
   emit(idOf("hd"), "running", 40);
@@ -369,15 +334,10 @@ it("changes its signature when a scan starts, ends or is dropped, not on progres
   expect(scans.signature).toBe(empty);
 });
 
-it("patches a scan's summary and drops a scan by its id", async () => {
-  await scans.start({ target: hd });
+it("drops a scan by its id", async () => {
+  await scans.start(hd);
   const id = idOf("hd");
   emit(id, "completed");
-  scans.patch(id, { savedId: "saved-1" });
-  expect(scans.slots["/"].summary?.savedId).toBe("saved-1");
-  expect(scans.slots["/"].summary?.state).toBe("completed");
-  scans.patch("unknown", { savedId: "other" });
-  expect(scans.slots["/"].summary?.savedId).toBe("saved-1");
   scans.drop("unknown");
   expect(Object.keys(scans.slots)).toEqual(["/"]);
   scans.drop(id);
@@ -386,11 +346,11 @@ it("patches a scan's summary and drops a scan by its id", async () => {
 
 it("reports the batch only while two or more of its scans run, counting the ones that ended", async () => {
   expect(scans.batchProgress).toBeNull();
-  await scans.start({ target: hd });
+  await scans.start(hd);
   expect(scans.batchProgress).toBeNull();
-  await scans.start({ target: backup });
+  await scans.start(backup);
   expect(scans.batchProgress).toEqual({ done: 0, total: 2 });
-  await scans.start({ target: usb });
+  await scans.start(usb);
   expect(scans.batchProgress).toEqual({ done: 0, total: 3 });
   emit(idOf("hd"), "completed");
   expect(scans.batchProgress).toEqual({ done: 1, total: 3 });
@@ -400,20 +360,20 @@ it("reports the batch only while two or more of its scans run, counting the ones
   emit(idOf("usb"), "failed");
   expect(scans.batchProgress).toBeNull();
   // A new batch counts from zero.
-  await scans.start({ target: hd });
-  await scans.start({ target: backup });
+  await scans.start(hd);
+  await scans.start(backup);
   expect(scans.batchProgress).toEqual({ done: 0, total: 2 });
 });
 
 it("counts a scan started on its own as part of the batch", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   expect(scans.batchProgress).toBeNull();
-  await scans.start({ target: usb });
+  await scans.start(usb);
   expect(scans.batchProgress).toEqual({ done: 0, total: 2 });
 });
 
 it("cancels a scanning disk, starts it again once it has ended, and starts the idle disks at once", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   const old = idOf("backup");
   const done = scans.scanAll(() => listed, { takeView: () => false });
   await settle();
@@ -437,7 +397,7 @@ it("cancels a scanning disk, starts it again once it has ended, and starts the i
 });
 
 it("does not call a scan's end a restart when nothing restarts it", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   emit(idOf("backup"), "cancelled");
   expect(events.at(-1)).toEqual({
     scanId: idOf("backup"),
@@ -447,16 +407,12 @@ it("does not call a scan's end a restart when nothing restarts it", async () => 
 });
 
 it("tells the app which starts belong to Scan all and may take the view", async () => {
-  await scans.start({ target: photos });
+  await scans.start(photos);
   await scans.scanAll(() => [hd, backup], {
     takeView: (key) => key === "/Volumes/Backup",
   });
   expect(
-    begun.map(({ request, takeView, batch }) => [
-      "target" in request ? request.target.id : request.savedScanId,
-      takeView,
-      batch,
-    ]),
+    begun.map(({ target, takeView, batch }) => [target.id, takeView, batch]),
   ).toEqual([
     ["photos", true, false],
     ["hd", false, true],
@@ -486,8 +442,8 @@ it("leaves a failure to the app when it deals with it", async () => {
 });
 
 it("keeps counting a disk as running while its cancelled scan waits to start again", async () => {
-  await scans.start({ target: hd });
-  await scans.start({ target: backup });
+  await scans.start(hd);
+  await scans.start(backup);
   let release!: () => void;
   startGate = new Promise<void>((resolve) => (release = resolve));
   const done = scans.scanAll(() => [hd, backup], { takeView: () => false });
@@ -504,8 +460,8 @@ it("keeps counting a disk as running while its cancelled scan waits to start aga
 });
 
 it("skips a disk that was ejected while its scan was being cancelled", async () => {
-  await scans.start({ target: backup });
-  await scans.start({ target: usb });
+  await scans.start(backup);
+  await scans.start(usb);
   const done = scans.scanAll(() => listed, { takeView: () => false });
   await settle();
   listed = [hd, backup];
@@ -518,7 +474,7 @@ it("skips a disk that was ejected while its scan was being cancelled", async () 
 });
 
 it("gives up on a scan that does not stop within 30 seconds and reports it", async () => {
-  await scans.start({ target: backup });
+  await scans.start(backup);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     const done = scans.scanAll(() => [hd, backup], { takeView: () => false });

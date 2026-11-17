@@ -60,7 +60,6 @@ const file: NodeView = {
 };
 const summary = (): ScanSummary => ({
   scanId: "scan",
-  origin: "live",
   rootId: 0,
   state: "completed",
   workers: 1,
@@ -119,8 +118,6 @@ beforeEach(async () => {
           scanAnyway: false,
           appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "list_cleanup_queue":
         return { entries: [], revision: 0, blocked: false, warning: null };
       case "discover_targets":
@@ -179,12 +176,11 @@ afterEach(async () => {
 it("installs the menu bar at startup with every command and no scan available", () => {
   expect(installed.menu).not.toBeNull();
   expect(menuItems().size).toBe(commandIds.length);
-  // Nothing is scanned yet, so only location and library commands are live.
+  // Nothing is scanned yet, so only location commands are live.
   expect(enabled("chooseFolder")).toBe(true);
   expect(enabled("rescan")).toBe(true);
   expect(enabled("scanAllDisks")).toBe(true);
   for (const id of [
-    "saveScan",
     "stopScan",
     "find",
     "sunburst",
@@ -195,7 +191,6 @@ it("installs the menu bar at startup with every command and no scan available", 
     "toggleFileList",
   ])
     expect(enabled(id), id).toBe(false);
-  expect(enabled("importScan")).toBe(true);
   expect(enabled("cleanupQueue")).toBe(true);
 });
 
@@ -281,13 +276,13 @@ it("disables every app command while a dialog is open and restores them afterwar
   await act(() => app().setTrash(null));
   await flush();
   expect(enabled("trash")).toBe(true);
-  expect(enabled("saveScan")).toBe(true);
+  expect(enabled("rescan")).toBe(true);
   await act(() => app().setAccessOpen(true));
   await flush();
   expect([...menuItems().values()].every((item) => !item.enabled)).toBe(true);
   await act(() => app().setAccessOpen(false));
   await flush();
-  expect(enabled("saveScan")).toBe(true);
+  expect(enabled("rescan")).toBe(true);
 });
 
 it("goes quiet while the filters popover is open", async () => {
@@ -297,18 +292,18 @@ it("goes quiet while the filters popover is open", async () => {
   expect([...menuItems().values()].every((item) => !item.enabled)).toBe(true);
   await act(() => button("Filters").click());
   await flush();
-  expect(enabled("saveScan")).toBe(true);
+  expect(enabled("rescan")).toBe(true);
 });
 
 it("goes quiet while a failure modal is open", async () => {
   await scanned();
-  expect(enabled("saveScan")).toBe(true);
+  expect(enabled("rescan")).toBe(true);
   const standard = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "import_saved_scan") throw new Error("Bad file");
+    if (command === "choose_folder") throw new Error("Bad folder");
     return standard(command, args);
   });
-  await act(() => void app().importScan());
+  await act(() => void app().chooseFolder());
   await flush();
   expect(container.querySelector('[role="dialog"]')).not.toBeNull();
   expect([...menuItems().values()].every((item) => !item.enabled)).toBe(true);
@@ -325,7 +320,7 @@ it("disables Go and Item commands while a text field has focus", async () => {
   await flush();
   for (const id of textFieldIds) expect(enabled(id), id).toBe(false);
   expect(enabled("find")).toBe(true);
-  expect(enabled("saveScan")).toBe(true);
+  expect(enabled("rescan")).toBe(true);
   await click(menuItem("trash"));
   expect(calls("prepare_trash")).toHaveLength(0);
   expect(app().trash).toBeNull();
@@ -334,25 +329,6 @@ it("disables Go and Item commands while a text field has focus", async () => {
   expect(enabled("trash")).toBe(true);
   await click(menuItem("cleanupQueue"));
   expect(app().queueOpen).toBe(true);
-});
-
-it("goes quiet while a saved scan opens over the displayed scan", async () => {
-  await scanned();
-  expect(enabled("saveScan")).toBe(true);
-  let finish: (value: ScanSummary) => void = () => {};
-  const standard = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) =>
-    command === "open_saved_scan"
-      ? new Promise<ScanSummary>((resolve) => (finish = resolve))
-      : standard(command, args),
-  );
-  await act(() => void app().openSaved("saved"));
-  await flush();
-  expect(app().libraryBusy).toBe(true);
-  expect([...menuItems().values()].every((item) => !item.enabled)).toBe(true);
-  await act(() => finish({ ...summary(), origin: "saved" }));
-  await flush();
-  expect(enabled("chooseFolder")).toBe(true);
 });
 
 it("focuses the search field from Find", async () => {
@@ -443,10 +419,10 @@ it("toggles and remembers the Guardian theme from the View menu", async () => {
 
 it("runs file commands through the same app functions as their buttons", async () => {
   await scanned();
-  expect(enabled("saveScan")).toBe(true);
-  expect(enabled("compareScans")).toBe(false);
-  await click(menuItem("saveScan"));
-  expect(calls("save_scan")).toHaveLength(1);
+  expect(enabled("rescan")).toBe(true);
+  const before = calls("start_scan").length;
+  await click(menuItem("rescan"));
+  expect(calls("start_scan")).toHaveLength(before + 1);
   await click(menuItem("cleanupQueue"));
   expect(app().queueOpen).toBe(true);
   expect(enabled("back")).toBe(false);
@@ -457,9 +433,6 @@ it("exposes command availability as app.can flags", async () => {
   expect(flags()).toMatchObject({
     rescan: true,
     chooseFolder: true,
-    importScan: true,
-    compareScans: false,
-    saveScan: false,
     stopScan: false,
     explore: false,
     find: false,
@@ -469,16 +442,13 @@ it("exposes command availability as app.can flags", async () => {
   await scanned();
   expect(flags()).toMatchObject({
     rescan: true,
-    saveScan: true,
     stopScan: false,
     explore: true,
     find: true,
     toggleFileList: true,
-    exportScan: false,
     reveal: true,
     quickLook: false,
   });
-  expect(button("Save scan").disabled).toBe(!app().can.saveScan);
   await click(menuItem("cleanupQueue"));
   expect(flags()).toMatchObject({
     explore: false,
@@ -493,14 +463,11 @@ it("exposes command availability as app.can flags", async () => {
 // Commands that stay enabled while Home hides a loaded scan. Each must be fine on the
 // welcome page: it works on the hidden scan visibly or not at all, or it is global.
 const enabledOnHome = [
-  // Location and library commands: they open pickers or start a scan, not touch the explorer.
+  // Location commands: they open pickers or start a scan, not touch the explorer.
   "chooseFolder",
   "rescan", // the welcome page's own Scan button
   "scanAllDisks", // the welcome page's own Scan all disks button
-  "importScan",
   "cleanupQueue", // leaves Home for the queue
-  // Saves the hidden Current scan; its handler reads the same state as its gate.
-  "saveScan",
   // Window chrome, unrelated to the results.
   "toggleSidebar",
   "guardianTheme",
@@ -525,8 +492,6 @@ it.each([
   ["chooseFolder", "choose_folder"],
   ["rescan", "start_scan"],
   ["scanAllDisks", "start_scan"],
-  ["importScan", "import_saved_scan"],
-  ["saveScan", "save_scan"],
 ])("runs %s from Home instead of doing nothing", async (id, command) => {
   await home();
   const before = calls(command).length;

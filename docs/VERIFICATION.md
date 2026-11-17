@@ -2,21 +2,6 @@
 
 Paths under `benchmark-results/` are local raw reports; that folder is gitignored, so it is not in a fresh clone. Cited `benchmark-results-*.json` summaries were removed before open-sourcing and remain in git history.
 
-## Portable scan native dialogs — 15 October 2026
-
-**Outcome: signed production rebuild and native export/import smoke passed.** `pnpm desktop:build` used the existing Apple Development identity and verified the sealed bundle and stable designated requirement. The idle installed `/Applications/Hahakigami.app` was updated only after confirming its old and new designated requirements matched exactly. Installed and built executables both have SHA-256 `434c130e152bdc4fca67f097911e1e168b32952693e04853aa95ff2ee71cd2be`. No certificates, keychain trust, Full Disk Access acknowledgement or OS privacy grants were changed. The original app had no active scan or saved results; existing cleanup candidates were left untouched.
-
-CUA exercised the actual macOS Open and Save panels in the installed production app, without enabling access setup:
-
-- Import cancellation returned to the unchanged empty library; export cancellation preserved the imported entry and current view.
-- Import of a synthetic `/portable-dialog-fixture` archive added a new saved entry without switching views. The fixture contains a root and two sample files: 3 entries, 2 KiB logical and 8 KiB allocated.
-- Export produced `native-roundtrip.hahakigamiscan`; exporting again to the same path showed the native Replace confirmation and succeeded after confirmation.
-- The 735-byte native export exactly matched the source fixture: SHA-256 `fefffc2039809cdd236685a33b651c7bb95cd895167f08257b1b253d1c2fe37a` for both files.
-- Reimport created a distinct saved entry with matching totals. Opening it displayed both sample files and a populated map as historical results. Finder reveal, Quick Look, Add to cleanup queue and Move to Trash were disabled.
-- A copy with one corrupted checksum byte was rejected with “Restored data doesn't match checksum”; both library entries and the displayed historical result remained available. Dismissing the error restored normal browsing.
-
-The duplicate test entry was removed through the saved-result confirmation; one synthetic imported scan remains open for inspection. Test archives and the previous installed bundle are retained in `/private/tmp/hahakigami-portable-dialogs-d7mi8ihs/`. This is functional native-dialog evidence on this Mac, not a large-archive or performance measurement. No source fixes were needed during the smoke.
-
 ## Six-second gate on the cleaned GitHub scope — 14 October 2026
 
 **Outcome: T3 timing acceptance is met by the unchanged H scanner on the cleaned scope.**
@@ -73,7 +58,7 @@ Normal `pnpm desktop:build` passed, followed by host deep/strict signature verif
 
 The private record store uses safe 4,096-record chunks with unchanged 80-byte records, IDs, native paths, adjacency and clone metadata. Full chunks remain in place during append; deep clones own separate payload and handle partial-chunk append safely. Index/get bounds, mutation, paths and archive identity contracts remain checked. Chunk payload and outer-header buffers are charged separately; benchmark contracts reject explicit malformed geometry while supporting older omitted fields. No scanner/parser, clone-accounting, no-follow/identity/cancellation, archive/cache format or action-authority rule changed.
 
-**347 Rust tests passed**, 22 opt-in ignored; 154 frontend and 104 Python tests passed. Checks include >1M growth, 4096/8192 boundaries, partial deep-clone mutation/append, native invalid-UTF paths/children/metadata, malformed diagnostic markers, and a 9,000-node saved v2 round-trip with clone attribution across chunks. Strict workspace all-target performance-feature Clippy, formatting/diff, Svelte checks and production frontend build passed; host APFS fixtures ran. Max source review closed C1 after one correction round. Other OS/Intel hardware remains unexecuted.
+**347 Rust tests passed**, 22 opt-in ignored; 154 frontend and 104 Python tests passed. Checks include >1M growth, 4096/8192 boundaries, partial deep-clone mutation/append, native invalid-UTF paths/children/metadata, malformed diagnostic markers, and a 9,000-node v2 clone-attribution check across chunks. Strict workspace all-target performance-feature Clippy, formatting/diff, Svelte checks and production frontend build passed; host APFS fixtures ran. Max source review closed C1 after one correction round. Other OS/Intel hardware remains unexecuted.
 
 Final evidence-only Max review approved this incremental candidate and closed C1, retaining the 6.053-second tail, slightly slower native median and mixed short-fixture RSS qualifications.
 
@@ -129,11 +114,11 @@ Frozen measurement: 72 successful observations, 12 complete exports and unchange
 
 New scans retain raw allocation while assigning verified shared data-fork allocation once per distinct inode group. Native probes use held directory descriptors; final revalidation walks from the original held root. Resource-fork allocation remains per inode, hard links reconcile first, and partial/unknown sharing retains raw allocation. The 80-byte compact record is unchanged; clone evidence and inspector attribution are sparse. Snapshot summaries distinguish accounting warnings from filesystem coverage errors.
 
-Saved archive version 2 retains clone evidence/model and validates attributed counters before publication; version 1 remains read-only with original hard-link accounting, including positional decoding. Optimization cache/cursor version 3 requires explicit nonshared evidence. Clone-bearing, uncertain, old-format and newly shared candidates require full scans; speculative topology stays private through the bounded retry. Mixed-model comparisons warn about accounting differences.
+Optimization cache/cursor version 3 requires explicit nonshared evidence. Clone-bearing, uncertain, old-format and newly shared candidates require full scans; speculative topology stays private through the bounded retry.
 
 The installed SDK's volume clone-mapping flag underreports support on this host. Successful complete clone-attribute queries establish support; uncertain responses never authorize deductions. This behavior was verified on real disposable APFS clones with both bulk and portable readers, distinct resource forks, hard-link aliases and writes breaking full sharing. No file contents are read by the production scanner.
 
-Review required an explicit clone/uncertainty private-retry regression and complete grouping-buffer payload estimates. It also identified a version-2 duplicate-inode/false-hard-link-flag accounting defect; contradictory evidence is rejected by archive loads, and native link-count consistency/revalidation drops affected groups to raw allocation. Historical version-1 acceptance is preserved. The corrected stable candidate was approved by the same Max reviewer after two correction rounds, with no remaining blockers. A subsequent bounded parent-handle optimization received its own focused Max approval: it retains original held-directory authority, performs every file query, drops the old cached handle before switching, and never reuses it after a failed walk. Tests cover consecutive reuse, directory/symlink replacement during a group and fresh ancestry validation after switching away/back.
+Review required an explicit clone/uncertainty private-retry regression and complete grouping-buffer payload estimates. It also identified a version-2 duplicate-inode/false-hard-link-flag accounting defect; contradictory evidence is rejected when cache records load, and native link-count consistency/revalidation drops affected groups to raw allocation. The corrected stable candidate was approved by the same Max reviewer after two correction rounds, with no remaining blockers. A subsequent bounded parent-handle optimization received its own focused Max approval: it retains original held-directory authority, performs every file query, drops the old cached handle before switching, and never reuses it after a failed walk. Tests cover consecutive reuse, directory/symlink replacement during a group and fresh ancestry validation after switching away/back.
 
 Final checks passed: **312 Rust tests** (22 opt-in tests ignored), **153 frontend tests**, **103 Python tests**, workspace formatting/diff checks, strict Clippy including performance-benchmark/all targets, Svelte checking with zero errors/warnings, and production frontend/native builds. Native fixture tests passed on this host; older macOS/Intel/non-macOS targets were not executed. Initial restricted-sandbox workspace failures concerned existing disposable Home fixtures/public FSEvents checks; the host run passed without changing privacy settings.
 
@@ -476,25 +461,9 @@ The interface shows a neutral “Restricted system locations” notice and quiet
 
 Reopen and rescan to use the new presentation and counters. Original scan coverage and full-scan performance acceptance are unchanged; no new speed or complete-attribution claim is made.
 
-## Saved scans and history (11 October 2026)
-
-Milestone 1 adds explicit Save Scan, app-managed history, startup reopening of the last saved/opened entry, and read-only historical browsing. Fresh rescans re-register the current location; recorded identities never authorize current cleanup. Selecting another location chooses that location for ordinary scanning while the historical-root action remains available. Saved-session Trash and Finder actions are rejected natively as well as disabled in the interface. Removal affects only the stored result and leaves any displayed in-memory view available.
-
-The native library streams borrowed scan records through buffered level-3 checksummed Zstandard JSON, preserves native path bytes, and validates completed state, bounded decoded size/node count, topology, hard-link ownership and aggregate counters. Archive/data metadata are committed atomically with private permissions. A failed startup-selection write rolls back the newly published entry; regression checks cover repeated late failures and preservation of an existing selection. Limits are eight million nodes and 4 GiB decoded data. No full snapshot clone or whole serialized document buffer is used by saving. Load holds at most one candidate alongside the currently displayed tree, preserves that tree on failure, and performs file/decode work on a blocking worker. Stored file actions, traversal descriptors and review tickets are not restored.
-
-- **122 workspace Rust tests passed** (65 scanner, 57 native); four existing/new opt-in checks were ignored by the ordinary run. Archive tests cover round trips, native path bytes, sparse files, hard links, symlinks, retained/truncated issues and exclusions, checksums, truncation, unsupported versions, size/node bounds, invalid topology/accounting, interrupted writes, symlink rejection, and late publication failure. Native tests cover historical action rejection, removal without view invalidation, missing-load preservation, activity guards, setup-independent historical opening and fresh-root rescanning.
-- **63 frontend tests passed** across eight files. Regressions cover history/startup, StrictMode stale startup callbacks, failed loads, save progress with browsing available, removal, historical action controls, target selection/picking, fresh historical rescanning and cleanup's original-target rescan.
-- Workspace formatting, strict all-target Clippy and production TypeScript/Vite build passed. Independent Medium review approved the corrected stable candidate with no remaining blocking correctness findings. The two findings were selected-location routing and late selection-write publication; both have regression coverage.
-- A million-entry synthetic archive test passed: **13,729 ms save**, **39,797 ms load**, **5,313,179 compressed bytes**, and **632,897,536 bytes peak process RSS** on macOS. This was a debug test executable running alongside an obsolete pre-buffer benchmark. Those times are indicative observations, not isolated release performance or a no-regression claim. Peak RSS covers fixture creation, saving and loading; validation uses bounded auxiliary counters without cloning all nodes.
-- The actual App rendered in a synthetic browser fixture at 1280×820 with five history entries, long paths, historical notices, issue guidance, both map controls, disabled actions and removal confirmation. The final screenshot verified readable light-theme contrast. No browser page errors, real native operations, filesystem scans, privacy changes or clipboard writes occurred. The fixture browser and development server were closed.
-
-Historical archives are local only; portable import/export, incremental rescans and the remaining roadmap milestones are deferred. Original full-scan OpenDisk performance acceptance remains outstanding. The packaged application is not launched for this verification, preserving the user's live process and in-memory results.
-
-Final `pnpm desktop:build` passed. The helper produced the host-architecture Apple Development-signed `target/release/bundle/macos/Hahakigami.app` and verified its sealed bundle and stable designated requirement. Public notarization remains deferred. The user's app process, in-memory results, preferences and macOS privacy grants were preserved.
-
 ## Conservative incremental rescans (11 October 2026)
 
-Milestone 2 adds a private optimization cache separate from manually saved history, public FSEvents history replay, and move-based clean-listing reuse. Boot/journal UUIDs, fresh root identity and an original full-scan age limit are required. Local clean folders without hard links/exclusions can seed reuse; startup disks, restricted/incomplete scopes, remote filesystems and scopes containing the cache remain full scans. Shared-allocation or uncertain history events trigger full traversal. Every directory still opens through descriptor identity validation. The standalone scanner transfers its final owned snapshot rather than cloning the entire tree; no numeric peak-memory reduction is claimed.
+Milestone 2 adds a private optimization cache separate from the scan results, public FSEvents history replay, and move-based clean-listing reuse. Boot/journal UUIDs, fresh root identity and an original full-scan age limit are required. Local clean folders without hard links/exclusions can seed reuse; startup disks, restricted/incomplete scopes, remote filesystems and scopes containing the cache remain full scans. Shared-allocation or uncertain history events trigger full traversal. Every directory still opens through descriptor identity validation. The standalone scanner transfers its final owned snapshot rather than cloning the entire tree; no numeric peak-memory reduction is claimed.
 
 Automatic cache storage retains the latest entry per location within eight-location and 512 MiB compressed-archive limits. UUID-owned interrupted files are cleaned within this cache only. Actual archive sizes drive pruning. Failed writes preserve results and the previous cache. Session completion remains gated through cache finalization, with checking/scanning/caching phases shown in the interface and caching cancellation disabled. Native elapsed time includes this pipeline overhead.
 
@@ -508,44 +477,11 @@ Event replay honors ordinary FullHistory overlap and dropped/coalesced/wrapped/u
 - The final native command pipeline parity fixture passed, including persistent cache reload in a new backend state and equality with fresh full-scan path/identity/own-size/aggregate-size signatures. Its final debug observations were **80 ms first full scan**, **189 ms second full fallback**, and **212 ms persisted-cache reload/full fallback**. A global clone-history event correctly required full traversal. These single observations are not release medians or evidence of faster end-to-end rescans. Earlier broader-filter trial timings are superseded and are not performance acceptance evidence.
 - The unchanged final core release fixture (20,027 entries) observed **7.7025 ms full**, **3.357125 ms incremental**, **20,004 reused metadata entries**, and **one enumerated directory**. This is one warm fixture pair using supplied dirty paths; it excludes event replay, cache serialization/loading and UI. The earlier debug pair was slower incrementally. No general app-level speedup or original OpenDisk acceptance claim is made.
 - Independent reviewer_high at High approved after two correction rounds. Findings covered JSX grouping, topology/ID publication, clock-age checks, ancestor events, interrupted cache debris, and FullHistory continuity; all are closed with targeted regressions.
-- The actual App rendered in a synthetic browser fixture with reuse counts, both map controls and saved history alongside current results. No page errors or real native/filesystem/clipboard/privacy operations occurred. The browser and development server were closed.
+- The actual App rendered in a synthetic browser fixture with reuse counts and both map controls. No page errors or real native/filesystem/clipboard/privacy operations occurred. The browser and development server were closed.
 
 The packaged application is not launched for these checks. The user's live process and results remain intact. General end-to-end performance and peak-memory comparison remain unverified; conservative global-history fallbacks can be frequent.
 
-Final `pnpm desktop:build` passed after the historical-mode presentation guard (covered by the 66-test frontend suite). The helper verified the Apple Development-signed host bundle and its stable designated requirement. Existing app sessions, in-memory results and privacy grants were preserved. Native source remained unchanged after high-effort approval; public notarization remains deferred.
-
-
-## Saved-scan latency follow-up (11 October 2026)
-
-Existing version-1 archives now use bounded per-node JSON slice decoding, avoiding the previous byte-oriented JSON reader overhead. One reusable record buffer is limited to 128 MiB; acceleration guards and compatible noncanonical representations discard the partial candidate and rewind the same held file for the original streaming decoder. Archive version, checksum, trailing-data rejection, 4 GiB decoded limit, eight-million-node limit, native paths, topology and accounting validation remain enforced. Save/open byte-progress events are throttled to ten per second while initial/final phases remain visible. Saving still streams borrowed records without cloning the snapshot.
-
-Three alternating release pairs on the million-entry synthetic fixture measured median load **2,827.546 ms before / 1,371.570 ms after** (51.49% lower). Decode medians were 2,798.474 / 1,342.739 ms; validation remained about 29–31 ms. An isolated optimized run took 1,390 ms, saved in 599 ms, produced 5,313,082 compressed bytes, and used 647,118,848 bytes peak process RSS versus 646,725,632 before (about 0.06% difference). Paired-loop allocator retention is excluded from that isolated memory comparison.
-
-A read-only release profile of the user's existing **4,205,560-entry, 182,527,855-byte** archive measured **16,956 ms before / 8,714 ms after**. Decode was 16,660 / 8,380 ms and validation 295 / 334 ms. This is one pair, not a median or GUI rendering measurement. The same held file was rewound; length and modification time remained unchanged. No archive conversion, selection update, permissions change or app restart occurred.
-
-Event replay now watches the selected local physical filesystem mount, obtained from the authorized held root. Same-volume outside-folder hard-link/clone notices and all continuity guards remain conservative. Lightweight cache preflight avoids decoding a tree after an already-known full-scan fallback; successful disk-cache loads repeat replay from the same cursor after decoding and recheck the journal epoch. The deterministic regression mutates the fixture during decoding and verifies replay happens afterward, matching a fresh full scan; replay/epoch failures reject reuse. Startup-disk scans remain full scans. Native unchanged-folder probes still encountered clone-history fallback (0x410000), so no general end-to-end rescan improvement or full-scan speedup is claimed.
-
-
-Final candidate checks passed: **152 workspace Rust tests** (76 core, 76 native; eleven opt-in checks ignored), **66 frontend tests**, TypeScript/Vite build, formatting, diff whitespace checks and strict all-target Clippy. Four opt-in native event fixtures and the command-pipeline persistent-cache parity fixture also passed on disposable directories. Those concurrent debug fixtures conservatively fell back with flags 0x410100, retaining fresh full-scan parity; they are not speed measurements. Independent reviewer_high approved archive validation, compatibility fallback, selected-volume scope and post-decode replay ordering after the timing-gap correction and its regression.
-
-`pnpm desktop:build` passed for this candidate. The helper verified the Apple Development-signed host `.app` and stable designated requirement. The bundle was not launched; the user's existing app session, in-memory results and privacy grants remain intact. Public notarization remains deferred.
-
-
-## Saved-scan comparison (11 October 2026)
-
-Milestone 3 starts with explicit read-only comparison of two saved results from the same native location. Native `compare_saved_scans` is restricted to the bundled main window, accepts library IDs, retains the normal checksummed/versioned/bounded archive loader, and runs file/index/comparison work in a blocking task. Activity serialization rejects races with scans, cleanup, library operations and calibration. Comparison does not replace the displayed session, mark a startup selection, register targets, or issue cleanup authority; it remains available before Full Disk Access setup. Archives are read sequentially: the first is reduced to a sorted compact path/metadata index and dropped before loading the second. Per-archive limits remain eight million nodes and 4 GiB decoded data; comparison permits sixteen million combined nodes.
-
-Matching uses exact native root/path bytes, not lossy names, node IDs or inode-based rename inference. Duplicate paths are rejected in either input. Counts exclude the root, signed arithmetic stays exact in Rust until JavaScript's numeric wire boundary, and totals retain original logical/allocated accounting. Twenty bounded ranking buckets cover logical/allocated, files/folders, and growth/shrinkage/added/removed/changed; each returns at most 100 rows. Categorical buckets retain zero-byte additions/removals and equal-size recorded metadata changes. Warnings explain incomplete coverage/exclusions, root identity changes, descendant overlap, hard-link attribution and APFS limits. Comparison does not compare file contents.
-
-The sidebar panel defaults to an older/newer pair by completion date and requires explicit comparison. Loading progress disables switching and cleanup. Metric/kind/change views switch over bounded results without rereading archives. Native matching can distinguish names with identical lossy display strings; indexed React row keys retain those separate rows. Changing or deleting a selection hides results belonging to the previous pair. Command failure retains previous comparison data and the displayed scan; closing returns to the same explorer state. The normal explorer and file-action controls are unmounted while viewing comparison.
-
-Final native checks passed: **158 workspace Rust tests** (76 core, 82 native), with twelve opt-in checks ignored, plus strict all-target Clippy. New fixtures cover additions/removals/metadata changes, hard links, symlinks, sparse logical/allocated sizes, injected non-UTF-8 byte paths, duplicate paths, zero-size entries, root mismatch/replacement, incomplete/excluded coverage, ranking limits/order, negative/large numeric deltas and serialized command output. Native command checks cover active-operation and running-scan rejection, progress guards, pre-setup access, corrupt/missing archive failure, and preservation of session/startup selection. No user archive was compared or modified and no live filesystem scan was performed for these checks.
-
-The final 20-bucket release million-entry synthetic fixture passed: compact baseline construction **26 ms**, comparison **247 ms**, and peak process RSS **492,388,352 bytes** on macOS. This is one disposable in-memory fixture, including creation of both snapshots sequentially; it excludes archive decompression/validation, displayed-session memory, webview transport and rendering. It is not an end-to-end comparison speed claim.
-
-Final frontend checks passed: **77 tests** across nine files, including ten comparison component tests and the integrated command/progress/error/session-preservation check. TypeScript/Vite production build, Rust formatting, changed-TypeScript/CSS Prettier checks and diff whitespace checks passed. The real comparison component rendered with synthetic data at 1280×1000 and 430×1600; narrow tables scroll internally without document overflow, and the final browser console had zero errors/warnings. Temporary fixture files, development server and browser were removed/stopped. Independent read-only review approved the stable candidate after correcting duplicate keys for lossy displayed native names; affected categorical rankings were reviewed again. The requested dedicated reviewer thread was unavailable due the thread limit, so review reused an existing independent agent without claiming a reviewer role/model override.
-
-`pnpm desktop:build` passed for the final comparison candidate. The helper verified the Apple Development-signed host bundle and its stable designated requirement. The app was not launched over the user's current session; in-memory results, archives, startup selection and privacy grants were preserved. Public notarization remains deferred. Browsing filters, selectable sorting and Quick Look remain later milestone-3 work.
+Final `pnpm desktop:build` passed after the final presentation guard (covered by the 66-test frontend suite). The helper verified the Apple Development-signed host bundle and its stable designated requirement. Existing app sessions, in-memory results and privacy grants were preserved. Native source remained unchanged after high-effort approval; public notarization remains deferred.
 
 
 ## File category and size filters (11 October 2026)
@@ -556,7 +492,7 @@ Results retain largest-first ordering with raw native path and ID ties, bounded 
 
 The final native million-entry release fixture passed once: first filtering/sort **26.044 ms**, cached page **15 µs**, and peak process RSS **216,907,776 bytes** on macOS. This disposable synthetic in-memory measurement includes fixture construction in process peak RSS but excludes webview/rendering and any archive loading; it is not a full-app latency guarantee. Source inspection confirms no full-snapshot clone or full match-list transport.
 
-Final checks passed: **164 workspace Rust tests** (76 core, 88 native; thirteen opt-in checks ignored), **87 frontend tests** across eleven files, TypeScript/Vite production build, workspace Rust formatting, changed-frontend Prettier checks, diff whitespace checks and strict all-target Clippy. New native command tests verify pre-setup historical browsing, direct historical Trash/Finder rejection after setup, stale/invalid sessions, invalid query arguments, bounded pagination and running updates. Engine fixtures cover every listed extension, native non-UTF-8/case handling, kind boundaries, root/exclusion omission, folder sizes, sparse/hard-link accounting, inclusive/zero bounds, combined predicates, deterministic pages and single-cache reuse. Frontend fixtures cover presets/custom validation, AND search, immediate stale-request invalidation during debounce, selection/page reset, directory/session reset, historical labels, background-row preservation and shrinking-total pagination clamping.
+Final checks passed: **164 workspace Rust tests** (76 core, 88 native; thirteen opt-in checks ignored), **87 frontend tests** across eleven files, TypeScript/Vite production build, workspace Rust formatting, changed-frontend Prettier checks, diff whitespace checks and strict all-target Clippy. New native command tests verify stale/invalid sessions, invalid query arguments, bounded pagination and running updates. Engine fixtures cover every listed extension, native non-UTF-8/case handling, kind boundaries, root/exclusion omission, folder sizes, sparse/hard-link accounting, inclusive/zero bounds, combined predicates, deterministic pages and single-cache reuse. Frontend fixtures cover presets/custom validation, AND search, immediate stale-request invalidation during debounce, selection/page reset, directory/session reset, background-row preservation and shrinking-total pagination clamping.
 
 The actual integrated App and DiskMap rendered against synthetic native commands at 1440×1400 and 800×1600. Category/size filtering retained the unfiltered map, the caption remained inside its map panel, invalid custom input retained the applied image results, and the narrow page had no document overflow. The final browser console had zero errors/warnings. Temporary preview files/native alias/config, CLI outputs, browser and development server were cleaned up. Main inspected the final desktop screenshot. Independent read-only review approved the frozen candidate after two functional correction rounds (live-refresh row preservation and shrinking-total pagination); no source findings remain. No actual user scan, archive write, permission probe or app restart occurred during these checks.
 
@@ -575,16 +511,16 @@ The frontend applies order changes immediately, invalidates older responses and 
 
 The final single release million-entry fixture permuted filenames to exercise natural sorting rather than a presorted fast path: size sort first query **20.504 ms**, cached page **11 µs**; natural name first query **407.704 ms**, cached page below microsecond timer resolution. Peak process RSS was **259,276,800 bytes** on macOS. Fixture time was 0.58 seconds; compilation was excluded. This synthetic in-memory measurement excludes archive loading, transport and rendering and is not an app-level latency guarantee. Shared engine source remained unchanged after this profile.
 
-Final candidate checks passed: **176 workspace Rust tests** (76 core, 100 native; thirteen opt-in checks ignored), **98 frontend tests** across thirteen files, workspace formatting, changed-frontend Prettier/diff whitespace checks and strict all-target Clippy. New coverage includes four orders, both metrics, groups and ties, Unicode/native invalid UTF-8 names, long numeric runs/leading zeros, capped deterministic pagination, cache replacement/running updates, preference defaults/restoration/malformed/FIFO recovery, failed-write retry, reversed queued jobs, historical authority, startup list gating, branch/selection/page reset, preserved maps and stale response rejection.
+Final candidate checks passed: **176 workspace Rust tests** (76 core, 100 native; thirteen opt-in checks ignored), **98 frontend tests** across thirteen files, workspace formatting, changed-frontend Prettier/diff whitespace checks and strict all-target Clippy. New coverage includes four orders, both metrics, groups and ties, Unicode/native invalid UTF-8 names, long numeric runs/leading zeros, capped deterministic pagination, cache replacement/running updates, preference defaults/restoration/malformed/FIFO recovery, failed-write retry, reversed queued jobs, startup list gating, branch/selection/page reset, preserved maps and stale response rejection.
 
 Actual integrated App/DiskMap rendered against synthetic native commands at 1440×1500 and 800×1600. Smallest-first displayed folders first, then 128 MB/256 MB/3 GB files; global image filtering sorted 64 MB/128 MB/256 MB entries, and save failure/retry remained usable. The narrow document matched its 800-pixel viewport; final console had zero errors/warnings. Temporary preview/native alias/config and CLI artifacts were removed, and the owned browser/server were stopped. Main inspected the desktop screenshot. Independent review (configured Sol 6.1 High; runtime identity/effort unexposed) approved after one correction round closing reversed queued-write ordering, committed-warning reporting and FIFO startup recovery. Candidate-matched checks and the unchanged shared-engine benchmark were reused; no reviewer files were edited.
 
-Final `pnpm desktop:build` passed for the frozen sorting candidate. The helper verified the Apple Development-signed host bundle and stable designated requirement. The app was not launched over the user's existing session; in-memory results, saved archives, startup selection and privacy grants were preserved. Public notarization remains deferred. Quick Look remains a separate follow-up.
+Final `pnpm desktop:build` passed for the frozen sorting candidate. The helper verified the Apple Development-signed host bundle and stable designated requirement. The app was not launched over the user's existing session; in-memory results and privacy grants were preserved. Public notarization remains deferred. Quick Look remains a separate follow-up.
 
 
 ## Native Quick Look (11 October 2026)
 
-Added bundled-main-window-only ID commands and typed monotonic preview status. Only one regular file in a valid completed live session is eligible, including incomplete-coverage results. Saved, unfinished, invalidated and stale sessions remain ineligible. The read-only validator checks recorded file, parent-chain and root-ancestor identities, containment and readability through O_NOFOLLOW|O_NONBLOCK. It does not use Trash’s protected-location blacklist. Filesystem validation runs on blocking workers and refreshes before every presentation attempt after deliberate waits; main-thread URL access checks request/session authority. Scan replacement, saved-result opening, cleanup and restart await native dismissal; window destruction revokes pending authority.
+Added bundled-main-window-only ID commands and typed monotonic preview status. Only one regular file in a valid completed live session is eligible, including incomplete-coverage results. Unfinished, invalidated and stale sessions remain ineligible. The read-only validator checks recorded file, parent-chain and root-ancestor identities, containment and readability through O_NOFOLLOW|O_NONBLOCK. It does not use Trash’s protected-location blacklist. Filesystem validation runs on blocking workers and refreshes before every presentation attempt after deliberate waits; main-thread URL access checks request/session authority. Scan replacement, saved-result opening, cleanup and restart await native dismissal; window destruction revokes pending authority.
 
 The macOS-only objc2 controller uses Apple’s QLPreviewPanel responder callbacks, preserving Tauri delegates and a weak responder anchor. Retained controller/item/URL objects remain on the main thread. Teardown disables URLs immediately, retains closing-only control during fullscreen transitions, waits for actual disappearance, then restores the responder chain and releases ownership. Native closure advances revisions atomically; stale callbacks cannot close or reopen newer requests. Failure to dismiss returns an error and blocks file recycling.
 
@@ -592,15 +528,15 @@ Quick Look and Space support a single eligible regular file. Repeat Space on the
 
 Quick Look reads current contents by URL after validation. Files can change during the main-thread queue handoff or afterward, so this is not an immutable snapshot of scanned contents. No subprocess preview launcher, copied-file cache, archive change, permission probe or privacy-grant change was introduced.
 
-Candidate checks passed: **187 workspace Rust tests** (76 core, 111 native; thirteen opt-in checks ignored), **115 frontend tests** across fourteen files, TypeScript/Vite production build, workspace formatting, changed-frontend Prettier/diff whitespace checks and strict all-target Clippy. New fixtures cover completed incomplete-coverage eligibility, historical/stale/unfinished/kind rejection, missing/unreadable/replaced files and ancestors, symlink/FIFO substitution, native names, request invalidation, monotonic closure and bounded revisions. Frontend checks cover button/Space eligibility, repeated Space, multiple selections, interactive/modifier exclusions, context dismissal, native closure, stale statuses and failed-close/open errors.
+Candidate checks passed: **187 workspace Rust tests** (76 core, 111 native; thirteen opt-in checks ignored), **115 frontend tests** across fourteen files, TypeScript/Vite production build, workspace formatting, changed-frontend Prettier/diff whitespace checks and strict all-target Clippy. New fixtures cover completed incomplete-coverage eligibility, stale/unfinished/kind rejection, missing/unreadable/replaced files and ancestors, symlink/FIFO substitution, native names, request invalidation, monotonic closure and bounded revisions. Frontend checks cover button/Space eligibility, repeated Space, multiple selections, interactive/modifier exclusions, context dismissal, native closure, stale statuses and failed-close/open errors.
 
 The disposable native smoke exercised real text, image and PDF QLPreviewPanel previews, toggle, capture release, concurrent awaited close, stale requests, responder restoration, delayed presentation with a replaced target, and settled-fullscreen host destruction. The latter removed the Tauri host handle before awaiting dismissal and verified actual hidden state before a simulated cleanup marker. A temporary uniquely identified fixture app also received physical fullscreen/Escape input: first Escape exited fullscreen and second Escape closed. It was removed after exit; the user's app and files were not used. Native NSURL byte round trips, including invalid UTF-8, were checked in memory against Foundation.
 
 Known teardown edge: forced host destruction during fullscreen entry can time out after five seconds. That returns an error and blocks cleanup rather than claiming dismissal; helper process exit removes the panel. Settled-fullscreen host destruction and ordinary native closure passed.
 
-The actual integrated App/DiskMap rendered using synthetic commands at desktop and narrow sizes. Quick Look eligibility, opening/closed/error presentation and historical guidance were checked, with no document overflow and zero console errors/warnings. Temporary preview resources, browser and development server were removed.
+The actual integrated App/DiskMap rendered using synthetic commands at desktop and narrow sizes. Quick Look eligibility, opening/closed/error presentation was checked, with no document overflow and zero console errors/warnings. Temporary preview resources, browser and development server were removed.
 
-`pnpm desktop:build` passed for this candidate. The helper verified the Apple Development-signed host bundle and stable designated requirement. The bundle was not launched over the user's existing app; running results, saved archives, startup selection and privacy grants were preserved. Public notarization remains deferred.
+`pnpm desktop:build` passed for this candidate. The helper verified the Apple Development-signed host bundle and stable designated requirement. The bundle was not launched over the user's existing app; running results and privacy grants were preserved. Public notarization remains deferred.
 
 Independent reviewer_high (configured Sol 6.1 Max; runtime identity/effort/tier unexposed) approved correction round one with R1–R4 closed: conditional close revision advancement, repeat-Space toggle, hostless dismissal gating and off-thread filesystem refresh after every deliberate retry wait. The reviewer accepted the documented forced-fullscreen-entry timeout as fail-closed and found no remaining blockers. No further source changes followed approval.
 
@@ -663,7 +599,7 @@ and portable summary (`benchmark-results-incremental-summary.json`, removed) rec
 successful timing runs, unchanged source/binary fingerprints, actual reuse in all
 incremental samples and repeated exact coverage parity in both layers. End-to-end
 rescans are slower on this fixture despite lower scan/aggregation work. Existing
-sessions, preferences, saved scans and OS privacy grants were preserved.
+sessions, preferences and OS privacy grants were preserved.
 
 ### Optimized rescan delivery (13 October 2026)
 
@@ -686,7 +622,7 @@ and portable summary (`benchmark-results-incremental-optimized-summary.json`, re
 72 successful timed runs, stable candidate-source/helper/binary fingerprints and
 repeated exact coverage parity. Both native and app incremental modes now beat their
 own optimized full-scan medians on the tested folder. The development-signed normal
-bundle has the unchanged designated requirement. Existing sessions, saved scans,
+bundle has the unchanged designated requirement. Existing sessions,
 preferences and OS privacy grants were preserved. Speculative transient memory and
 cooperative cancellation limits are documented; broader speed guarantees are unproven.
 
@@ -845,9 +781,8 @@ worker probe, reuse variation and measurement limitations.
 
 ## Compact cache writer and publication (2026-10-13)
 
-Private compact saves use lossless Zstd level -1, a bounded 128 KiB encoder-input
-buffer, and omit historical selection publication. Historical saves retain level 3,
-selection and rollback. Cache binary records and decoder acceptance are unchanged;
+Private compact saves use lossless Zstd level -1 and a bounded 128 KiB encoder-input
+buffer. Cache binary records and decoder acceptance are unchanged;
 all checksums, topology/accounting validation, limits, synchronous frame completion,
 file/directory sync and archive/row/cursor atomic publication remain in place.
 
@@ -858,7 +793,7 @@ corrupt/truncated/trailing frames and preservation of existing selection bytes.
 The full suite found three stale private-selection assumptions; R3 was fixed by
 checking permissions on actual cache files, explicitly preserving legacy selection,
 and injecting a genuine compressed-budget publication failure while retaining the
-previous seed. Historical late-selection failure rollback still passes. Independent
+previous seed. Independent
 Max review approved the corrected candidate. Native alias mutation/persisted parity
 and late speculative-write rejection passed. Strict workspace all-target feature
 Clippy, formatting and diff checks passed. Unchanged core evidence: 92 passed,
@@ -989,14 +924,14 @@ workers>1) permits one scoped validator on the immutable borrowed Snapshot while
 the main thread encodes with unchanged checksums, limits, frame completion, flush
 and file sync. Both outcomes must succeed before atomic rename; row/cursor order
 and directory durability remain. The scope joins even on encoding failure. Validator
-errors/panics reject publication; spawn failure uses sequential fallback. Historical,
-small and single-worker saves stay sequential. No scan fresh-open/identity checks,
+errors/panics reject publication; spawn failure uses sequential fallback. Small
+and single-worker saves stay sequential. No scan fresh-open/identity checks,
 traversal, scheduler, cache format or public save API were changed.
 
 Native performance-feature suite: 147 passed, 20 ignored. Tests cover late validator
 failure after encoding success/no archive visibility, encoding failure/join/error
 precedence, child panic rejection, actual large invalid topology and byte-limit temp
-cleanup, roundtrip, gate cases and unchanged historical rollback. Sequential fallback
+cleanup, roundtrip, gate cases. Sequential fallback
 ordering is tested directly; actual OS thread resource exhaustion was not induced.
 Strict workspace all-target performance-feature Clippy, formatting and diff checks
 passed. Native alias mutation/persisted parity and late speculative-write rejection
@@ -1019,8 +954,7 @@ See BENCHMARKS.md and the overlap summary for probe scope and timing limitations
 ## Layout and inspector polish (2026-10-16)
 
 Current-source inspection and isolated screenshots confirmed that collapsed scan
-issues, resizable map/list panels, selection metrics and the historical read-only
-inspector were already implemented. This follow-up keeps those patterns, reserves
+issues, resizable map/list panels and selection metrics were already implemented. This follow-up keeps those patterns, reserves
 a little more width for browsing, keeps coverage Details beside its summary, and
 puts the live cleanup queue action before compact Finder/Quick Look controls.
 Changing the inspected selection, focused item or scan resets detail scrolling;
@@ -1029,12 +963,11 @@ metric changes, refreshed metadata and asynchronous totals preserve reading posi
 All 266 frontend tests passed, including five new inspector-scroll regression
 cases. The production frontend build passed with zero Svelte errors or warnings;
 changed frontend formatting and diff whitespace checks passed. The isolated
-production-browser smoke passed twelve live/historical cases: light and dark at
+production-browser smoke passed twelve live cases: light and dark at
 1280×820, 900×600 and 1536×1024, with no console/runtime errors. Geometry checks
 cover visible identity/path/sizes, action order, retained panel minimums, compact
-coverage controls and scroll reset when selecting another item. Historical file
-actions remain unavailable; existing live eligibility and cleanup handlers are
-unchanged. Evidence is in `benchmark-results/2026-10-16-layout-inspector/`.
+coverage controls and scroll reset when selecting another item. Existing live
+eligibility and cleanup handlers are unchanged. Evidence is in `benchmark-results/2026-10-16-layout-inspector/`.
 These checks use synthetic native commands in Chrome, not a live WKWebView session.
 
 `pnpm desktop:build` produced the macOS bundle with the existing Apple Development
@@ -1110,46 +1043,14 @@ Apple Development identity. Deep/strict verification passed and the designated
 requirement exactly matches the pre-build value. No extra benchmark app bundle was
 created; the installed app was not replaced or relaunched.
 
-## Grouped saved-scan history (2026-10-16)
-
-Source inspection confirmed local Today/Yesterday labels, minute precision,
-prior-year dates and per-scan menus already existed. History now groups exact
-recorded location paths, with path/count headings and completion-based ordering.
-An imported older scan stays in chronological position regardless of its newer
-save time. Deriving groups does not mutate the saved library or startup selection.
-Rows show completion time, on-disk size and coverage; same-second collisions use
-milliseconds. Identical completion copies also expose precise save times. Full
-absolute date/timezone details remain available, the historical header identifies
-the scan completion, and removal confirmation identifies location/completion/save
-time. All actions remain bound to the original saved ID.
-
-All 305 frontend tests passed, including fifteen grouping/formatting cases, ten
-sidebar cases and the epoch-zero historical-header regression. Production build
-and Svelte checking passed with zero errors/warnings; changed frontend formatting
-and whitespace checks passed. Six history browser cases passed in light/dark at
-1280×820, 900×600 and 1536×1024, each with 0/4/30 saved scans. They cover repeated
-locations, same-named paths, imported old dates, exact-time copies, epoch zero,
-readable timestamps, one bounded sidebar scroll region, exact open/export IDs and
-cancelled-removal focus restoration. The six return-to-results regression cases
-also passed. No console/runtime errors were reported. Independent review approved
-without findings. Evidence: `benchmark-results/2026-10-16-saved-history/`.
-These are isolated Chrome fixtures with synthetic native commands; the user's
-saved archives and running app were not used for visual checks.
-
-`pnpm desktop:build` updated the existing current macOS bundle with the existing
-Apple Development identity, passed deep/strict verification, and retained the
-exact pre-build designated requirement. The installed app was not replaced or
-restarted; no additional benchmark app copy or archive migration was created.
-
 ## First-use scan and folder choice (2026-10-16)
 
 Source inspection confirmed the header Scan action, sidebar native folder picker,
-target registration and initial saved-scan restoration already existed. The empty
+target registration already existed. The empty
 welcome screen now shows the selected location with an explicit Scan action and
 Choose folder beside it. The welcome and sidebar picker share one controller;
 choosing a folder selects its registered target without automatically scanning.
-The redundant header is hidden only on the welcome screen, while saved restoration
-retains its disabled scan header and loading state.
+The redundant header is hidden only on the welcome screen.
 
 The picker waits for target discovery and serializes concurrent actions. Pending
 requests cannot replace a changed session, navigation, selection or comparison
@@ -1164,7 +1065,7 @@ checks passed. Six first-use browser cases passed in light/dark at 1280×820,
 900×600 and 1536×1024, each exercising ready, picked, cancel, error, long-name,
 setup-needed, missing-location and browser states. They verify keyboard order,
 visible controls, explicit selected-target scans and no automatic scan on picking.
-The six saved-restoration/return-to-results regression cases also passed, with no
+The six return-to-results regression cases also passed, with no
 console/runtime errors. Independent review approved without findings. Evidence:
 `benchmark-results/2026-10-16-first-use/`. These checks use isolated Chrome fixtures
 with synthetic native commands; no native picker or scan was opened in the user's
@@ -1182,8 +1083,7 @@ issue categories and detailed diagnostics already existed. A shared display now
 shows phase-specific guidance and an indeterminate activity indicator, then keeps
 a compact completion summary of whole-scan entries, both storage totals and scan
 time. Opening a folder or changing the size metric does not replace those totals.
-Worker/reuse/accounting details remain in Scan information; saved results retain
-their compact timestamp display without a fresh completion announcement.
+Worker/reuse/accounting details remain in Scan information.
 
 Native state remains authoritative: caching is still running even when a completion
 timestamp exists. Cancellation is disabled during cache publication. Running sizes
@@ -1193,7 +1093,7 @@ checking/finalization; final elapsed time includes the full native pipeline. Onl
 phase/terminal status enters the polite live region. Reduced-motion preferences
 stop the activity animation. Cancelled/failed results remain partial, incomplete
 coverage stays explicit, expected exclusions are not failures, and cache retention
-warnings do not imply loss of the completed results or a saved-history archive.
+warnings do not imply loss of the completed results.
 
 All 342 frontend tests passed, including 13 rendered scan-feedback cases. Production
 frontend build/Svelte checking passed with zero errors/warnings; changed-file
@@ -1201,7 +1101,7 @@ formatting and diff checks passed. Six progress browser cases passed in light/da
 at 1280×820, 900×600 and 1536×1024, each covering twelve phase/result variants.
 They verify cancellation, early completion timestamps, provisional/final totals,
 metric/folder navigation, detail access, reduced motion and visible compact values.
-Six existing live-interaction cases and six saved-restoration/return-to-results
+Six existing live-interaction cases and six return-to-results
 cases also passed. All eighteen cases reported zero console/runtime errors and
 their source hashes match the final candidate. Independent review approved without
 findings. Evidence: `benchmark-results/2026-10-16-scan-feedback/`. These are isolated
@@ -1305,118 +1205,19 @@ exact pre-build designated requirement. The installed app was not replaced or
 restarted; no extra benchmark app copy or privacy-setting change was created.
 
 
-## Saved comparison wayfinding (2026-10-16)
-
-Source inspection confirmed signed root totals, twenty bounded ranking buckets,
-zero-byte category results, native path matching, read-only comparison, coverage
-notes and guarded pair selection already existed. This change is frontend-only;
-native comparison and controller behavior are unchanged. The overview uses the
-native whole-location delta for the selected metric, explicitly After minus Before.
-Five change buttons show the selected metric/type bucket counts. Growth/shrinkage
-include added/removed entries, so the views are explained as overlapping lenses.
-Global change counts below the ranking cover all entry types and exclude the root;
-full scan entry totals include it. Folder deltas remain nonadditive.
-
-Rows separate names from parent paths, preserve full path titles and duplicate
-lossy-display rows, and pair signed values with Grew/Shrank/No size change labels.
-Dashes mean absent entries, while existing zero-byte values stay zero. Files &
-other entries accurately names the native nondirectory bucket. Recorded metadata
-changes do not claim content or modification-time comparison. Coverage remains
-visible, including the distinction between incomplete results and exclusions-only
-scope. All native accounting, coverage and location-identity notes are retained.
-
-Pair controls keep precise completion timestamps, save-time disambiguation and
-neutral saved-result labels for shared timestamps. Completion equality does not
-claim archive identity. Swap changes selection without loading; old results stay
-hidden until their IDs/root/order match. Reverse and equal-time comparisons explain
-the selected order. A failed same-pair comparison preserves prior results. Busy
-selection/close guards and historical read-only behavior remain unchanged.
-
-All 399 frontend tests passed, including eighteen comparison cases. Production
-frontend build/Svelte checking passed with zero errors/warnings; changed-file
-formatting and diff checks passed. Six final comparison browser cases passed in
-light/dark at 1280×820, 900×600 and 1536×1024, each covering thirteen states/scenarios:
-loading, five change views with zero-byte cases, metric/type changes, reverse order,
-failed recomparison, zero net despite churn, incompatible pairs, repeated/epoch/
-prior-year timestamps and the top-100 boundary. All five view controls fit onscreen
-at the initial minimum-window result position. Six saved-restoration/return-to-
-results regression cases also passed. All twelve final cases had zero console/
-runtime errors and matched the final frontend source hashes. Independent review
-approved after one neutral-label correction. Evidence:
-`benchmark-results/2026-10-16-saved-comparison/`. These use isolated Chrome fixtures
-with synthetic archived results; the user's archives, native runtime and VoiceOver
-were not exercised. Prior native comparison evidence is reused because its source
-is unchanged.
-
-`pnpm desktop:build` updated the current macOS bundle with the existing Apple
-Development identity, passed deep/strict signature verification and retained the
-exact pre-build designated requirement. The installed app was not replaced or
-restarted; no extra benchmark app copy or privacy-setting change was created.
-
-
-## Saved-scan import and export feedback (2026-10-16)
-
-Source inspection confirmed native pick/save dialogs, serialized library operations,
-processed-data callbacks, cancellation results and short success messages already
-existed. This frontend-only change adds operation-specific choosing, processing,
-finishing, success, cancellation and unconfirmed-error feedback. Native commands,
-archive formats, validation, destination authority, publication and privacy behavior
-are unchanged. Progress counters describe uncompressed work within a pass and may
-reset; no file-size total, percentage, rate or ETA is invented. A done event stays
-pending until the command confirms an imported entry or successful export.
-
-Export identity is frozen before the request. Import success uses the returned
-saved entry and offers an explicit Open imported scan action; importing alone never
-replaces current results or startup selection. Identity paths are labeled Scanned
-location, not guessed archive source/destination paths. Cancelled file dialogs get
-neutral feedback. Errors remain unconfirmed because publication can precede a
-later failure. They preserve the current view, avoid automatic retries and refresh
-the saved list after uncertain imports under the same library lock. Dismissal does
-not cancel that reconciliation or resurrect its receipt. Valid native-u64 display
-sizes remain accepted even beyond JavaScript's exact integer range.
-
-Shared progress callbacks are fenced by request, operation, lock and disposal;
-completed or older callbacks cannot overwrite a later operation. Only title/phase
-changes enter the polite live region; byte resets stay quiet. Feedback remains
-visible while browsing. Its measured height reserves scroll space, so keyboard
-focus in following controls is not obscured. The resize observer disconnects,
-fences late notifications and resets spacing when feedback is removed.
-
-All 448 frontend tests passed, including 35 controller and fourteen rendered
-feedback cases. Production build and Svelte checking passed with zero errors or
-warnings; changed-file formatting and diff checks passed. Six transfer browser
-cases passed in light/dark at 1280×820, 900×600 and 1536×1024, exercising both live
-and historical contexts. They cover choosing, resetting processed counts, done
-before response, success/explicit open, export ID authority, cancellation/manual
-retry, errors, post-publication reconciliation, long identities, late callbacks,
-reduced motion and actual keyboard Tab visibility after scrolling. Six saved
-comparison regression cases also passed. All twelve final cases had zero console/
-runtime errors and matched the final source hashes. Independent review approved
-after one correction round for keyboard focus and dismissal/reconciliation.
-Evidence: `benchmark-results/2026-10-16-scan-transfer/`. These are isolated Chrome
-fixtures with synthetic commands; native file dialogs, filesystem transfers,
-VoiceOver and the user's archives were not exercised. Prior native archive and
-publication verification is reused because that source is unchanged.
-
-`pnpm desktop:build` updated the current macOS bundle with the existing Apple
-Development identity, passed deep/strict signature verification and retained the
-exact pre-build designated requirement. The installed app was not replaced or
-restarted; no extra benchmark app copy or privacy-setting change was created.
-
 ## Explorer workspace redesign (2026-10-16)
 
 The displayed scan's heading and exact source path now remain tied to its root,
-saved record or captured live target. Choosing another location retains the
+captured live target. Choosing another location retains the
 current results and selection, names the next scan explicitly, and leaves the
 original location available for rescanning. Explicit target selection controls
 native target-ID routing; display-path comparisons only control presentation.
-Saved-session rescans retain their native session authority and historical
-filesystem-action restrictions.
+Rescans retain their native session authority.
 
 Completed feedback and coverage summaries use compact layouts with details on
 demand. Running, stopping, failed, cancelled, incomplete and cache-warning states
 retain their guidance. Both recorded sizes, timing, accounting and diagnostics
-remain accessible under Scan information. Historical feedback uses two rows.
+remain accessible under Scan information.
 The inspector clamps identity text, shows a compact parent location and exposes
 the complete path in a keyboard-accessible selectable disclosure. Item or scan
 changes reset it; metric and metadata refreshes retain reading position.
@@ -1426,10 +1227,10 @@ with independent expansion controls and unchanged timestamp precision/menus.
 All 462 frontend tests passed across 42 files. Production Svelte checking passed
 with zero errors/warnings; changed-file formatting and whitespace checks passed.
 Twenty-four production-browser cases passed in light/dark at 1280×820, 900×600
-and 1536×1024 across live, historical, progress and history fixtures. Two further
+and 1536×1024 across live and progress fixtures. Two further
 long-name/deep-path cases passed at light 1280×820 and dark 900×600. All 26 cases
 had zero console/runtime errors and matched current production source hashes.
-Checks include splitter keyboard/pointer/ARIA bounds, six/three historical row
+Checks include splitter keyboard/pointer/ARIA bounds, row
 capacity, full-path keyboard disclosure with pinned actions, source identity
 after target selection, and active older history after collapse. The initial
 splitter/CSS mismatch was corrected using the established 150px/200px bounds;
@@ -1450,7 +1251,7 @@ The workspace now follows the supplied reference composition: location icon and
 search/actions above a flat scan metadata row with a coverage chip, followed by
 a white summary strip containing both recorded size totals, current matching
 volume availability when known, and the metric switch. Available volume space
-is labeled separately from saved metadata. Coverage retains categorized counts,
+is labeled separately from recorded metadata. Coverage retains categorized counts,
 pagination, copy controls and keyboard/outside-click dismissal in a bounded
 details popover. Running, partial, failed and cache-warning guidance remains.
 
@@ -1470,8 +1271,8 @@ Real map areas remain proportional; the reference raster is not a size model.
 All 475 frontend tests passed across 43 files. Production Svelte checking has
 zero errors/warnings; changed-file formatting and whitespace checks passed.
 Twenty-four final browser cases passed with no console/runtime errors and exact
-production source hashes: live and historical reference fixtures, all twelve
-progress states, and saved-history regressions, each in light/dark at 1280×820,
+production source hashes: live reference fixtures and all twelve
+progress states, each in light/dark at 1280×820,
 900×600 and 1536×1024. Reference fixtures use the image's 763.1/812.6/49.7 GiB
 values and Library selection to check hierarchy without real-data differences.
 Independent review compared rendered 1536×1024 images directly with the supplied
@@ -1481,9 +1282,9 @@ are in `benchmark-results/2026-10-16-reference-fidelity/`.
 `pnpm desktop:build` produced the Apple Development-signed bundle and passed
 deep/strict verification. Installation verified the receipt's executable hash
 and an identical designated requirement, retained a rollback copy, and replaced
-only `/Applications/Hahakigami.app`. Saved archives, queue data and privacy
-grants were not modified. The restarted native app restores the saved scan;
-its final inspection is recorded in the installation receipt.
+only `/Applications/Hahakigami.app`. Queue data and privacy
+grants were not modified. The restarted native app's final inspection is
+recorded in the installation receipt.
 
 ## Mockup typography and icon polish (2026-10-16)
 
@@ -1539,7 +1340,7 @@ remain data driven.
 All 477 tests pass across 43 files, including pagination clamping, nested header
 bounds, canvas labels, legend visibility and keyboard resizing. Sixteen final
 reference cases pass with matching source hashes and no browser/runtime errors:
-live and historical results in both themes at 900×600, 1280×820, 1536×1024 and
+live results in both themes at 900×600, 1280×820, 1536×1024 and
 1536×980. Twelve supplementary history/progress cases passed before the final
 inspector-footer-only CSS adjustment; their unaffected evidence is retained.
 Production checking reports zero errors and warnings. Evidence is in
@@ -1604,9 +1405,8 @@ with the evidence. Display settings and stored scan/queue data were not changed.
 ## Independent CLI and MCP (2026-10-24)
 
 The existing executable now dispatches command mode before GUI initialization.
-CLI and local MCP sessions share the metadata scanner and validated archive
-handling, with a separate automation store. Completed results survive process
-exit; cancelled/failed partial results remain queryable within the MCP session.
+CLI and local MCP sessions share the metadata scanner. Cancelled/failed partial
+results remain queryable within the MCP session.
 Usage and a generic stdio-client configuration are in the README.
 
 - Rust suites: **435 passed** (213 scanner, 215 native shell, 3 CLI processes,
@@ -1620,13 +1420,12 @@ Usage and a generic stdio-client configuration are in the README.
 - Formatting and strict workspace/all-target Clippy passed. Focused Clippy also
   passed after the final process-test additions.
 - Real MCP client checks covered discovery, typed inputs, scans, paginated
-  queries, errors, retention across sessions, cancellation, partial results,
-  bounded EOF exit, and preservation of current results after a save failure.
+  queries, errors, cancellation, partial results, and bounded EOF exit.
   CLI checks included invalid arguments, native path encoding, offset overflow,
   and search pages exceeding 500 entries.
 - `pnpm desktop:build` produced a sealed Apple Development-signed app and verified
   its stable designated requirement. The bundled executable passed disposable
-  CLI/MCP scan/query checks, cross-interface saved-result reuse, and clean EOF
+  CLI/MCP scan/query checks and clean EOF
   exit without stdout diagnostics.
 - Independent Standards and Spec reviews approved source candidate `12dd841`
   with no actionable findings. The approved GitHub workflow configuration and
@@ -1646,7 +1445,7 @@ are covered; protocol cancellation notifications are not part of this release.
   never hidden, when unavailable.
 - Move to Trash (⌘⌫) always opens the Trash confirmation. Go and Item items are
   disabled while a text field has focus, and all app commands are disabled while
-  a dialog, saved-scan open, or the Filters popover is active.
+  or a dialog or the Filters popover is active.
 - Frontend: **609 tests passed** across 51 files; Svelte checking reported zero
   errors and warnings. Independent Standards and Spec reviews ran; their
   findings were fixed before commit.

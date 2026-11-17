@@ -1,18 +1,6 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
-            "saved_scans_enabled",
-            "list_saved_scans",
-            "import_saved_scan",
-            "export_saved_scan",
-            "save_scan",
-            "begin_saved_open",
-            "cancel_saved_open",
-            "open_saved_scan",
-            "delete_saved_scan",
-            "compare_saved_scans",
-            "compare_current_scan",
-            "rescan_saved_scan",
             "discover_targets",
             "mounted_volumes",
             "choose_folder",

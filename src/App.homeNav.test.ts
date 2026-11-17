@@ -53,7 +53,6 @@ const home: Target = {
 let state: ScanSummary["state"];
 const summary = (): ScanSummary => ({
   scanId: "live",
-  origin: "live",
   rootId: 0,
   state,
   workers: 1,
@@ -124,8 +123,6 @@ beforeEach(async () => {
         return discovered;
       case "mounted_volumes":
         return mounted;
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "list_cleanup_queue":
         return { entries: [], revision: 0, warning: null, blocked: false };
       case "start_scan":
@@ -192,11 +189,7 @@ it("shows the welcome page from a disk while results are loaded, then returns wi
   expect(app().summary).toBe(summaryBefore);
   expect(calls("start_scan")).toHaveLength(1);
   for (const [name] of mock.invoke.mock.calls.slice(before))
-    expect([
-      "start_scan",
-      "rescan_saved_scan",
-      "open_saved_scan",
-    ]).not.toContain(name);
+    expect(name).not.toBe("start_scan");
 });
 
 it("keeps disks available during a scan, with only the scanning disk's Scan unavailable and the disk tagged Scanning", async () => {

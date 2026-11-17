@@ -17,11 +17,11 @@ What the app can tell about Full Disk Access for the running copy: on, off, or u
 _Avoid_: Acknowledgement, confirmation, setup done
 
 **Disk scan**:
-The latest measurement of one disk made in this session. Every disk in the Disks list keeps its own, so scanning a second disk never discards the first one's results, and disks can be scanned at the same time. A folder scan is kept the same way, but all folders share one. It stays available while a saved scan is open, until the next scan of that disk (or of any folder) replaces it or the disk is ejected, and it can be saved or compared without saving.
-_Avoid_: Current scan, live scan, unsaved result
+The latest measurement of one disk made in this session. Every disk in the Disks list keeps its own, so scanning a second disk never discards the first one's results, and disks can be scanned at the same time. A folder scan is kept the same way, but all folders share one. It stays available until the next scan of that disk (or of any folder) replaces it or the disk is ejected. Its results are gone once the app quits.
+_Avoid_: Current scan, live scan
 
 **Scan slot**:
-Where the app keeps a Disk scan while the session lasts. Every disk has its own, and all folder scans share one more. A scan can start only while its own slot is not scanning; starting it replaces that slot's previous scan and no other. Rescanning a saved scan counts as a folder scan, whatever it measured.
+Where the app keeps a Disk scan while the session lasts. Every disk has its own, and all folder scans share one more. A scan can start only while its own slot is not scanning; starting it replaces that slot's previous scan and no other.
 _Avoid_: Session slot, scan cache
 
 **Scan all disks**:
@@ -43,10 +43,6 @@ _Avoid_: Scanned on disk, on disk in scan, recorded allocation, allocated size
 **Logical size**:
 The byte length of the content, regardless of how it is stored. Compressed, sparse or cloned files can be larger logically than on disk.
 _Avoid_: Real size, apparent size, content size
-
-**Saved scan**:
-A completed measurement retained for later browsing. Its sizes and coverage describe the filesystem when it was scanned.
-_Avoid_: Live filesystem view, reclaimable space, read-only scan
 
 **Scan warning**:
 A note that some sizes in a scan may be slightly off because files changed while they were being measured. The rest of the scan is accurate.

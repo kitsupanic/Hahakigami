@@ -101,8 +101,6 @@ beforeEach(() => {
           scanAnyway: false,
           appPath: "/Applications/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "discover_targets":
         return [disk];
       case "list_cleanup_queue":
@@ -283,13 +281,12 @@ it("ignores a native picker completion after teardown", async () => {
   expect(old.target).toEqual(disk);
 });
 
-it.each(["busy", "library lock", "modal"])(
+it.each(["busy", "modal"])(
   "rejects picker requests during %s",
   async (state) => {
     await mount();
     await act(() => {
       if (state === "busy") app().setBusy(true);
-      if (state === "library lock") app().libraryLock.current = true;
       if (state === "modal") app().setAccessOpen(true);
     });
     await act(() => app().chooseFolder());
@@ -319,42 +316,6 @@ it.each(["generation", "scan", "target"])(
     expect(app().choosingFolder).toBe(false);
   },
 );
-
-it.each(["success", "cancel", "error"])(
-  "allows choosing from comparison and preserves it unless selection succeeds (%s)",
-  async (outcome) => {
-    await mount();
-    await act(() => app().setComparisonOpen(true));
-    if (outcome === "cancel") response("choose_folder", null);
-    if (outcome === "error")
-      response("choose_folder", () =>
-        Promise.reject(new Error("Picker failed")),
-      );
-    await act(() => app().chooseFolder());
-    expect(calls("choose_folder")).toHaveLength(1);
-    expect(app().comparisonOpen).toBe(outcome !== "success");
-    expect(app().target).toEqual(outcome === "success" ? folder : disk);
-    expect(calls("start_scan")).toHaveLength(0);
-    if (outcome === "error") expect(app().error).toContain("Picker failed");
-  },
-);
-it("ignores a pending picker when the comparison workspace changes", async () => {
-  const picking = deferred<Target | null>();
-  response("choose_folder", () => picking.promise);
-  await mount();
-  let pending!: Promise<Target | null | void>;
-  await act(() => {
-    pending = app().chooseFolder();
-  });
-  await act(() => app().setComparisonOpen(true));
-  await act(async () => {
-    picking.resolve(folder);
-    await pending;
-  });
-  expect(app().comparisonOpen).toBe(true);
-  expect(app().target).toEqual(disk);
-  expect(app().choosingFolder).toBe(false);
-});
 
 it("selects the startup disk by default so the first scan is one click", async () => {
   response("discover_targets", [home, disk]);

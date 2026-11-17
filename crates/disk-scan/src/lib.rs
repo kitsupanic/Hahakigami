@@ -211,7 +211,7 @@ pub struct ScanIssue {
     pub raw_os_error: Option<i32>,
 }
 /// Diagnostics for the end of enumeration: idle workers waiting on the last
-/// listings, and which listings were slowest. Never written to archives or caches.
+/// listings, and which listings were slowest. Never written to caches.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct TailStats {
     /// Microseconds from scan start until all enumeration workers joined.
@@ -244,7 +244,7 @@ impl Snapshot {
             .ok()
             .map(|i| self.tree.clone_attributions[i].1)
     }
-    /// Initialize derived inspector attribution without changing archived totals.
+    /// Initialize derived inspector attribution without changing totals.
     pub fn refresh_clone_attributions(&mut self) -> Result<(), String> {
         if self.tree.clones.is_empty() {
             self.tree.clone_attributions.clear();
@@ -252,15 +252,6 @@ impl Snapshot {
         }
         self.tree.clone_attributions = clones::internal_allocation_plan(self)?.clone_attributions;
         Ok(())
-    }
-    /// Install attributions from `allocation_plan(self)` computed on this unchanged
-    /// snapshot, sparing archive loads a second full attribution pass.
-    pub fn set_planned_clone_attributions(&mut self, attributions: Vec<(u32, (bool, u64))>) {
-        self.tree.clone_attributions = if self.tree.clones.is_empty() {
-            Vec::new()
-        } else {
-            attributions
-        };
     }
     pub fn incremental_accounting_eligible(&self) -> bool {
         self.accounting.model == AccountingModel::FullClonesV1

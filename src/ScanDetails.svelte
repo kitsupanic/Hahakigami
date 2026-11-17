@@ -15,13 +15,11 @@
   let {
     summary,
     metric,
-    historical,
     description,
     lead,
   }: {
     summary: ScanSummary;
     metric: Metric;
-    historical: boolean;
     description: string;
     /** The strip's Scanned and Time cells, which open Summary like the totals. */
     lead?: Snippet;
@@ -172,7 +170,7 @@
             {scanTime(summary.elapsedMs)}
           </dd>
         </div>
-        {#if !historical && summary.scanMode}
+        {#if summary.scanMode}
           <div>
             <dt>Scan type</dt>
             <dd>
@@ -187,7 +185,7 @@
       {#if summary.accountingWarnings?.length}<p class="scan-message">
           Some files changed during the scan, so a few sizes may be slightly off.
         </p>{/if}
-      {#if !historical && summary.cacheWarning}
+      {#if summary.cacheWarning}
         <p class="scan-note">{summary.cacheWarning}</p>
       {/if}
     </div>

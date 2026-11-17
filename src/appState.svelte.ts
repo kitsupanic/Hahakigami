@@ -1,5 +1,4 @@
 import { emptyFilter, type ExplorerFilter } from "./filterTypes";
-import type { Comparison } from "./comparisonTypes";
 import type { SortOrder } from "./sortTypes";
 import type {
   Target,
@@ -7,8 +6,6 @@ import type {
   NodeView,
   Page,
   Metric,
-  SavedEntry,
-  LibraryProgress,
 } from "./types";
 export function createSessionState() {
   let targets = $state.raw<Target[]>([]);
@@ -37,15 +34,6 @@ export function createSessionState() {
   ) {
     cancelling = typeof value === "function" ? value(cancelling) : value;
   }
-  let historicalSource = $state.raw(false);
-  function setHistoricalSource(
-    value:
-      | typeof historicalSource
-      | ((previous: typeof historicalSource) => typeof historicalSource),
-  ) {
-    historicalSource =
-      typeof value === "function" ? value(historicalSource) : value;
-  }
   return {
     get targets() {
       return targets;
@@ -63,10 +51,6 @@ export function createSessionState() {
       return cancelling;
     },
     setCancelling,
-    get historicalSource() {
-      return historicalSource;
-    },
-    setHistoricalSource,
   };
 }
 export function createExplorerState() {
@@ -242,81 +226,5 @@ export function createExplorerState() {
       return sortWarning;
     },
     setSortWarning,
-  };
-}
-export function createLibraryState() {
-  let saved = $state.raw<SavedEntry[]>([]);
-  function setSaved(
-    value: typeof saved | ((previous: typeof saved) => typeof saved),
-  ) {
-    saved = typeof value === "function" ? value(saved) : value;
-  }
-  let libraryBusy = $state.raw(false);
-  function setLibraryBusy(
-    value:
-      | typeof libraryBusy
-      | ((previous: typeof libraryBusy) => typeof libraryBusy),
-  ) {
-    libraryBusy = typeof value === "function" ? value(libraryBusy) : value;
-  }
-  let libraryProgress = $state.raw<LibraryProgress | null>(null);
-  function setLibraryProgress(
-    value:
-      | typeof libraryProgress
-      | ((previous: typeof libraryProgress) => typeof libraryProgress),
-  ) {
-    libraryProgress =
-      typeof value === "function" ? value(libraryProgress) : value;
-  }
-  let removeEntry = $state.raw<SavedEntry | null>(null);
-  function setRemoveEntry(
-    value:
-      | typeof removeEntry
-      | ((previous: typeof removeEntry) => typeof removeEntry),
-  ) {
-    removeEntry = typeof value === "function" ? value(removeEntry) : value;
-  }
-  let comparisonOpen = $state.raw(false);
-  function setComparisonOpen(
-    value:
-      | typeof comparisonOpen
-      | ((previous: typeof comparisonOpen) => typeof comparisonOpen),
-  ) {
-    comparisonOpen =
-      typeof value === "function" ? value(comparisonOpen) : value;
-  }
-  let comparison = $state.raw<Comparison | null>(null);
-  function setComparison(
-    value:
-      | typeof comparison
-      | ((previous: typeof comparison) => typeof comparison),
-  ) {
-    comparison = typeof value === "function" ? value(comparison) : value;
-  }
-  return {
-    get saved() {
-      return saved;
-    },
-    setSaved,
-    get libraryBusy() {
-      return libraryBusy;
-    },
-    setLibraryBusy,
-    get libraryProgress() {
-      return libraryProgress;
-    },
-    setLibraryProgress,
-    get removeEntry() {
-      return removeEntry;
-    },
-    setRemoveEntry,
-    get comparisonOpen() {
-      return comparisonOpen;
-    },
-    setComparisonOpen,
-    get comparison() {
-      return comparison;
-    },
-    setComparison,
   };
 }

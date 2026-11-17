@@ -1,4 +1,4 @@
-//! Disposable native panel exercise. Never launches or reads the user's app/library.
+//! Disposable native panel exercise. Never launches or reads the user's app or its data.
 #[path = "../src/quick_look.rs"]
 mod quick_look;
 #[cfg(target_os = "macos")]

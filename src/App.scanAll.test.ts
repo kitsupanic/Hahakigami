@@ -59,7 +59,6 @@ const makeSummary = (
   state: ScanSummary["state"],
 ): ScanSummary => ({
   scanId,
-  origin: "live",
   rootId: 0,
   state,
   workers: 1,
@@ -146,8 +145,6 @@ beforeEach(async () => {
         return discovered.map((item) => item.path);
       case "choose_folder":
         return chosen;
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "list_cleanup_queue":
         return { entries: [], revision: 0, warning: null, blocked: false };
       case "start_scan": {

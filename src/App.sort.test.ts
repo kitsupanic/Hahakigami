@@ -49,12 +49,8 @@ const rootFile: NodeView = {
   name: "root.jpg",
   path: "/fixture/root.jpg",
 };
-const summary = (
-  id = "historical",
-  origin: "live" | "saved" = "saved",
-): ScanSummary => ({
+const summary = (id = "live"): ScanSummary => ({
   scanId: id,
-  origin,
   rootId: 0,
   state: "completed",
   entries: 3,
@@ -74,7 +70,6 @@ async function flush() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
-    await Promise.resolve(); // startup asks saved_scans_enabled before list_saved_scans
   });
 }
 async function mount(remount = false) {
@@ -85,6 +80,7 @@ async function mount(remount = false) {
     await act(async () => root.render(App));
   }
   await flush();
+  await click("Scan Home");
 }
 async function choose(name: string, value: string) {
   if (name === "Sort order") return chooseSort(value);
@@ -144,12 +140,6 @@ beforeEach(() => {
           return { sort: "sizeDescending", warning: null };
         case "set_explorer_sort":
           return { sort: args.sort, warning: null };
-        case "list_saved_scans":
-          return { entries: [], lastOpenedId: "saved" };
-        case "begin_saved_open":
-          return "saved-open-request";
-        case "open_saved_scan":
-          return summary();
         case "full_disk_access_status":
           return {
             status: "on",
@@ -179,19 +169,10 @@ beforeEach(() => {
           return { items: [file], total: 1 };
         case "get_map":
           return { nodes: [folder, file] };
-        case "rescan_saved_scan":
-          return {
-            scanId: "live",
-            target: {
-              id: "home",
-              name: "Home",
-              path: "/fixture",
-              totalBytes: null,
-              freeBytes: null,
-            },
-          };
+        case "start_scan":
+          return "live";
         case "scan_summary":
-          return summary("live", "live");
+          return summary();
         default:
           return undefined;
       }
@@ -419,43 +400,19 @@ it("exposes a native preference warning and saves the current default on retry",
   expect(container.querySelector(".sort-warning")).toBeNull();
 });
 
-it("retains the active order when opening another saved scan", async () => {
+it("retains the active order when a rescan replaces the scan", async () => {
   const previous = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation(
     (command: string, args: Record<string, unknown>) =>
-      command === "list_saved_scans"
-        ? Promise.resolve({
-            entries: [
-              {
-                id: "next",
-                name: "Next scan",
-                rootPath: "/fixture",
-                startedAtMs: 1000,
-                completedAtMs: 2000,
-                savedAtMs: 3000,
-                entries: 3,
-                logicalBytes: 100,
-                allocatedBytes: 100,
-                incomplete: false,
-                errors: 0,
-                excluded: 0,
-                fileBytes: 100,
-              },
-            ],
-            lastOpenedId: "saved",
-          })
-        : command === "open_saved_scan" && args.id === "next"
+      command === "start_scan"
+        ? Promise.resolve("next")
+        : command === "scan_summary" && args.scanId === "next"
           ? Promise.resolve(summary("next"))
           : previous(command, args),
   );
   await mount();
   await choose("Sort order", "nameAscending");
-  await act(async () =>
-    container
-      .querySelector<HTMLButtonElement>(".saved-entry > button:first-child")!
-      .click(),
-  );
-  await flush();
+  await click("Rescan Home");
   expect(calls("get_children").at(-1)?.[1]).toMatchObject({
     scanId: "next",
     sort: "nameAscending",

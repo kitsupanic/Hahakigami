@@ -1,14 +1,12 @@
 //! Where scans live, and the one way a command gets one.
 //!
-//! `Slots` owns the live scans (one per `Slot`, plus the discarded ones still winding down), the open saved
-//! scan and the scan budget. A command finds its scan with `Slots::find`, holds it with `Session::hold` before it
+//! `Slots` owns the live scans (one per `Slot`, plus the discarded ones still winding down) and the scan budget. A command finds its scan with `Slots::find`, holds it with `Session::hold` before it
 //! changes state or touches files, and reads a completed snapshot through `Held::completed_snapshot`. It never
 //! locks a slot, reads `Session::valid` or checks `finishing` and `Completed` itself, so every command refuses
 //! the same way for the same reason. Lock order: activity gate, access setup, `operation`, cleanup queue, snapshot
 //! store. `Held` reads the store only on `completed_snapshot`, so holding a scan never reverses it.
 use crate::{
-    baseline, budget, filters, library, now_ms, safety, session_running, settings, sorting,
-    Activity, ActivityGate, ScanDetails, SessionOrigin,
+    baseline, budget, filters, now_ms, safety, session_running, settings, sorting, ScanDetails,
 };
 use disk_scan::{ScanState, Snapshot};
 use std::{
@@ -24,8 +22,6 @@ use std::{
 pub(crate) const RESULTS_CHANGED: &str = "Results changed after cleanup. Rescan this location.";
 /// The scan is still running, finishing, cancelled or failed: nothing that needs its results can go ahead.
 pub(crate) const NOT_COMPLETED: &str = "Wait for a completed scan first.";
-const SAVED: &str =
-    "Saved scans are historical results. Scan this location again before file actions.";
 const GONE: &str = "This scan is no longer active.";
 
 /// Where a live scan is kept: one slot per disk (keyed by its root path), and one shared by every folder scan.
@@ -37,8 +33,6 @@ pub(crate) enum Slot {
 
 pub(crate) struct Session {
     pub(crate) id: String,
-    pub(crate) origin: SessionOrigin,
-    pub(crate) saved_id: Option<String>,
     pub(crate) started_at_ms: u64,
     pub(crate) completed_at_ms: AtomicU64,
     pub(crate) finishing: AtomicBool,
@@ -48,13 +42,13 @@ pub(crate) struct Session {
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) root_ancestors: Vec<(PathBuf, safety::Identity)>,
     /// The volume of each region the scan walked, keyed by the region's root node; set when a live scan completes
-    /// (`scan_volumes`). Empty for saved scans; an item with no recorded region fails cleanup closed.
+    /// (`scan_volumes`); an item with no recorded region fails cleanup closed.
     pub(crate) volumes: std::sync::OnceLock<HashMap<u32, safety::Volume>>,
     pub(crate) ticket: Mutex<Option<safety::Ticket>>,
     /// False once the results no longer match the disk or the scan was replaced. Goes false only through
     /// `invalidate`, and is read through `is_valid` and `check_valid`.
     valid: AtomicBool,
-    /// Orders what changes a scan: cleanup, saving, comparing, Quick Look and its own replacement. Taken by
+    /// Orders what changes a scan: cleanup, Quick Look and its own replacement. Taken by
     /// `hold`, or by `Slots::replace` for the scan it replaces.
     operation: Mutex<()>,
     pub(crate) sorts: Mutex<HashMap<(u32, bool), Vec<u32>>>,
@@ -90,8 +84,7 @@ pub(crate) enum Need {
     LiveCompleted,
 }
 
-/// A scan whose `operation` lock the command holds, so cleanup, saving, comparing and replacement cannot
-/// interleave with it.
+/// A scan whose `operation` lock the command holds, so cleanup and replacement cannot interleave with it.
 pub(crate) struct Held<'a> {
     s: &'a Session,
     _operation: MutexGuard<'a, ()>,
@@ -110,8 +103,6 @@ impl Session {
     pub(crate) fn live(request: Request, descriptor_limit: Option<usize>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            origin: SessionOrigin::Live,
-            saved_id: None,
             started_at_ms: now_ms(),
             completed_at_ms: AtomicU64::new(0),
             finishing: AtomicBool::new(true),
@@ -139,47 +130,6 @@ impl Session {
             qos: request.qos,
         }
     }
-    /// A scan opened from the library: finished results, with the settings it was scanned with.
-    pub(crate) fn saved(
-        saved_id: &str,
-        snapshot: Snapshot,
-        metadata: library::ScanMetadata,
-    ) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            origin: SessionOrigin::Saved,
-            saved_id: Some(saved_id.into()),
-            started_at_ms: metadata.started_at_ms,
-            completed_at_ms: AtomicU64::new(metadata.completed_at_ms),
-            finishing: AtomicBool::new(false),
-            scan_details: Mutex::new(ScanDetails {
-                phase: "done".into(),
-                ..Default::default()
-            }),
-            cache_token: Mutex::new(None),
-            store: Arc::new(RwLock::new(snapshot)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            root_ancestors: vec![],
-            volumes: Default::default(),
-            ticket: Mutex::new(None),
-            valid: AtomicBool::new(true),
-            operation: Mutex::new(()),
-            sorts: Mutex::new(HashMap::new()),
-            filters: Mutex::new(filters::Cache::default()),
-            list_folder: Mutex::new(sorting::Cache::default()),
-            issues: Mutex::new((0, vec![])),
-            workers: metadata.workers,
-            cached_validation_workers: metadata.workers,
-            descriptor_limit: None,
-            worker_mode: if metadata.worker_mode == "manual" {
-                settings::WorkerMode::Manual
-            } else {
-                settings::WorkerMode::Auto
-            },
-            worker_source: metadata.worker_source,
-            qos: metadata.qos,
-        }
-    }
     pub(crate) fn is_valid(&self) -> bool {
         self.valid.load(Ordering::Acquire)
     }
@@ -192,15 +142,14 @@ impl Session {
             Err(RESULTS_CHANGED.into())
         }
     }
-    /// The only way `valid` goes false: the scan was replaced or discarded, its saved scan was closed, or a
-    /// cleanup trashed something in it.
+    /// The only way `valid` goes false: the scan was replaced or discarded, or a cleanup trashed something in it.
     pub(crate) fn invalidate(&self) {
         self.valid.store(false, Ordering::Release);
     }
     /// Takes the scan's `operation` lock and checks it is still usable for `need`. It does not read the store.
     pub(crate) fn hold(&self, need: Need) -> Result<Held<'_>, String> {
         let operation = self.operation.lock().unwrap();
-        self.check_live()?;
+        self.check_valid()?;
         if need == Need::LiveCompleted && self.finishing.load(Ordering::Acquire) {
             return Err(NOT_COMPLETED.into());
         }
@@ -212,14 +161,8 @@ impl Session {
     /// `hold(Need::LiveCompleted)` then `completed_snapshot`, without the `operation` lock: for callbacks that must
     /// not wait on a cleanup, like Quick Look's authority check.
     pub(crate) fn peek_completed(&self) -> Result<RwLockReadGuard<'_, Snapshot>, String> {
-        self.check_live()?;
+        self.check_valid()?;
         self.completed()
-    }
-    fn check_live(&self) -> Result<(), String> {
-        if self.origin == SessionOrigin::Saved {
-            return Err(SAVED.into());
-        }
-        self.check_valid()
     }
     fn completed(&self) -> Result<RwLockReadGuard<'_, Snapshot>, String> {
         let snapshot = self.store.read().unwrap();
@@ -233,10 +176,7 @@ impl Session {
     fn take_baseline(&self, root: &Path) -> Option<baseline::Taken> {
         let token = self.cache_token.lock().unwrap().clone()?;
         let mut snapshot = self.store.write().unwrap();
-        if self.origin != SessionOrigin::Live
-            || snapshot.root != root
-            || !baseline::eligible(&snapshot)
-        {
+        if snapshot.root != root || !baseline::eligible(&snapshot) {
             return None;
         }
         Some(baseline::Taken {
@@ -249,7 +189,7 @@ impl Session {
 /// The live scans, at most one per slot.
 /// `draining` holds discarded scans that are still winding down. They are not findable and they do not stop
 /// other scans starting, but they keep their budget and still count as running for `any_running`, so
-/// the saved-scan operations wait for a walk that may be stuck on an ejected mount.
+/// first-run setup waits for a walk that may be stuck on an ejected mount.
 #[derive(Default)]
 struct LiveSlots {
     slots: HashMap<Slot, Arc<Session>>,
@@ -260,8 +200,8 @@ impl LiveSlots {
     fn find(&self, id: &str) -> Option<Arc<Session>> {
         self.slots.values().find(|s| s.id == id).cloned()
     }
-    /// Whether any scan runs, a draining one included: first-run setup and the saved-scan
-    /// operations cannot overlap a scan at all. Drained scans that ended are released here.
+    /// Whether any scan runs, a draining one included: restart cannot overlap a scan at all. Drained scans
+    /// that ended are released here.
     fn any_running(&mut self) -> bool {
         self.draining.retain(|s| session_running(s));
         !self.draining.is_empty() || self.slots.values().any(|s| session_running(s))
@@ -283,27 +223,15 @@ pub(crate) struct Started {
 #[derive(Default)]
 pub(crate) struct Slots {
     live: Mutex<LiveSlots>,
-    // The open saved scan sits beside the live scans, so opening it keeps them.
-    saved: Mutex<Option<Arc<Session>>>,
     // Workers and descriptors shared by every running scan; see budget.rs.
     budget: budget::Budget,
 }
 
 impl Slots {
-    /// The scan with this id: a live slot's, else the open saved scan, if its results are still valid.
+    /// The live scan with this id, if its results are still valid.
     /// Takes no lock a scan holds, so read-only queries use it.
     pub(crate) fn find(&self, id: &str) -> Result<Arc<Session>, String> {
-        let live = self.live.lock().unwrap().find(id);
-        let s = match live {
-            Some(s) => s,
-            None => self
-                .saved
-                .lock()
-                .unwrap()
-                .clone()
-                .filter(|s| s.id == id)
-                .ok_or(GONE)?,
-        };
+        let s = self.live.lock().unwrap().find(id).ok_or(GONE)?;
         s.check_valid()?;
         Ok(s)
     }
@@ -334,16 +262,6 @@ impl Slots {
             return Err(reason.into());
         }
         Ok(())
-    }
-    /// `Activity::begin` then `require_idle`: no scan can start between the check and the work.
-    pub(crate) fn idle_exclusive(
-        &self,
-        gate: &Arc<ActivityGate>,
-        reason: &str,
-    ) -> Result<Activity, String> {
-        let activity = Activity::begin(gate)?;
-        self.require_idle(reason)?;
-        Ok(activity)
     }
     /// Puts a new scan in `key`'s slot. Refuses, changing nothing, while that slot's own scan runs or the
     /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan, takes its results as
@@ -397,21 +315,6 @@ impl Slots {
         s.invalidate();
         if session_running(&s) {
             live.draining.push(s);
-        }
-    }
-    /// Opens `s` as the saved scan, invalidating the one it replaces.
-    pub(crate) fn open_saved(&self, s: Arc<Session>) {
-        let mut saved = self.saved.lock().unwrap();
-        if let Some(old) = saved.as_ref() {
-            old.invalidate();
-        }
-        *saved = Some(s);
-    }
-    /// Closes the open saved scan if it is this library entry, as it was just deleted.
-    pub(crate) fn close_saved(&self, saved_id: &str) {
-        let mut saved = self.saved.lock().unwrap();
-        if let Some(s) = saved.take_if(|s| s.saved_id.as_deref() == Some(saved_id)) {
-            s.invalidate();
         }
     }
 }
@@ -489,20 +392,6 @@ mod tests {
         snapshot.state = state;
         ended(root, snapshot)
     }
-    fn saved(snapshot: Snapshot) -> Arc<Session> {
-        Arc::new(Session::saved(
-            "entry",
-            snapshot,
-            library::ScanMetadata {
-                started_at_ms: 1,
-                completed_at_ms: 2,
-                workers: 1,
-                worker_mode: "auto".into(),
-                worker_source: "hardware".into(),
-                qos: disk_scan::ScanQos::Automatic,
-            },
-        ))
-    }
     fn token() -> Token {
         Token {
             cursor: 1,
@@ -528,7 +417,6 @@ mod tests {
         let s = &started.session;
         assert!(session_running(s));
         assert!(s.is_valid());
-        assert!(s.origin == SessionOrigin::Live);
         assert!(Arc::ptr_eq(&slots.find(&s.id).unwrap(), s));
         assert!(slots.is_live(s));
         // Capped to what the grant gave; the scan thread owns the grant, so the budget is short until it drops.
@@ -726,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn hold_refuses_invalid_saved_and_unfinished_scans() {
+    fn hold_refuses_invalid_and_unfinished_scans() {
         let (_dir, root) = dir();
         let live = ended(&root, scan_of(&root));
         for need in [Need::Live, Need::LiveCompleted] {
@@ -739,12 +627,6 @@ mod tests {
             running.hold(Need::LiveCompleted).err().unwrap(),
             NOT_COMPLETED
         );
-        // Saved results are historical, whatever the need.
-        let saved = saved(scan_of(&root));
-        for need in [Need::Live, Need::LiveCompleted] {
-            assert_eq!(saved.hold(need).err().unwrap(), SAVED);
-        }
-        assert!(saved.peek_completed().is_err());
         // An invalidated scan refuses everything, and keeps refusing.
         live.invalidate();
         for need in [Need::Live, Need::LiveCompleted] {
@@ -797,38 +679,16 @@ mod tests {
     }
 
     #[test]
-    fn find_falls_back_to_the_saved_slot_and_refuses_stale_ids() {
+    fn find_refuses_unknown_and_invalidated_scans() {
         let slots = slots();
         let (_dir, root) = dir();
         let live = ended(&root, scan_of(&root));
         slots.install(Slot::Folder, live.clone());
         assert_eq!(slots.find("missing").err().unwrap(), GONE);
-        let first = saved(scan_of(&root));
-        slots.open_saved(first.clone());
-        // Both are found, each by its own id.
         assert!(Arc::ptr_eq(&slots.find(&live.id).unwrap(), &live));
-        assert!(Arc::ptr_eq(&slots.find(&first.id).unwrap(), &first));
-        // Opening another saved scan invalidates the one it replaces; live scans are not touched.
-        let second = saved(scan_of(&root));
-        slots.open_saved(second.clone());
-        assert!(!first.is_valid());
-        assert_eq!(slots.find(&first.id).err().unwrap(), GONE);
-        assert!(Arc::ptr_eq(&slots.find(&second.id).unwrap(), &second));
-        assert!(live.is_valid());
-        // A saved scan is not a live slot's scan, so it cannot be discarded either.
-        assert!(!slots.is_live(&second));
-        slots.discard(&second.id);
-        assert!(second.is_valid());
-        assert!(slots.find(&second.id).is_ok());
         // An invalidated scan that is still in its slot says why.
         live.invalidate();
         assert_eq!(slots.find(&live.id).err().unwrap(), RESULTS_CHANGED);
-        // Closing: another library entry's id changes nothing.
-        slots.close_saved("other");
-        assert!(slots.find(&second.id).is_ok());
-        slots.close_saved("entry");
-        assert!(!second.is_valid());
-        assert_eq!(slots.find(&second.id).err().unwrap(), GONE);
     }
 
     #[test]
@@ -841,29 +701,5 @@ mod tests {
         let keys: Vec<_> = slots.sessions().into_iter().map(|(key, _)| key).collect();
         assert_eq!(keys.len(), 3);
         assert_eq!(keys[2], Slot::Folder);
-    }
-
-    #[test]
-    fn idle_exclusive_takes_the_gate_only_while_no_scan_runs() {
-        let slots = slots();
-        let gate = Arc::new(ActivityGate::default());
-        let (_dir, root) = dir();
-        let running = in_state(&root, ScanState::Running);
-        slots.install(Slot::Folder, running.clone());
-        // A running scan refuses with the caller's reason, and the gate is released again.
-        assert_eq!(
-            slots.idle_exclusive(&gate, "Not now.").err().unwrap(),
-            "Not now."
-        );
-        assert!(!gate.busy());
-        end(&running, ScanState::Completed);
-        let activity = slots.idle_exclusive(&gate, "Not now.").unwrap();
-        assert!(gate.busy());
-        assert_eq!(
-            slots.idle_exclusive(&gate, "Not now.").err().unwrap(),
-            Activity::BUSY
-        );
-        drop(activity);
-        assert!(!gate.busy());
     }
 }

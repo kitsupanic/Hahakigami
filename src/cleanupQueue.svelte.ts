@@ -47,7 +47,7 @@ export type QueueReporter = (
 export type CleanupQueueHooks = {
   /** The backend queue can be reached (not a browser preview or a benchmark build). */
   available(): boolean;
-  /** The app allows queue changes now: no folder picker, cleanup or library work in progress. */
+  /** The app allows queue changes now: no folder picker or cleanup in progress. */
   mutable(): boolean;
   /** Reports to the cleanup report open when the check starts, if any. */
   reporter(): QueueReporter;

@@ -43,7 +43,7 @@ Hahakigami is a local disk-space analyzer for macOS. It scans a disk or folder, 
 
 ## Vocabulary
 
-Use GLOSSARY.md terms, e.g. Disk scan, Scan all disks, Scan target, Saved scan, On disk, Logical size, Scan warning, Scan budget, Full Disk Access status, Automation scan.
+Use GLOSSARY.md terms, e.g. Disk scan, Scan all disks, Scan target, On disk, Logical size, Scan warning, Scan budget, Full Disk Access status, Automation scan.
 
 ## Open decisions
 

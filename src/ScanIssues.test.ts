@@ -26,7 +26,6 @@ const summary: ScanSummary = {
 let container: HTMLDivElement, root: Root;
 const detailsProps = {
   metric: "allocated" as const,
-  historical: false,
   description: "",
 };
 const page = (

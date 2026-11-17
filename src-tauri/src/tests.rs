@@ -1,7 +1,10 @@
 use super::*;
 use cleanup::{TrashOutcome, TrashOutcomeStatus};
 use disk_scan::Node;
-use std::{sync::RwLock, time::Duration};
+use std::{
+    sync::{atomic::AtomicBool, RwLock},
+    time::Duration,
+};
 use tauri::Manager;
 
 fn app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
@@ -71,22 +74,7 @@ fn scan_starts_are_refused_only_while_off_unless_scanning_anyway() {
             )
             .await
             .unwrap_err();
-            let rescan = rescan_saved_scan(
-                app.state(),
-                "missing".into(),
-                Channel::new(|_| Ok(())),
-                app.handle().clone(),
-            )
-            .await
-            .err()
-            .unwrap();
             assert_eq!(start == FDA_OFF, refused, "{status:?}: {start}");
-            // The rescan half needs saved scans; with SAVED_SCANS_ENABLED off it is refused first.
-            if crate::SAVED_SCANS_ENABLED {
-                assert_eq!(rescan == FDA_OFF, refused, "{status:?}: {rescan}");
-            } else {
-                assert_eq!(rescan, crate::SAVED_SCANS_DISABLED);
-            }
         }
         force_access(&state, access_setup::Status::Off);
         scan_without_full_disk_access(app.state()).await.unwrap();
@@ -228,25 +216,6 @@ fn restart_waits_for_a_running_scan_whatever_the_access_status() {
     });
 }
 
-#[test]
-fn portable_operations_reserve_activity_and_reject_running_scans() {
-    let app = app(AppState::default());
-    let state = app.state::<AppState>();
-    let current = install(&state, synthetic(2));
-    // Sharing existing historical metadata does not need Full Disk Access.
-    force_access(&state, access_setup::Status::Off);
-    let guard = portable_activity(&state).unwrap();
-    assert!(portable_activity(&state).is_err());
-    assert!(Activity::begin(&state.activity).is_err());
-    drop(guard);
-    current.store.write().unwrap().state = ScanState::Running;
-    assert!(portable_activity(&state).is_err());
-    assert!(!state.activity.busy());
-    assert!(state.scans.is_live(&current));
-    current.store.write().unwrap().state = ScanState::Completed;
-    assert!(portable_activity(&state).is_ok());
-    assert!(current.is_valid());
-}
 #[test]
 fn retired_worker_preferences_cannot_override_new_scans_or_change_existing_sessions() {
     tauri::async_runtime::block_on(async {
@@ -1840,304 +1809,6 @@ fn restrictions_only_keep_incomplete_results_without_prominent_native_message() 
 }
 
 #[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn saved_scan_commands_round_trip_without_authorizing_file_actions() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("file"), b"saved").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let live = install(&state, snapshot(source));
-        let saved = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let list = list_saved_scans(app.state()).await.unwrap();
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.last_opened_id.as_deref(), Some(saved.id.as_str()));
-        let historical = open_saved_scan(
-            app.state(),
-            saved.id.clone(),
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert!(historical.origin == SessionOrigin::Saved);
-        assert_ne!(historical.scan_id, live.id);
-        assert_eq!(historical.entries, live.summary().entries);
-        assert_eq!(historical.completed_at_ms, Some(saved.completed_at_ms));
-        assert_eq!(
-            get_children(
-                app.state(),
-                historical.scan_id.clone(),
-                0,
-                0,
-                10,
-                "allocated".into(),
-                None
-            )
-            .await
-            .unwrap()
-            .total,
-            1
-        );
-        assert!(
-            prepare_trash(app.state(), historical.scan_id.clone(), vec![1])
-                .await
-                .err()
-                .unwrap()
-                .contains("historical")
-        );
-        assert!(commit_trash(
-            app.state(),
-            historical.scan_id.clone(),
-            "anything".into(),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("historical"));
-        assert!(reveal_node(app.state(), historical.scan_id.clone(), 1)
-            .await
-            .err()
-            .unwrap()
-            .contains("historical"));
-        assert!(save_scan(
-            app.state(),
-            historical.scan_id.clone(),
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("historical"));
-        delete_saved_scan(app.state(), saved.id).await.unwrap();
-        assert!(list_saved_scans(app.state())
-            .await
-            .unwrap()
-            .last_opened_id
-            .is_none());
-        assert!(list_saved_scans(app.state())
-            .await
-            .unwrap()
-            .entries
-            .is_empty());
-        // Deleting the open saved scan closes it; the live scan is untouched.
-        assert!(scan_summary(app.state(), historical.scan_id)
-            .await
-            .err()
-            .unwrap()
-            .contains("no longer active"));
-        assert!(scan_summary(app.state(), live.id.clone()).await.is_ok());
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn library_failure_and_activity_guards_preserve_current_session() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let old = install(&state, synthetic(1));
-        let missing = uuid::Uuid::new_v4().to_string();
-        assert!(open_saved_scan(
-            app.state(),
-            missing.clone(),
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .is_err());
-        assert!(old.is_valid());
-        assert_eq!(
-            scan_summary(app.state(), old.id.clone())
-                .await
-                .unwrap()
-                .entries,
-            old.summary().entries
-        );
-        let activity = Activity::begin(&state.activity).unwrap();
-        assert!(start_scan(
-            app.state(),
-            "missing".into(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("progress"));
-        assert!(
-            save_scan(app.state(), old.id.clone(), Channel::new(|_| Ok(())))
-                .await
-                .err()
-                .unwrap()
-                .contains("progress")
-        );
-        assert!(begin_saved_open(app.state())
-            .unwrap_err()
-            .contains("progress"));
-        assert!(prepare_trash(app.state(), old.id.clone(), vec![0])
-            .await
-            .err()
-            .unwrap()
-            .contains("progress"));
-        assert!(commit_trash(
-            app.state(),
-            old.id.clone(),
-            "unused".into(),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("progress"));
-        assert!(restart_app(app.handle().clone(), app.state())
-            .await
-            .err()
-            .unwrap()
-            .contains("progress"));
-        drop(activity);
-        old.invalidate();
-        assert!(
-            save_scan(app.state(), old.id.clone(), Channel::new(|_| Ok(())))
-                .await
-                .unwrap_err()
-                .contains(slots::RESULTS_CHANGED)
-        );
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn historical_load_ignores_full_disk_access_but_rescan_needs_it_or_the_override() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("old"), b"old").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let live = install(&state, snapshot(source.clone()));
-        let saved = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        force_access(&state, access_setup::Status::Off);
-        let historical = open_saved_scan(
-            app.state(),
-            saved.id,
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            rescan_saved_scan(
-                app.state(),
-                historical.scan_id.clone(),
-                Channel::new(|_| Ok(())),
-                app.handle().clone()
-            )
-            .await
-            .err()
-            .unwrap(),
-            FDA_OFF
-        );
-        scan_without_full_disk_access(app.state()).await.unwrap();
-        // Replace the old root. A fresh scan must bind the current object, rather
-        // than reuse the identities stored in the historical archive.
-        std::fs::rename(&source, dir.path().join("former-source")).unwrap();
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("new"), b"new").unwrap();
-        let id = rescan_saved_scan(
-            app.state(),
-            historical.scan_id,
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap()
-        .scan_id;
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            let s = state.scans.find(&id).unwrap();
-            if s.store.read().unwrap().state != ScanState::Running {
-                assert!(s.origin == SessionOrigin::Live);
-                assert!(s
-                    .store
-                    .read()
-                    .unwrap()
-                    .iter_nodes()
-                    .any(|n| n.display_name() == "new"));
-                assert!(s.summary().completed_at_ms.is_some());
-                break;
-            }
-            assert!(Instant::now() < until);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn cache_finalization_never_authorizes_completed_actions_or_replacement() {
-    tauri::async_runtime::block_on(async {
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        let s = install(&state, synthetic(1));
-        s.finishing.store(true, Ordering::Release);
-        s.scan_details.lock().unwrap().phase = "caching".into();
-        assert_eq!(s.summary().state, "running");
-        let source = tempfile::tempdir().unwrap();
-        let root = source.path().canonicalize().unwrap();
-        let target = register(&state, platform::target(&root, "fixture".into()), root).unwrap();
-        assert!(start_scan(
-            app.state(),
-            target.id,
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("stop"));
-        assert!(prepare_trash(app.state(), s.id.clone(), vec![0])
-            .await
-            .is_err());
-        assert!(
-            save_scan(app.state(), s.id.clone(), Channel::new(|_| Ok(())))
-                .await
-                .is_err()
-        );
-        assert!(open_saved_scan(
-            app.state(),
-            uuid::Uuid::new_v4().to_string(),
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .is_err());
-        assert!(restart_app(app.handle().clone(), app.state())
-            .await
-            .is_err());
-        assert!(cancel_scan(app.state(), s.id.clone()).is_err());
-        s.finishing.store(false, Ordering::Release);
-        assert_eq!(s.summary().state, "completed");
-    });
-}
-
-#[test]
 #[ignore = "native journal/cache parity and timing on disposable local fixture"]
 fn native_rescan_cache_parity() {
     tauri::async_runtime::block_on(async {
@@ -2470,240 +2141,7 @@ fn published_candidate_reindexes_issues_with_unchanged_error_count() {
 }
 
 #[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn saved_comparison_preserves_session_selection_and_operation_authority() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("file"), b"before").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let first = install(&state, snapshot(source.clone()));
-        let before = save_scan(app.state(), first.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        std::fs::write(source.join("file"), b"after: bigger").unwrap();
-        let displayed = install(&state, snapshot(source));
-        let after = save_scan(app.state(), displayed.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let selection = list_saved_scans(app.state()).await.unwrap().last_opened_id;
-        // Historical comparison is available while Full Disk Access is off.
-        force_access(&state, access_setup::Status::Off);
-        let active = state.activity.clone();
-        let phases = Arc::new(Mutex::new(Vec::new()));
-        let observed = phases.clone();
-        let result = compare_saved_scans(
-            app.state(),
-            before.id.clone(),
-            after.id.clone(),
-            Channel::new(move |value| {
-                assert!(Activity::begin(&active).is_err());
-                observed.lock().unwrap().push(value);
-                Ok(())
-            }),
-        )
-        .await
-        .unwrap();
-        let json = serde_json::to_value(result).unwrap();
-        assert_eq!(json["logicalDelta"].as_f64(), Some(7.0));
-        assert_eq!(json["changed"], 1);
-        assert_eq!(json["added"], 0);
-        assert_eq!(phases.lock().unwrap().len(), 4);
-        assert!(state.scans.is_live(&displayed));
-        assert!(displayed.is_valid());
-        assert_eq!(
-            list_saved_scans(app.state()).await.unwrap().last_opened_id,
-            selection
-        );
-        assert!(compare_saved_scans(
-            app.state(),
-            before.id.clone(),
-            before.id.clone(),
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .unwrap_err()
-        .contains("different"));
-        let activity = Activity::begin(&state.activity).unwrap();
-        assert!(compare_saved_scans(
-            app.state(),
-            before.id.clone(),
-            after.id.clone(),
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .unwrap_err()
-        .contains("progress"));
-        drop(activity);
-        displayed.store.write().unwrap().state = ScanState::Running;
-        assert!(compare_saved_scans(
-            app.state(),
-            before.id.clone(),
-            after.id.clone(),
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .unwrap_err()
-        .contains("running"));
-        displayed.store.write().unwrap().state = ScanState::Completed;
-        std::fs::write(
-            dir.path().join("library").join(format!("{}.zst", after.id)),
-            b"corrupt",
-        )
-        .unwrap();
-        assert!(compare_saved_scans(
-            app.state(),
-            before.id.clone(),
-            after.id.clone(),
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .is_err());
-        assert!(!state.activity.busy());
-        assert!(displayed.is_valid());
-        assert_eq!(
-            list_saved_scans(app.state()).await.unwrap().last_opened_id,
-            selection
-        );
-        delete_saved_scan(app.state(), before.id.clone())
-            .await
-            .unwrap();
-        assert!(
-            compare_saved_scans(app.state(), before.id, after.id, Channel::new(|_| Ok(())))
-                .await
-                .is_err()
-        );
-        assert!(state.scans.is_live(&displayed));
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn current_scan_compares_with_a_saved_scan_without_saving() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        let elsewhere = dir.path().join("elsewhere");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::create_dir(&elsewhere).unwrap();
-        std::fs::write(source.join("file"), b"before").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let first = install(&state, snapshot(elsewhere));
-        let other = save_scan(app.state(), first.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let first = install(&state, snapshot(source.clone()));
-        let before = save_scan(app.state(), first.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        std::fs::write(source.join("file"), b"after: bigger").unwrap();
-        let current = install(&state, snapshot(source));
-        let listed = list_saved_scans(app.state()).await.unwrap();
-        let phases = Arc::new(Mutex::new(Vec::new()));
-        let observed = phases.clone();
-        let as_after = compare_current_scan(
-            app.state(),
-            current.id.clone(),
-            before.id.clone(),
-            true,
-            Channel::new(move |value| {
-                observed.lock().unwrap().push(value);
-                Ok(())
-            }),
-        )
-        .await
-        .unwrap();
-        let as_after = serde_json::to_value(as_after).unwrap();
-        assert_eq!(as_after["logicalDelta"].as_f64(), Some(7.0));
-        assert_eq!(as_after["beforeId"], before.id.as_str());
-        assert_eq!(as_after["afterId"], current.id.as_str());
-        assert_eq!(phases.lock().unwrap().len(), 4);
-        let as_before = compare_current_scan(
-            app.state(),
-            current.id.clone(),
-            before.id.clone(),
-            false,
-            Channel::new(|_| Ok(())),
-        )
-        .await
-        .unwrap();
-        let as_before = serde_json::to_value(as_before).unwrap();
-        assert_eq!(as_before["logicalDelta"].as_f64(), Some(-7.0));
-        assert_eq!(as_before["beforeId"], current.id.as_str());
-        // Nothing was written to the library.
-        let unchanged = list_saved_scans(app.state()).await.unwrap();
-        assert_eq!(
-            serde_json::to_value(&unchanged).unwrap(),
-            serde_json::to_value(&listed).unwrap()
-        );
-        assert!(!state.activity.busy());
-        // Same result as saving the live scan and comparing two saved scans.
-        let saved = save_scan(app.state(), current.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let mut expected = serde_json::to_value(
-            compare_saved_scans(
-                app.state(),
-                before.id.clone(),
-                saved.id.clone(),
-                Channel::new(|_| Ok(())),
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        expected["afterId"] = current.id.as_str().into();
-        assert_eq!(as_after, expected);
-        let reject = |saved_id: String| {
-            compare_current_scan(
-                app.state(),
-                current.id.clone(),
-                saved_id,
-                true,
-                Channel::new(|_| Ok(())),
-            )
-        };
-        assert!(reject(other.id.clone())
-            .await
-            .unwrap_err()
-            .contains("same location"));
-        current.store.write().unwrap().state = ScanState::Running;
-        assert!(reject(before.id.clone())
-            .await
-            .unwrap_err()
-            .contains("running"));
-        current.store.write().unwrap().state = ScanState::Cancelled;
-        assert!(reject(before.id.clone())
-            .await
-            .unwrap_err()
-            .contains(slots::NOT_COMPLETED));
-        current.store.write().unwrap().state = ScanState::Completed;
-        current.invalidate();
-        assert!(reject(before.id.clone())
-            .await
-            .unwrap_err()
-            .contains(slots::RESULTS_CHANGED));
-        assert!(compare_current_scan(
-            app.state(),
-            "stale".into(),
-            before.id.clone(),
-            true,
-            Channel::new(|_| Ok(()))
-        )
-        .await
-        .is_err());
-        assert!(!state.activity.busy());
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions() {
+fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
     tauri::async_runtime::block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source");
@@ -2713,24 +2151,11 @@ fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions(
         std::fs::write(source.join("zero"), b"").unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
         let live = install(&state, snapshot(source));
-        let entry = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let historical = open_saved_scan(
-            app.state(),
-            entry.id,
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
         force_access(&state, access_setup::Status::Off);
         let page = filter_nodes(
             app.state(),
-            historical.scan_id.clone(),
+            live.id.clone(),
             "PHOTO".into(),
             "images".into(),
             Some(2048),
@@ -2747,48 +2172,6 @@ fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions(
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].name, "photo.JPG");
         assert_eq!(page.items[0].logical_bytes, 2048);
-        force_access(&state, access_setup::Status::On);
-        let file_id = page.items[0].id;
-        assert!(
-            prepare_trash(app.state(), historical.scan_id.clone(), vec![file_id])
-                .await
-                .err()
-                .unwrap()
-                .contains("historical")
-        );
-        assert!(commit_trash(
-            app.state(),
-            historical.scan_id.clone(),
-            "unused".into(),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("historical"));
-        assert!(
-            reveal_node(app.state(), historical.scan_id.clone(), file_id)
-                .await
-                .err()
-                .unwrap()
-                .contains("historical")
-        );
-        assert!(filter_nodes(
-            app.state(),
-            live.id.clone(),
-            "".into(),
-            "all".into(),
-            None,
-            None,
-            "allocated".into(),
-            0,
-            150,
-            None,
-            None,
-            None,
-        )
-        .await
-        .is_ok());
         for (category, min, max, metric) in [
             ("invalid", None, None, "logical"),
             ("all", Some(2), Some(1), "logical"),
@@ -2796,7 +2179,7 @@ fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions(
         ] {
             assert!(filter_nodes(
                 app.state(),
-                historical.scan_id.clone(),
+                live.id.clone(),
                 "".into(),
                 category.into(),
                 min,
@@ -2813,7 +2196,7 @@ fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions(
         }
         let zero = filter_nodes(
             app.state(),
-            historical.scan_id.clone(),
+            live.id.clone(),
             "".into(),
             "all".into(),
             Some(0),
@@ -2828,11 +2211,10 @@ fn filtered_native_pages_keep_saved_results_read_only_and_reject_stale_sessions(
         .await
         .unwrap();
         assert!(zero.items.iter().any(|n| n.name == "zero"));
-        let saved_session = state.scans.find(&historical.scan_id).unwrap();
-        saved_session.invalidate();
+        live.invalidate();
         assert!(filter_nodes(
             app.state(),
-            historical.scan_id,
+            live.id.clone(),
             "".into(),
             "all".into(),
             None,
@@ -3132,33 +2514,18 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
 }
 
 #[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn explorer_sort_commands_restore_and_preserve_history_and_historical_authority() {
+fn explorer_sort_commands_restore_and_preserve_preferences() {
     tauri::async_runtime::block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
         *state.explorer_preferences.lock().unwrap() =
             explorer_preferences::Preferences::load(dir.path());
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
         let source = dir.path().join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("file2"), b"two").unwrap();
         std::fs::write(source.join("file10"), b"ten").unwrap();
         let live = install(&state, snapshot(source));
-        let entry = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let historical = open_saved_scan(
-            app.state(),
-            entry.id.clone(),
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        let startup = list_saved_scans(app.state()).await.unwrap().last_opened_id;
         let chosen = set_explorer_sort(app.state(), "nameDescending".into())
             .await
             .unwrap();
@@ -3173,13 +2540,9 @@ fn explorer_sort_commands_restore_and_preserve_history_and_historical_authority(
                 .sort,
             chosen.sort
         );
-        assert_eq!(
-            list_saved_scans(app.state()).await.unwrap().last_opened_id,
-            startup
-        );
         let page = get_children(
             app.state(),
-            historical.scan_id.clone(),
+            live.id.clone(),
             0,
             0,
             150,
@@ -3189,42 +2552,15 @@ fn explorer_sort_commands_restore_and_preserve_history_and_historical_authority(
         .await
         .unwrap();
         assert_eq!(page.total, 2);
-        assert!(prepare_trash(
-            app.state(),
-            historical.scan_id.clone(),
-            vec![page.items[0].id]
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("historical"));
-        assert!(
-            reveal_node(app.state(), historical.scan_id.clone(), page.items[0].id)
-                .await
-                .err()
-                .unwrap()
-                .contains("historical")
-        );
         assert!(set_explorer_sort(app.state(), "bad".into()).await.is_err());
         assert_eq!(
             get_explorer_preferences(app.state()).await.unwrap().sort,
             chosen.sort
         );
-        assert!(get_children(
-            app.state(),
-            live.id.clone(),
-            0,
-            0,
-            150,
-            "logical".into(),
-            None
-        )
-        .await
-        .is_ok());
-        state.scans.find(&historical.scan_id).unwrap().invalidate();
+        live.invalidate();
         assert!(search_nodes(
             app.state(),
-            historical.scan_id,
+            live.id.clone(),
             "file".into(),
             0,
             150,
@@ -3268,8 +2604,7 @@ fn registered_preview_fixture(state: &AppState, snapshot: Snapshot) -> Arc<Sessi
     install(state, snapshot)
 }
 #[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn quick_look_authority_rejects_partial_historical_stale_and_unsupported_items() {
+fn quick_look_authority_rejects_partial_stale_and_unsupported_items() {
     tauri::async_runtime::block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
@@ -3336,28 +2671,6 @@ fn quick_look_authority_rejects_partial_historical_stale_and_unsupported_items()
                 .err()
                 .unwrap()
                 .contains(slots::RESULTS_CHANGED)
-        );
-        // A cleanup's invalidation is for good: a rescan puts a fresh scan in the slot.
-        let s = install(&state, snapshot(root));
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("history")));
-        let saved = save_scan(app.state(), s.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let historical = open_saved_scan(
-            app.state(),
-            saved.id,
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert!(
-            quick_look_node(app.state(), historical.scan_id, 1, app.handle().clone())
-                .await
-                .err()
-                .unwrap()
-                .contains("historical")
         );
     });
 }
@@ -3575,8 +2888,7 @@ fn native_validation_worker_sweep() {
 }
 
 #[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn actual_worker_selection_is_reported_and_saved_with_matching_worker_rows() {
+fn actual_worker_selection_is_reported_with_matching_worker_rows() {
     tauri::async_runtime::block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("source");
@@ -3596,36 +2908,11 @@ fn actual_worker_selection_is_reported_and_saved_with_matching_worker_rows() {
         source.state = ScanState::Completed;
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
         let live = install(&state, source);
         assert_eq!(live.workers, 8); // Captured base remains immutable.
         live.scan_details.lock().unwrap().actual_workers = Some(4);
         assert_eq!(live.actual_workers(), 4);
         assert_eq!(live.summary().workers, live.summary().worker_stats.len());
-        let saved = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let (archived, metadata) = state
-            .library
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .load(&saved.id, |_| {})
-            .unwrap();
-        assert_eq!(metadata.workers, 4);
-        assert_eq!(metadata.workers, archived.worker_stats.len());
-        let historical = open_saved_scan(
-            app.state(),
-            saved.id,
-            begin_saved_open(app.state()).unwrap(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(historical.workers, 4);
-        assert_eq!(historical.worker_stats.len(), 4);
         // A core retry callback can reset reported selection without changing captured base.
         live.scan_details.lock().unwrap().actual_workers = Some(live.workers);
         assert_eq!(live.actual_workers(), live.workers);
@@ -4138,287 +3425,6 @@ fn cleanup_queue_direct_success_partial_failure_and_persistence_warning() {
     });
 }
 
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn saved_open_cancel_is_scoped_and_serialized_with_selection_and_session_commit() {
-    tauri::async_runtime::block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("file"), b"keep").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() = Some(library::Library::new(dir.path().join("library")));
-        let live = install(&state, snapshot(source));
-        let first = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let second = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        state
-            .library
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .mark_opened(&first.id)
-            .unwrap();
-        let early = begin_saved_open(app.state()).unwrap();
-        assert!(!cancel_saved_open(app.state(), "unrelated-request".into()));
-        assert!(cancel_saved_open(app.state(), early.clone()));
-        assert_eq!(
-            open_saved_scan(
-                app.state(),
-                second.id.clone(),
-                early.clone(),
-                Channel::new(|_| Ok(())),
-                app.handle().clone()
-            )
-            .await
-            .err()
-            .unwrap(),
-            library::OPEN_CANCELLED
-        );
-        assert!(!cancel_saved_open(app.state(), early.clone()));
-        assert!(live.is_valid());
-        assert!(state.scans.is_live(&live));
-        assert_eq!(
-            list_saved_scans(app.state()).await.unwrap().last_opened_id,
-            Some(first.id.clone())
-        );
-        for phase in ["reading", "validating"] {
-            let request = begin_saved_open(app.state()).unwrap();
-            assert!(
-                !cancel_saved_open(app.state(), early.clone()),
-                "old request must never cancel a new one"
-            );
-            let handle = app.handle().clone();
-            let target = request.clone();
-            let result = open_saved_scan(
-                app.state(),
-                second.id.clone(),
-                request,
-                Channel::new(move |body| {
-                    let value: serde_json::Value = body.deserialize().unwrap();
-                    if value["phase"] == phase {
-                        assert!(
-                            begin_saved_open(handle.state())
-                                .unwrap_err()
-                                .contains("progress"),
-                            "an in-flight open must not be replaced"
-                        );
-                        assert!(cancel_saved_open(handle.state(), target.clone()));
-                    }
-                    Ok(())
-                }),
-                app.handle().clone(),
-            )
-            .await;
-            assert_eq!(result.err().unwrap(), library::OPEN_CANCELLED);
-            assert!(live.is_valid());
-            assert!(state.scans.is_live(&live));
-            assert_eq!(
-                list_saved_scans(app.state()).await.unwrap().last_opened_id,
-                Some(first.id.clone())
-            );
-        }
-        let request = begin_saved_open(app.state()).unwrap();
-        let target = request.clone();
-        let handle = app.handle().clone();
-        let result = open_saved_scan(
-            app.state(),
-            second.id.clone(),
-            request,
-            Channel::new(move |body| {
-                let value: serde_json::Value = body.deserialize().unwrap();
-                if value["phase"] == "done" {
-                    assert!(
-                        !cancel_saved_open(handle.state(), target.clone()),
-                        "commit already won the race"
-                    );
-                }
-                Ok(())
-            }),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert!(live.is_valid());
-        assert!(state.scans.is_live(&live));
-        assert!(state.scans.find(&result.scan_id).is_ok());
-        assert_eq!(
-            list_saved_scans(app.state()).await.unwrap().last_opened_id,
-            Some(second.id)
-        );
-        assert!(!state.activity.busy());
-    });
-}
-
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn saved_open_abandoned_handshake_does_not_reserve_activity_or_block_replacement() {
-    tauri::async_runtime::block_on(async {
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        let prior = install(&state, synthetic(1));
-        let abandoned = begin_saved_open(app.state()).unwrap();
-        let unrelated = Activity::begin(&state.activity)
-            .expect("abandoned token cannot block unrelated mutations");
-        assert!(begin_saved_open(app.state())
-            .unwrap_err()
-            .contains("progress"));
-        drop(unrelated);
-        let replacement = begin_saved_open(app.state()).unwrap();
-        assert_ne!(abandoned, replacement);
-        assert!(!cancel_saved_open(app.state(), abandoned.clone()));
-        assert!(open_saved_scan(
-            app.state(),
-            "unused".into(),
-            abandoned,
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("no longer active"));
-        assert_eq!(
-            state.saved_open.lock().unwrap().as_ref().unwrap().id,
-            replacement
-        );
-        // Another mutation can win between the handshake and the open command.
-        let competing = Activity::begin(&state.activity).unwrap();
-        assert!(open_saved_scan(
-            app.state(),
-            "unused".into(),
-            replacement.clone(),
-            Channel::new(|_| Ok(())),
-            app.handle().clone()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("progress"));
-        assert!(
-            state.saved_open.lock().unwrap().is_none(),
-            "failed activity acquisition must clean up its claimed request"
-        );
-        assert!(
-            state.activity.busy(),
-            "failed open must not release a competing operation's activity"
-        );
-        assert!(!cancel_saved_open(app.state(), replacement));
-        assert!(prior.is_valid());
-        assert!(state.scans.is_live(&prior));
-        drop(competing);
-        let recovered = begin_saved_open(app.state()).unwrap();
-        assert!(cancel_saved_open(app.state(), recovered.clone()));
-        assert_eq!(
-            open_saved_scan(
-                app.state(),
-                "unused".into(),
-                recovered,
-                Channel::new(|_| Ok(())),
-                app.handle().clone()
-            )
-            .await
-            .err()
-            .unwrap(),
-            library::OPEN_CANCELLED
-        );
-        assert!(state.saved_open.lock().unwrap().is_none());
-        assert!(Activity::begin(&state.activity).is_ok());
-    });
-}
-#[test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-fn opening_saved_scans_keeps_the_current_scan_until_a_new_scan_replaces_it() {
-    tauri::async_runtime::block_on(async {
-        let fixture = fixture();
-        let root = std::fs::canonicalize(fixture.path()).unwrap();
-        std::fs::write(root.join("file"), b"abc").unwrap();
-        let app = app(AppState::default());
-        let state = app.state::<AppState>();
-        *state.library.lock().unwrap() =
-            Some(library::Library::new(fixture.path().join("library")));
-        let live = install(&state, snapshot(root.clone()));
-        let open = |id: String| {
-            open_saved_scan(
-                app.state(),
-                id,
-                begin_saved_open(app.state()).unwrap(),
-                Channel::new(|_| Ok(())),
-                app.handle().clone(),
-            )
-        };
-        let first = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        let second = save_scan(app.state(), live.id.clone(), Channel::new(|_| Ok(())))
-            .await
-            .unwrap();
-        // Saving keeps the live scan.
-        assert!(
-            scan_summary(app.state(), live.id.clone())
-                .await
-                .unwrap()
-                .origin
-                == SessionOrigin::Live
-        );
-        let a = open(first.id).await.unwrap();
-        assert!(a.origin == SessionOrigin::Saved);
-        let current = scan_summary(app.state(), live.id.clone()).await.unwrap();
-        assert!(current.origin == SessionOrigin::Live);
-        assert!(get_node(app.state(), live.id.clone(), 0).await.is_ok());
-        assert!(get_node(app.state(), a.scan_id.clone(), 0).await.is_ok());
-        // A second saved scan replaces only the first.
-        let b = open(second.id).await.unwrap();
-        assert!(scan_summary(app.state(), a.scan_id.clone())
-            .await
-            .err()
-            .unwrap()
-            .contains("no longer active"));
-        assert!(get_node(app.state(), b.scan_id.clone(), 0).await.is_ok());
-        assert!(get_node(app.state(), live.id.clone(), 0).await.is_ok());
-        // A new scan replaces the live scan of its slot; the open saved scan stays.
-        let target = register(&state, platform::target(&root, "fixture".into()), root).unwrap();
-        let id = start_scan(
-            app.state(),
-            target.id,
-            Channel::new(|_| Ok(())),
-            app.handle().clone(),
-        )
-        .await
-        .unwrap();
-        assert!(scan_summary(app.state(), live.id.clone())
-            .await
-            .err()
-            .unwrap()
-            .contains("no longer active"));
-        assert!(scan_summary(app.state(), id).await.is_ok());
-        assert!(get_node(app.state(), b.scan_id.clone(), 0).await.is_ok());
-    });
-}
-
-#[test]
-fn saved_scan_commands_are_refused_while_saved_scans_are_disabled() {
-    if SAVED_SCANS_ENABLED {
-        return;
-    }
-    let app = app(AppState::default());
-    assert_eq!(
-        tauri::async_runtime::block_on(list_saved_scans(app.state())).err(),
-        Some(SAVED_SCANS_DISABLED.to_string())
-    );
-    assert_eq!(
-        automation::Service::new(tempfile::tempdir().unwrap().path().into())
-            .list(0, 10)
-            .err(),
-        Some(SAVED_SCANS_DISABLED.to_string())
-    );
-}
-
 // Per-disk scan slots: each disk keeps its own live scan, folders share one.
 fn register_disk(state: &AppState, root: &Path) -> platform::Target {
     let mut target = platform::target(root, "disk".into());
@@ -4838,11 +3844,10 @@ fn a_discarded_scan_still_winding_down_keeps_its_budget_but_only_stops_the_globa
     assert_eq!(state.scans.sessions().len(), 1);
     events.wait_end();
     assert!(state.scans.budget().free().workers < state.scans.budget().total().workers);
-    // Setup and saved-scan operations still wait for it.
-    assert!(portable_activity(&state).is_err());
+    // Setup still waits for it.
     assert!(setup_idle(&state).is_err());
     assert!(scan_running(&state));
-    // Once the walk ends, they go ahead and its share is returned.
+    // Once the walk ends, setup goes ahead and its share is returned.
     ejected.store.write().unwrap().state = ScanState::Cancelled;
     drop(held);
     assert!(!scan_running(&state));
@@ -4851,7 +3856,7 @@ fn a_discarded_scan_still_winding_down_keeps_its_budget_but_only_stops_the_globa
 }
 
 #[test]
-fn setup_and_saved_scan_operations_refuse_while_any_scan_runs_on_any_disk() {
+fn setup_operations_refuse_while_any_scan_runs_on_any_disk() {
     tauri::async_runtime::block_on(async {
         let config = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
@@ -4860,31 +3865,16 @@ fn setup_and_saved_scan_operations_refuse_while_any_scan_runs_on_any_disk() {
         force_access(&state, access_setup::Status::On);
         let (_a_dir, a_root) = disk_root();
         let (_b_dir, b_root) = disk_root();
-        let done = install_in(&state, Slot::Disk(a_root.clone()), "a", snapshot(a_root));
+        install_in(&state, Slot::Disk(a_root.clone()), "a", snapshot(a_root));
         let running = install_in(&state, Slot::Disk(b_root.clone()), "b", snapshot(b_root));
         running.store.write().unwrap().state = ScanState::Running;
         // A finished scan on one disk does not make the others idle.
-        assert!(portable_activity(&state).is_err());
         assert!(setup_idle(&state).is_err());
         assert!(restart_app(app.handle().clone(), app.state())
             .await
             .unwrap_err()
             .contains("scan"));
-        // Comparing a finished scan with a saved one also needs every other scan stopped.
-        if SAVED_SCANS_ENABLED {
-            let error = compare_current_scan(
-                app.state(),
-                done.id.clone(),
-                "saved".into(),
-                true,
-                Channel::new(|_| Ok(())),
-            )
-            .await
-            .unwrap_err();
-            assert!(error.contains("running"), "{error}");
-        }
         running.store.write().unwrap().state = ScanState::Completed;
-        assert!(portable_activity(&state).is_ok());
         assert!(setup_idle(&state).is_ok());
     });
 }

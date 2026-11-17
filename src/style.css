@@ -796,37 +796,6 @@ header p {
   margin: 6px 0;
 }
 
-.saved-library {
-  overflow-y: auto;
-  max-height: 42vh;
-  margin: 8px 0 16px;
-}
-.saved-entry {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
-}
-.saved-entry > button:first-child {
-  width: 100%;
-  text-align: left;
-  padding: 9px;
-}
-.saved-entry small {
-  display: block;
-  margin-top: 4px;
-  overflow-wrap: anywhere;
-}
-.saved-entry > .saved-action {
-  margin: 4px 9px;
-  font-size: var(--font-caption);
-}
-.library-progress {
-  padding: 12px 16px;
-  background: var(--soft);
-  color: inherit;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-}
-
 .cleanup-page {
   max-width: 1100px;
   margin: 0 auto;

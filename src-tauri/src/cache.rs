@@ -1,5 +1,5 @@
-//! Private, bounded optimization cache. Historical library entries are never touched.
-use crate::library::{Library, ScanMetadata};
+//! Private, bounded optimization cache.
+use crate::cache_store::{ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,14 +35,14 @@ pub struct CachedScan {
 }
 /// A candidate confirmed under the cache lock, decoded without it.
 pub struct Pending {
-    library: Library,
+    store: Store,
     id: String,
     token: Token,
     started_at_ms: u64,
 }
 impl Pending {
     pub fn decode(self, root: &Path, identity: &Identity) -> Result<CachedScan, String> {
-        let (snapshot, metadata) = self.library.load_cache(&self.id)?;
+        let (snapshot, metadata) = self.store.load(&self.id)?;
         if !eligible(&snapshot)
             || snapshot.root != root
             || snapshot.node(0).ok_or("Missing cache root")?.identity != *identity
@@ -58,7 +58,7 @@ impl Pending {
 }
 pub struct Cache {
     root: PathBuf,
-    library: Library,
+    store: Store,
     count_limit: usize,
     bytes_limit: u64,
 }
@@ -83,7 +83,7 @@ pub fn recent(token: &Token, started_at_ms: u64, now: u64) -> bool {
 impl Cache {
     pub fn new(root: PathBuf) -> Self {
         Self {
-            library: Library::new(root.clone()),
+            store: Store::new(root.clone()),
             root,
             count_limit: 8,
             bytes_limit: 512 * 1024 * 1024,
@@ -135,7 +135,7 @@ impl Cache {
         epoch: &str,
     ) -> Result<Option<Candidate>, String> {
         self.maintain()?;
-        for row in self.library.list()?.entries {
+        for row in self.store.list()? {
             let Ok(record) = self.record(&row.id) else {
                 continue;
             };
@@ -178,7 +178,7 @@ impl Cache {
             return Err("Rescan cache changed during event replay".into());
         }
         Ok(Pending {
-            library: self.library.clone(),
+            store: self.store.clone(),
             id: candidate.id,
             token: record.token,
             started_at_ms: record.started_at_ms,
@@ -220,7 +220,7 @@ impl Cache {
         Ok(metadata.len())
     }
     fn maintain(&self) -> Result<(), String> {
-        let entries = self.library.list()?.entries;
+        let entries = self.store.list()?;
         let ids: std::collections::HashSet<_> = entries
             .iter()
             .filter(|row| self.record(&row.id).is_ok())
@@ -251,7 +251,7 @@ impl Cache {
             .map_err(|e| e.to_string())
     }
     fn remove(&self, id: &str) -> Result<(), String> {
-        self.library.delete(id)?;
+        self.store.delete(id)?;
         match fs::remove_file(self.path(id)?) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -328,8 +328,7 @@ impl Cache {
         }
         record.token = next.clone();
         self.write_record(&candidate.id, &record)?;
-        self.library
-            .touch_cache(&candidate.id, record.started_at_ms)?;
+        self.store.touch(&candidate.id, record.started_at_ms)?;
         Ok(true)
     }
     pub fn save(&self, s: &Snapshot, m: &ScanMetadata, token: &Token) -> Result<(), String> {
@@ -337,7 +336,7 @@ impl Cache {
             return Err("This result cannot seed incremental scans".into());
         }
         self.maintain()?;
-        let row = self.library.save_cache(s, m)?;
+        let row = self.store.save(s, m)?;
         if let Err(e) = self.write_record(
             &row.id,
             &Record {
@@ -358,7 +357,7 @@ impl Cache {
         }
         let mut count = 0usize;
         let mut bytes = 0u64;
-        let mut entries = self.library.list()?.entries;
+        let mut entries = self.store.list()?;
         entries.sort_by_key(|entry| entry.id != row.id);
         for entry in entries {
             let actual_bytes = self.archive_bytes(&entry.id)?;
@@ -427,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_matches_identity_epoch_and_keeps_history_separate() {
+    fn reload_matches_identity_and_epoch() {
         let d = tempfile::tempdir().unwrap();
         let s = fixture(&d.path().join("source"));
         let c = Cache::new(d.path().join("cache"));
@@ -454,13 +453,7 @@ mod tests {
             .load(&s.root, &identity, &token.epoch)
             .unwrap()
             .is_none());
-        assert!(Library::new(d.path().join("manual-history"))
-            .list()
-            .unwrap()
-            .entries
-            .is_empty());
-        assert!(!c.root.join("selection.json").exists());
-        let row = c.library.list().unwrap().entries.remove(0);
+        let row = c.store.list().unwrap().remove(0);
         for suffix in ["json", "zst", "cursor"] {
             assert_eq!(
                 fs::metadata(c.root.join(format!("{}.{suffix}", row.id)))
@@ -486,23 +479,22 @@ mod tests {
         let s = fixture(&d.path().join("a"));
         c.save(&s, &metadata(), &token).unwrap();
         c.save(&s, &metadata(), &token).unwrap();
-        assert_eq!(c.library.list().unwrap().entries.len(), 1);
+        assert_eq!(c.store.list().unwrap().len(), 1);
         for n in ["b", "c"] {
             let s = fixture(&d.path().join(n));
             c.save(&s, &metadata(), &token).unwrap();
         }
-        assert_eq!(c.library.list().unwrap().entries.len(), 2);
+        assert_eq!(c.store.list().unwrap().len(), 2);
         let s = fixture(&d.path().join("d"));
         c.bytes_limit = 1;
         assert!(c.save(&s, &metadata(), &token).is_err());
-        assert_eq!(c.library.list().unwrap().entries.len(), 2);
+        assert_eq!(c.store.list().unwrap().len(), 2);
         c.bytes_limit = 512 * 1024 * 1024;
         c.save(&s, &metadata(), &token).unwrap();
         let row = c
-            .library
+            .store
             .list()
             .unwrap()
-            .entries
             .into_iter()
             .find(|r| r.root_path == s.root.to_string_lossy())
             .unwrap();
@@ -529,7 +521,7 @@ mod tests {
             },
         )
         .unwrap();
-        let one = c.library.list().unwrap().entries[0].file_bytes;
+        let one = c.store.list().unwrap()[0].file_bytes;
         c.count_limit = 5;
         // Room for three archives of this size, so the byte cap binds before the count cap.
         c.bytes_limit = one * 3 + one / 2;
@@ -555,7 +547,7 @@ mod tests {
         });
         let guard = shared.lock().unwrap();
         let c = guard.as_ref().unwrap();
-        let entries = c.library.list().unwrap().entries;
+        let entries = c.store.list().unwrap();
         assert!(
             !entries.is_empty() && entries.len() <= 3,
             "{}",
@@ -699,7 +691,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(previous.token.cursor, 42);
-        assert_eq!(c.library.list().unwrap().entries.len(), 1);
+        assert_eq!(c.store.list().unwrap().len(), 1);
     }
     #[test]
     fn unchanged_refresh_preserves_archive_binding_age_and_private_selection() {
@@ -714,9 +706,9 @@ mod tests {
             full_scan_at_ms: m.started_at_ms,
         };
         c.save(&s, &m, &previous).unwrap();
-        let mut row = c.library.list().unwrap().entries.remove(0);
+        let mut row = c.store.list().unwrap().remove(0);
         // An old LRU timestamp proves refresh advances only publication age.
-        row.saved_at_ms = 1;
+        row.used_at_ms = 1;
         fs::write(
             c.root.join(format!("{}.json", row.id)),
             serde_json::to_vec(&row).unwrap(),
@@ -725,23 +717,6 @@ mod tests {
         let archive = c.root.join(format!("{}.zst", row.id));
         let bytes = fs::read(&archive).unwrap();
         let inode = fs::metadata(&archive).unwrap().ino();
-        assert!(!c.root.join("selection.json").exists());
-        // Preserve a selection left by an older private-cache writer.
-        fs::write(
-            c.root.join("selection.json"),
-            serde_json::to_vec(&Some(row.id.clone())).unwrap(),
-        )
-        .unwrap();
-        let selection = fs::read(c.root.join("selection.json")).unwrap();
-        let history = Library::new(d.path().join("history"));
-        let historical = history.save(&s, &m, |_| {}).unwrap();
-        let historical_bytes = fs::read(
-            d.path()
-                .join("history")
-                .join(format!("{}.zst", historical.id)),
-        )
-        .unwrap();
-        let historical_selection = fs::read(d.path().join("history/selection.json")).unwrap();
         let next = Token {
             cursor: 84,
             ..previous.clone()
@@ -751,33 +726,19 @@ mod tests {
             .unwrap());
         assert_eq!(fs::read(&archive).unwrap(), bytes);
         assert_eq!(fs::metadata(&archive).unwrap().ino(), inode);
-        assert_eq!(fs::read(c.root.join("selection.json")).unwrap(), selection);
         let loaded = c
             .load(&s.root, &s.node(0).unwrap().identity, &next.epoch)
             .unwrap()
             .unwrap();
         assert!(loaded.token == next);
         assert_eq!(loaded.token.full_scan_at_ms, previous.full_scan_at_ms);
-        let (_, loaded_metadata) = c.library.load_cache(&row.id).unwrap();
+        let (_, loaded_metadata) = c.store.load(&row.id).unwrap();
         assert_eq!(loaded_metadata.started_at_ms, m.started_at_ms);
-        let touched = c.library.list().unwrap().entries.remove(0);
+        let touched = c.store.list().unwrap().remove(0);
         assert_eq!(touched.started_at_ms, row.started_at_ms);
         assert_eq!(touched.completed_at_ms, row.completed_at_ms);
         assert_eq!(touched.file_bytes, row.file_bytes);
-        assert!(touched.saved_at_ms > row.saved_at_ms);
-        assert_eq!(
-            fs::read(
-                d.path()
-                    .join("history")
-                    .join(format!("{}.zst", historical.id))
-            )
-            .unwrap(),
-            historical_bytes
-        );
-        assert_eq!(
-            fs::read(d.path().join("history/selection.json")).unwrap(),
-            historical_selection
-        );
+        assert!(touched.used_at_ms > row.used_at_ms);
         assert!(!recent(
             &next,
             m.started_at_ms,
@@ -803,7 +764,7 @@ mod tests {
             .refresh_unchanged(&s.root, &s.node(0).unwrap().identity, &previous, &next)
             .unwrap());
         c.save(&s, &m, &previous).unwrap();
-        let row = c.library.list().unwrap().entries.remove(0);
+        let row = c.store.list().unwrap().remove(0);
         let original = fs::read(c.path(&row.id).unwrap()).unwrap();
         for bad in [
             Token {
@@ -841,7 +802,7 @@ mod tests {
         assert!(!c
             .refresh_unchanged(&s.root, &s.node(0).unwrap().identity, &previous, &next)
             .unwrap());
-        let row = c.library.list().unwrap().entries.remove(0);
+        let row = c.store.list().unwrap().remove(0);
         let mut record = c.record(&row.id).unwrap();
         record.token.full_scan_at_ms = 1;
         fs::write(
@@ -864,7 +825,7 @@ mod tests {
             .unwrap());
     }
     #[test]
-    fn legacy_optimization_cache_is_discarded_without_migrating_history() {
+    fn legacy_optimization_cache_is_discarded() {
         let d = tempfile::tempdir().unwrap();
         let c = Cache::new(d.path().join("cache"));
         let s = fixture(&d.path().join("source"));
@@ -874,7 +835,7 @@ mod tests {
             full_scan_at_ms: crate::now_ms(),
         };
         c.save(&s, &metadata(), &token).unwrap();
-        let row = c.library.list().unwrap().entries.remove(0);
+        let row = c.store.list().unwrap().remove(0);
         let mut record = c.record(&row.id).unwrap();
         record.version = 1;
         fs::write(
@@ -886,7 +847,7 @@ mod tests {
             .load(&s.root, &s.node(0).unwrap().identity, &token.epoch)
             .unwrap()
             .is_none());
-        assert!(c.library.list().unwrap().entries.is_empty());
+        assert!(c.store.list().unwrap().is_empty());
     }
     #[test]
     fn persisted_hardlinks_retain_own_sizes_and_global_allocation_owner() {
@@ -969,7 +930,7 @@ mod safety_tests {
     fn maintenance_removes_only_owned_interrupted_cache_files() {
         let d = tempfile::tempdir().unwrap();
         let c = Cache::new(d.path().join("cache"));
-        c.library.list().unwrap();
+        c.store.list().unwrap();
         for ext in ["tmp", "zst", "json", "cursor"] {
             fs::write(
                 c.root.join(format!("{}.{}", uuid::Uuid::new_v4(), ext)),

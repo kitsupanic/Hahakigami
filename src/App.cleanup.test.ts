@@ -44,7 +44,6 @@ const file = {
 };
 const summary = {
   scanId: "live",
-  origin: "live",
   state: "completed",
   rootId: 0,
   workers: 1,
@@ -109,8 +108,6 @@ beforeEach(async () => {
           scanAnyway: false,
           appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "discover_targets":
         return [location];
       case "start_scan":

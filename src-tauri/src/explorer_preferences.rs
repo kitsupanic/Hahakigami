@@ -1,4 +1,4 @@
-//! Small, independent explorer preferences; never changes scan or library settings.
+//! Small, independent explorer preferences; never changes scan settings.
 use crate::sorting::Order;
 use serde::{Deserialize, Serialize};
 use std::{

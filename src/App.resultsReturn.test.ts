@@ -5,7 +5,7 @@ import { setShowLogicalSize } from "./logicalSize.svelte";
 import App from "./App.svelte";
 import { menuItem } from "./fakeMenu";
 import type createApp from "./createApp.svelte";
-import type { NodeView, Page, SavedEntry, ScanSummary } from "./types";
+import type { NodeView, Page, ScanSummary } from "./types";
 const mock = vi.hoisted(() => ({
   invoke: vi.fn(),
   app: null as ReturnType<typeof createApp> | null,
@@ -53,12 +53,8 @@ const image: NodeView = {
   kind: "file",
   childrenCount: 0,
 };
-const summary = (
-  id = "historical",
-  origin: "saved" | "live" = "saved",
-): ScanSummary => ({
+const summary = (id = "live"): ScanSummary => ({
   scanId: id,
-  origin,
   rootId: 0,
   workers: 1,
   workerStats: [],
@@ -70,21 +66,6 @@ const summary = (
   elapsedMs: 1000,
   errors: 0,
 });
-const saved: SavedEntry = {
-  id: "saved",
-  name: "Home",
-  rootPath: "/fixture",
-  startedAtMs: 1000,
-  completedAtMs: 2000,
-  savedAtMs: 3000,
-  entries: 3,
-  logicalBytes: 100,
-  allocatedBytes: 100,
-  incomplete: false,
-  errors: 0,
-  excluded: 0,
-  fileBytes: 100,
-};
 let container: HTMLDivElement, root: Root;
 function calls(command: string) {
   return mock.invoke.mock.calls.filter(([name]) => name === command);
@@ -132,10 +113,6 @@ beforeEach(async () => {
           return { sort: "sizeDescending", warning: null };
         case "set_explorer_sort":
           return { sort: args.sort, warning: null };
-        case "list_saved_scans":
-          return { entries: [saved], lastOpenedId: "saved" };
-        case "open_saved_scan":
-          return summary();
         case "full_disk_access_status":
           return {
             status: "on",
@@ -171,19 +148,8 @@ beforeEach(async () => {
           return { items: [image, folder], total: 320 };
         case "start_scan":
           return "live";
-        case "rescan_saved_scan":
-          return {
-            scanId: "live",
-            target: {
-              id: "home",
-              name: "Home",
-              path: "/fixture",
-              totalBytes: null,
-              freeBytes: null,
-            },
-          };
         case "scan_summary":
-          return summary("live", "live");
+          return summary();
         default:
           return undefined;
       }
@@ -194,6 +160,7 @@ beforeEach(async () => {
   root = createRoot(container);
   await act(async () => root.render(App));
   await flush();
+  await click("Scan Home");
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -231,7 +198,7 @@ it("returns to the original results page after deeper browsing, including select
   await flush();
   await click("Back to results");
   expect(calls("filter_nodes").at(-1)?.[1]).toMatchObject({
-    scanId: "historical",
+    scanId: "live",
     query: "photo",
     category: "images",
     minBytes: 10,
@@ -279,22 +246,22 @@ it("preserves search-only global results and discards the return point on an exp
     offset: 0,
   });
 });
-it("retains the return point on a failed archive open, clears it after a successful switch or fresh scan", async () => {
+it("retains the return point on a failed scan start, clears it after a fresh scan", async () => {
   await resultPage();
   await browse();
   const previous = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command, args) =>
-    command === "open_saved_scan"
-      ? Promise.reject(new Error("Archive unavailable"))
+    command === "start_scan"
+      ? Promise.reject(new Error("Scan unavailable"))
       : previous(command, args),
   );
-  await act(() => app().openSaved("saved"));
+  await act(() => app().start());
   expect(app().resultsReturn).not.toBeNull();
   await act(() => app().returnToResults());
   expect(calls("filter_nodes").at(-1)?.[1].offset).toBe(150);
   await browse();
   mock.invoke.mockImplementation(previous);
-  await act(() => app().openSaved("saved"));
+  await act(() => app().start());
   expect(app().resultsReturn).toBeNull();
   await resultPage();
   await browse();
@@ -314,7 +281,7 @@ it("blocks returning while busy, previewing, or using a different active scan", 
         app().activeId.current = "other";
       },
       () => {
-        app().activeId.current = "historical";
+        app().activeId.current = "live";
       },
     ],
   ]) {
@@ -569,15 +536,13 @@ it("keeps history through rejected scan changes and cancelled folder choices, th
   await browse();
   const previous = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command, args) =>
-    ["open_saved_scan", "rescan_saved_scan"].includes(command)
+    command === "start_scan"
       ? Promise.reject(new Error("Not available"))
       : command === "choose_folder"
         ? Promise.resolve(null)
         : previous(command, args),
   );
-  await act(() => app().openSaved("saved"));
-  expect(app().can.goBack).toBe(true);
-  await act(() => app().start(null, "historical"));
+  await act(() => app().start());
   expect(app().can.goBack).toBe(true);
   await act(() => app().chooseFolder());
   expect(app().can.goBack).toBe(true);
@@ -585,11 +550,11 @@ it("keeps history through rejected scan changes and cancelled folder choices, th
   expect(app().focus?.id).toBe(0);
   expect(app().can.goForward).toBe(true);
   mock.invoke.mockImplementation(previous);
-  await act(() => app().openSaved("saved"));
+  await act(() => app().start());
   expect(app().can.goBack).toBe(false);
   expect(app().can.goForward).toBe(false);
   await browse();
-  await act(() => app().start(null, "historical"));
+  await act(() => app().start());
   expect(app().can.goBack).toBe(false);
   expect(app().can.goForward).toBe(false);
 });
@@ -601,14 +566,13 @@ it("blocks both directions while busy, in modal or alternate views, or using a d
   for (const [block, unblock] of [
     [() => app().setBusy(true), () => app().setBusy(false)],
     [() => app().setAccessOpen(true), () => app().setAccessOpen(false)],
-    [() => app().setComparisonOpen(true), () => app().setComparisonOpen(false)],
     [() => app().showQueue(true), () => app().showQueue(false)],
     [
       () => {
         app().activeId.current = "other";
       },
       () => {
-        app().activeId.current = "historical";
+        app().activeId.current = "live";
       },
     ],
   ]) {
@@ -650,7 +614,7 @@ it("blocks history during a pending Quick Look and dismisses the settled preview
     return previous(command, args);
   });
   await act(() => {
-    app().quickLook.open({ scanId: "historical", nodeId: image.id });
+    app().quickLook.open({ scanId: "live", nodeId: image.id });
   });
   expect(app().quickLook.pending).toBe(true);
   expect(app().can.goBack).toBe(false);
@@ -660,7 +624,7 @@ it("blocks history during a pending Quick Look and dismisses the settled preview
   await act(() => app().goBack());
   expect(app().focus?.id).toBe(1);
   await act(() =>
-    finish({ open: true, scanId: "historical", nodeId: image.id, revision: 1 }),
+    finish({ open: true, scanId: "live", nodeId: image.id, revision: 1 }),
   );
   expect(app().quickLook.status.open).toBe(true);
   expect(app().can.goBack).toBe(true);
@@ -728,7 +692,6 @@ it("disables Enclosing Folder for blocked views and incomplete or mismatched par
   for (const [block, unblock] of [
     [() => app().setBusy(true), () => app().setBusy(false)],
     [() => app().setAccessOpen(true), () => app().setAccessOpen(false)],
-    [() => app().setComparisonOpen(true), () => app().setComparisonOpen(false)],
     [() => app().showQueue(true), () => app().showQueue(false)],
   ]) {
     await act(block);

@@ -97,7 +97,6 @@
   import Sidebar from "./Sidebar.svelte";
   import Icon from "./Icon.svelte";
   import appIcon from "../src-tauri/icons/128x128.png";
-  import { formatScanTimestamp } from "./savedHistory";
   import { createBranchColorResolver } from "./branchColors";
   import DiskMap from "./DiskMap.svelte";
   import FileRows from "./FileRows.svelte";
@@ -105,13 +104,10 @@
   import TrashConfirmation from "./TrashConfirmation.svelte";
   import CleanupResults from "./CleanupResults.svelte";
   import Modal from "./Modal.svelte";
-  import ScanTransferFeedback from "./ScanTransferFeedback.svelte";
   import FailureModal from "./FailureModal.svelte";
   import Toast from "./Toast.svelte";
-  import CompareScans from "./CompareScans.svelte";
   import ExplorerFilters from "./ExplorerFilters.svelte";
   import ActiveFilters from "./ActiveFilters.svelte";
-  import SavedScanLoading from "./SavedScanLoading.svelte";
   import SortControl from "./SortControl.svelte";
   import { sortLabels } from "./sortTypes";
   import PanelDivider from "./PanelDivider.svelte";
@@ -187,21 +183,6 @@
         ? "Startup disk"
         : name || "Storage explorer";
   }
-  function snapshotTime(ms: number, milliseconds = false) {
-    return formatScanTimestamp(ms, undefined, milliseconds).label;
-  }
-  const selectedSavedEntry = $derived(app.selectedSavedEntry);
-  const savedTimestamp = $derived(selectedSavedEntry?.completedAtMs);
-  const savedTimestampPrecise = $derived(
-    !!selectedSavedEntry &&
-      app.saved.some(
-        (entry) =>
-          entry.id !== selectedSavedEntry.id &&
-          entry.rootPath === selectedSavedEntry.rootPath &&
-          Math.floor(entry.completedAtMs / 1000) ===
-            Math.floor(selectedSavedEntry.completedAtMs / 1000),
-      ),
-  );
 
   const queue = $derived(app.queue);
   const queueOpen = $derived(app.queueOpen);
@@ -217,9 +198,6 @@
   const target = $derived(app.target);
   // Home shows the welcome page while the scan stays in memory.
   const summary = $derived(app.shown?.summary ?? null);
-  const failedTransfer = $derived(
-    app.scanTransfer?.state === "failed" ? app.scanTransfer : null,
-  );
   const failedScan = $derived(
     summary?.state === "failed" && summary.scanId !== dismissedFailedScan
       ? summary
@@ -308,33 +286,17 @@
       app.setAccessError(String(e));
     }
   }
-  const saved = $derived(app.saved);
-  const libraryBusy = $derived(app.libraryBusy);
-  const libraryProgress = $derived(app.libraryProgress);
-  const openingSavedEntry = $derived(app.openingSavedEntry);
-  const initialSavedLoading = $derived(
-    !summary &&
-      libraryBusy &&
-      (!libraryProgress || libraryProgress.operation === "open"),
-  );
-  const removeEntry = $derived(app.removeEntry);
-  const comparisonOpen = $derived(app.comparisonOpen);
   const dialogOpen = $derived(
     accessOpen ||
-      !!removeEntry ||
       !!trash ||
       clearQueueOpen ||
       !!app.cleanupReport ||
-      !!failedTransfer ||
       !!failedScan ||
       !!error,
   );
-  const comparison = $derived(app.comparison);
-  const historicalSource = $derived(app.historicalSource);
   const quickLook = $derived(app.quickLook);
   const filtered = $derived(app.filtered);
   const filterKey = $derived(app.filterKey);
-  const historical = $derived(app.historical);
   const resultLocation = $derived(app.resultLocation);
   const displayedTargetSelected = $derived(app.displayedTargetSelected);
   const scanActionLabel = $derived(
@@ -381,8 +343,6 @@
   const setError = app.setError;
   const setCancelling = app.setCancelling;
   const setTrash = app.setTrash;
-  const setRemoveEntry = app.setRemoveEntry;
-  const setComparisonOpen = app.setComparisonOpen;
   const navigation = app.navigation;
   $effect(() => {
     // Hover belongs to one displayed result, never to a future scan or query.
@@ -397,7 +357,6 @@
     map;
     page.items;
     queueOpen;
-    comparisonOpen;
     untrack(() => {
       hover = null;
       hoverEpoch++;
@@ -418,12 +377,6 @@
   }
   const previewEligible = app.previewEligible;
   const previewRow = app.previewRow;
-  const openSaved = app.openSaved;
-  const saveScan = app.saveScan;
-  const importScan = app.importScan;
-  const exportScan = app.exportScan;
-  const compareScans = app.compareScans;
-  const removeSaved = app.removeSaved;
   const fail = app.fail;
   const performanceRendered = app.performanceRendered;
   const start = app.start;
@@ -489,10 +442,6 @@
     rescan: () => app.rescan(),
     scanAllDisks: () => app.scanAllDisks(),
     stopScan: cancelScan,
-    saveScan: () => saveScan(),
-    importScan: () => importScan(),
-    exportScan: () => app.summary?.savedId && exportScan(app.summary.savedId),
-    compareScans: () => app.openComparison(),
     find: focusSearch,
     sunburst: () => setMode("sunburst"),
     treemap: () => setMode("treemap"),
@@ -515,10 +464,7 @@
   };
   // Modal dialogs, loading screens and the filters popover own the keyboard.
   const menuQuiet = $derived(
-    dialogOpen ||
-      initialSavedLoading ||
-      (libraryBusy && libraryProgress?.operation === "open") ||
-      filtersOpen,
+    dialogOpen || filtersOpen,
   );
   let typing = $state(false);
   const menuState = $derived<MenuState>({
@@ -527,10 +473,6 @@
       rescan: app.can.rescan,
       scanAllDisks: app.can.scanAllDisks,
       stopScan: app.can.stopScan,
-      saveScan: app.can.saveScan,
-      importScan: app.can.importScan,
-      exportScan: app.can.exportScan,
-      compareScans: app.can.compareScans,
       find: app.can.find,
       sunburst: app.can.explore,
       treemap: app.can.explore,
@@ -865,21 +807,8 @@
         >
       {/if}
     </div>
-    <div class="inspector-actions" class:historical-actions={historical}>
-      {#if historical}
-        <div class="historical-context">
-          <p>
-            You can't preview or queue files from a saved scan. Scan the place
-            again to work with its files.
-          </p>
-          <button disabled={!app.can.rescan} onclick={() => void app.rescan()}
-            >Rescan {locationName(
-              resultLocation?.name,
-              resultLocation?.path,
-            )}</button
-          >
-        </div>
-      {:else if selection.length > 1}
+    <div class="inspector-actions">
+      {#if selection.length > 1}
         <small class="selection-action-scope" id="selection-action-scope"
           >Actions apply to all {selection.length} selected items.</small
         >
@@ -927,7 +856,6 @@
           <button
             disabled={!app.can.addToQueue}
             class="primary"
-            hidden={historical}
             aria-busy={sq.adding}
             aria-describedby={selection.length > 1
               ? "selection-action-scope"
@@ -942,28 +870,26 @@
                 : "Add to cleanup queue"}
           </button>
         {/if}
-        {#if !historical}
-          <button
-            class="icon-action"
-            aria-label="Reveal in Finder"
-            title="Reveal in Finder"
-            disabled={!app.can.reveal}
-            onclick={revealInFinder}
-          >
-            <Icon name="folder" size={16} />
-          </button>
-          <button
-            class="icon-action"
-            aria-label={quickLookLabel}
-            title={folderOnly
-              ? "Quick Look previews files only"
-              : quickLookLabel}
-            disabled={folderOnly || !app.can.quickLook}
-            onclick={toggleQuickLook}
-          >
-            <Icon name="eye" size={16} />
-          </button>
-        {/if}
+        <button
+          class="icon-action"
+          aria-label="Reveal in Finder"
+          title="Reveal in Finder"
+          disabled={!app.can.reveal}
+          onclick={revealInFinder}
+        >
+          <Icon name="folder" size={16} />
+        </button>
+        <button
+          class="icon-action"
+          aria-label={quickLookLabel}
+          title={folderOnly
+            ? "Quick Look previews files only"
+            : quickLookLabel}
+          disabled={folderOnly || !app.can.quickLook}
+          onclick={toggleQuickLook}
+        >
+          <Icon name="eye" size={16} />
+        </button>
       </div>
       {#if !sq.directlyQueued && sq.entries.length > 0 && !sq.removing}
         <button
@@ -1008,7 +934,6 @@
   {#if summary}
     <aside
       class="workspace-side"
-      class:historical-inspector={historical}
       id="file-list-column"
       aria-label="File list and details"
       hidden={!listVisible}
@@ -1086,11 +1011,7 @@
   style:--sidebar-width={locationsSidebarVisible && sidebarWidth
     ? `${sidebarWidth}px`
     : undefined}
-  use:captureDialogOpener={(element) =>
-    (dialogOpener =
-      element
-        .closest(".saved-actions")
-        ?.querySelector<HTMLElement>("[aria-controls]") || element)}
+  use:captureDialogOpener={(element) => (dialogOpener = element)}
   data-native-busy={listLoading}
   data-native-map-mode={mode}
   data-native-map-ready={performanceBuild ? performanceMapReady : undefined}
@@ -1114,7 +1035,7 @@
     {app}
     {macosTitlebar}
     visible={locationsSidebarVisible}
-    inert={!!failedTransfer || !!failedScan || !!error}
+    inert={!!failedScan || !!error}
   />
   {#if locationsSidebarVisible}
     <SidebarDivider
@@ -1126,7 +1047,7 @@
     onscroll={() => (filtersOpen = false)}
     inert={dialogOpen}
   >
-    {#if !(summary || initialSavedLoading) || queueOpen || comparisonOpen}
+    {#if !summary || queueOpen}
       <div class="window-toolbar-fallback" data-tauri-drag-region="deep">
         {@render navigationButtons()}
         <strong>Hahakigami</strong>
@@ -1265,7 +1186,7 @@
       </section>
     {/if}
 
-    {#if !queueOpen && !comparisonOpen}
+    {#if !queueOpen}
       {#if resultsReturn}
         <div
           class="results-return-context"
@@ -1288,7 +1209,7 @@
           </span>
         </div>
       {/if}
-      {#if summary || initialSavedLoading}
+      {#if summary}
         <header class="window-toolbar" data-tauri-drag-region="deep">
           {@render navigationButtons()}
           {#if summary}
@@ -1422,241 +1343,175 @@
           <ScanStatusLine
             {summary}
             {metric}
-            {historical}
             {cancelling}
-            {savedTimestamp}
-            {savedTimestampPrecise}
-            canSave={app.can.saveScan}
-            savesEnabled={app.savedScansEnabled}
-            liveSaved={app.liveScanSaved}
-            onSave={() => void saveScan()}
             controls={viewControls}
           />
         {/if}
       {/if}
     {/if}
-    {#if libraryBusy && !initialSavedLoading && libraryProgress?.operation !== "compare" && libraryProgress?.operation !== "import" && libraryProgress?.operation !== "export"}
-      <div role="status" class="library-progress saved-open-feedback">
-        {#if libraryProgress?.operation === "open"}
-          <span>
-            {app.savedOpenCancelling
-              ? "Stopping saved scan opening…"
-              : "Opening saved scan…"}
-            {openingSavedEntry
-              ? locationName(openingSavedEntry.name, openingSavedEntry.rootPath)
-              : ""}
-            · {libraryProgress.phase === "validating"
-              ? "Validating results"
-              : libraryProgress.phase === "done"
-                ? "Preparing explorer"
-                : `${bytes(libraryProgress.bytes)} decoded`}
-          </span>
-          <button
-            disabled={app.savedOpenCancelling}
-            onclick={() => void app.cancelSavedOpen()}
-          >
-            {app.savedOpenCancelling ? "Stopping…" : "Cancel opening"}
-          </button>
-        {:else}
-          {libraryProgress
-            ? `${libraryProgress.operation === "save" ? "Saving scan" : "Opening saved scan"}… ${libraryProgress.phase === "choosing" ? "choose a file" : `${libraryProgress.phase} · ${bytes(libraryProgress.bytes)} processed`}`
-            : "Loading saved scans…"}
-        {/if}
-      </div>
-    {/if}
-    {#if comparisonOpen}
-      <CompareScans
-        entries={saved}
-        current={app.comparableCurrent}
-        disabled={!!running || blocked}
-        result={comparison}
-        progress={libraryProgress?.operation === "compare"
-          ? libraryProgress
-          : null}
-        onCompare={(beforeId, afterId) => void compareScans(beforeId, afterId)}
-        onClose={() => setComparisonOpen(false)}
-      />
-    {/if}
-    {#if !queueOpen && !comparisonOpen}
+    {#if !queueOpen}
       <div class="analysis-layout" class:has-scan={!!summary}>
         <div class="analysis-main">
-          {#if !queueOpen && !comparisonOpen}
-            <div class:has-scan={!!summary} class="explorer-content">
-              {#if initialSavedLoading}
-                <SavedScanLoading
-                  entry={openingSavedEntry
-                    ? {
-                        ...openingSavedEntry,
-                        name: locationName(
-                          openingSavedEntry.name,
-                          openingSavedEntry.rootPath,
-                        ),
-                      }
-                    : null}
-                  progress={libraryProgress}
-                  cancelling={app.savedOpenCancelling}
-                  onCancel={() => void app.cancelSavedOpen()}
-                />
-              {:else if !summary}
-                <section class="welcome" aria-labelledby="welcome-title">
-                  <img class="welcome-icon" src={appIcon} alt="" />
-                  <h1 id="welcome-title">See what’s using your space.</h1>
-                  <p class="welcome-intro">
-                    Scan a disk or folder to find its largest files.
-                  </p>
-                  <button
-                    class="welcome-target"
-                    id="welcome-target"
-                    title={target?.path}
-                    aria-busy={app.choosingFolder}
-                    disabled={!app.can.chooseFolder}
-                    onclick={() => void app.chooseFolder()}
-                  >
-                    <Icon
-                      name={target?.totalBytes ? "disk" : "folder"}
-                      size={28}
-                    />
-                    <span class="welcome-target-text">
-                      <strong
-                        >{target
-                          ? locationName(target.name, target.path)
-                          : app.targetsLoading
-                            ? "Loading locations…"
-                            : "No location selected"}</strong
-                      >
-                      <span
-                        >{app.choosingFolder
-                          ? "Choosing folder…"
-                          : target
-                            ? "Choose another location"
-                            : "Choose a location"}</span
-                      >
-                    </span>
-                  </button>
-                  <div class="welcome-actions">
-                    <button
-                      class="primary welcome-scan"
-                      aria-describedby="welcome-note"
-                      aria-busy={busy}
-                      title={target
-                        ? `Scan ${locationName(target.name, target.path)}`
-                        : "Scan selected location"}
-                      disabled={!app.can.rescan}
-                      onclick={() => void start(target)}
-                      ><Icon name="refresh" size={17} /><span
-                        >{busy
-                          ? "Starting scan…"
-                          : app.targetsLoading
-                            ? "Loading locations…"
-                            : target
-                              ? `Scan ${locationName(target.name, target.path)}`
-                              : "Scan location"}</span
-                      ></button
-                    >
-                    <button
-                      class="welcome-scan-all"
-                      title="Scan every local disk"
-                      disabled={!app.can.scanAllDisks}
-                      onclick={() => void app.scanAllDisks()}
-                      ><Icon name="disk" size={17} /><span>Scan all disks</span
-                      ></button
-                    >
-                  </div>
-                  <p class="welcome-note" id="welcome-note">
-                    {target || app.targetsLoading || !isTauri()
-                      ? "Nothing leaves your Mac."
-                      : "Choose a location to scan."}
-                  </p>
-                  {#if !isTauri()}
-                    <small class="welcome-browser">
-                      This is a browser preview. Open the desktop app to scan or
-                      pick a folder.
-                    </small>
-                  {/if}
-                </section>
-              {:else}
-                <section
-                  class:sunburst-view={mode === "sunburst"}
-                  class:inspector-hidden={!listVisible}
-                  class="explorer"
-                  style={`--map-share: ${mapShare * 100}fr; --list-share: ${(1 - mapShare) * 100}fr`}
+          <div class:has-scan={!!summary} class="explorer-content">
+            {#if !summary}
+              <section class="welcome" aria-labelledby="welcome-title">
+                <img class="welcome-icon" src={appIcon} alt="" />
+                <h1 id="welcome-title">See what’s using your space.</h1>
+                <p class="welcome-intro">
+                  Scan a disk or folder to find its largest files.
+                </p>
+                <button
+                  class="welcome-target"
+                  id="welcome-target"
+                  title={target?.path}
+                  aria-busy={app.choosingFolder}
+                  disabled={!app.can.chooseFolder}
+                  onclick={() => void app.chooseFolder()}
                 >
-                  <div class="visual" id="storage-map-panel">
-                    {#if filtered || query.trim()}
-                      <p class="filter-map-caption" title={focus?.path}>
-                        Unfiltered storage map and totals · {locationName(
-                          focus?.name,
-                          focus?.path,
-                        )}
-                      </p>
-                    {/if}
-                    <DiskMap
-                      colorMode={mapColorMode}
-                      onFileTypeSelect={(extension) => {
-                        fileTypes.select(extension);
-                        showListView("fileTypes");
-                      }}
-                      highlightedFileType={fileTypes.extension}
-                      fileTypeHighlights={fileTypes.highlights}
-                      fileTypeHighlightPending={fileTypes.highlightsLoading}
-                      scanId={summary.scanId}
-                      scanComplete={summary.state === "completed"}
-                      onRendered={performanceBuild
-                        ? performanceRendered
-                        : undefined}
-                      onLayoutPending={performanceBuild
-                        ? performanceLayoutPending
-                        : undefined}
-                      nodes={map}
-                      {queuedPaths}
-                      rootId={focus?.id ?? summary.rootId}
-                      {metric}
-                      {mode}
-                      selected={selection.map((n) => n.id)}
-                      hovered={hover?.target ?? null}
-                      {hoverEpoch}
-                      onHover={(target) => updateHover("map", target)}
-                      onSelect={select}
-                      onOpen={open}
-                    />
-                  </div>
-                  {#if listVisible}
-                    <PanelDivider
-                      value={mapShare}
-                      onChange={(value) => (mapShare = value)}
-                    />
-                  {/if}
-                  {@render listColumn()}
-                </section>
-                {#if queue.entries.length > 0}
-                  <div class="queue-strip">
-                    <Icon name="queue" size={19} />
+                  <Icon
+                    name={target?.totalBytes ? "disk" : "folder"}
+                    size={28}
+                  />
+                  <span class="welcome-target-text">
                     <strong
-                      >Cleanup queue <span
-                        >· {queue.entries.length}
-                        {queue.entries.length === 1 ? "item" : "items"}</span
-                      ></strong
+                      >{target
+                        ? locationName(target.name, target.path)
+                        : app.targetsLoading
+                          ? "Loading locations…"
+                          : "No location selected"}</strong
                     >
-                    {#if queue.entries.length}
-                      <span
-                        class:queue-needs-scan={queue.entries.some(
-                          (entry) => entry.status !== "ready",
-                        )}
-                      >
-                        {queue.entries.some((entry) => entry.status !== "ready")
-                          ? "Some items not ready"
-                          : "Ready for review"}
-                      </span>
-                    {:else}<span>Select items to review for cleanup</span>{/if}
-                    <button
-                      disabled={blocked || !!trash}
-                      onclick={() => app.showQueue(true)}>Review queue</button
+                    <span
+                      >{app.choosingFolder
+                        ? "Choosing folder…"
+                        : target
+                          ? "Choose another location"
+                          : "Choose a location"}</span
                     >
-                  </div>
+                  </span>
+                </button>
+                <div class="welcome-actions">
+                  <button
+                    class="primary welcome-scan"
+                    aria-describedby="welcome-note"
+                    aria-busy={busy}
+                    title={target
+                      ? `Scan ${locationName(target.name, target.path)}`
+                      : "Scan selected location"}
+                    disabled={!app.can.rescan}
+                    onclick={() => void start(target)}
+                    ><Icon name="refresh" size={17} /><span
+                      >{busy
+                        ? "Starting scan…"
+                        : app.targetsLoading
+                          ? "Loading locations…"
+                          : target
+                            ? `Scan ${locationName(target.name, target.path)}`
+                            : "Scan location"}</span
+                    ></button
+                  >
+                  <button
+                    class="welcome-scan-all"
+                    title="Scan every local disk"
+                    disabled={!app.can.scanAllDisks}
+                    onclick={() => void app.scanAllDisks()}
+                    ><Icon name="disk" size={17} /><span>Scan all disks</span
+                    ></button
+                  >
+                </div>
+                <p class="welcome-note" id="welcome-note">
+                  {target || app.targetsLoading || !isTauri()
+                    ? "Nothing leaves your Mac."
+                    : "Choose a location to scan."}
+                </p>
+                {#if !isTauri()}
+                  <small class="welcome-browser">
+                    This is a browser preview. Open the desktop app to scan or
+                    pick a folder.
+                  </small>
                 {/if}
+              </section>
+            {:else}
+              <section
+                class:sunburst-view={mode === "sunburst"}
+                class:inspector-hidden={!listVisible}
+                class="explorer"
+                style={`--map-share: ${mapShare * 100}fr; --list-share: ${(1 - mapShare) * 100}fr`}
+              >
+                <div class="visual" id="storage-map-panel">
+                  {#if filtered || query.trim()}
+                    <p class="filter-map-caption" title={focus?.path}>
+                      Unfiltered storage map and totals · {locationName(
+                        focus?.name,
+                        focus?.path,
+                      )}
+                    </p>
+                  {/if}
+                  <DiskMap
+                    colorMode={mapColorMode}
+                    onFileTypeSelect={(extension) => {
+                      fileTypes.select(extension);
+                      showListView("fileTypes");
+                    }}
+                    highlightedFileType={fileTypes.extension}
+                    fileTypeHighlights={fileTypes.highlights}
+                    fileTypeHighlightPending={fileTypes.highlightsLoading}
+                    scanId={summary.scanId}
+                    scanComplete={summary.state === "completed"}
+                    onRendered={performanceBuild
+                      ? performanceRendered
+                      : undefined}
+                    onLayoutPending={performanceBuild
+                      ? performanceLayoutPending
+                      : undefined}
+                    nodes={map}
+                    {queuedPaths}
+                    rootId={focus?.id ?? summary.rootId}
+                    {metric}
+                    {mode}
+                    selected={selection.map((n) => n.id)}
+                    hovered={hover?.target ?? null}
+                    {hoverEpoch}
+                    onHover={(target) => updateHover("map", target)}
+                    onSelect={select}
+                    onOpen={open}
+                  />
+                </div>
+                {#if listVisible}
+                  <PanelDivider
+                    value={mapShare}
+                    onChange={(value) => (mapShare = value)}
+                  />
+                {/if}
+                {@render listColumn()}
+              </section>
+              {#if queue.entries.length > 0}
+                <div class="queue-strip">
+                  <Icon name="queue" size={19} />
+                  <strong
+                    >Cleanup queue <span
+                      >· {queue.entries.length}
+                      {queue.entries.length === 1 ? "item" : "items"}</span
+                    ></strong
+                  >
+                  {#if queue.entries.length}
+                    <span
+                      class:queue-needs-scan={queue.entries.some(
+                        (entry) => entry.status !== "ready",
+                      )}
+                    >
+                      {queue.entries.some((entry) => entry.status !== "ready")
+                        ? "Some items not ready"
+                        : "Ready for review"}
+                    </span>
+                  {:else}<span>Select items to review for cleanup</span>{/if}
+                  <button
+                    disabled={blocked || !!trash}
+                    onclick={() => app.showQueue(true)}>Review queue</button
+                  >
+                </div>
               {/if}
-            </div>
-          {/if}
+            {/if}
+          </div>
         </div>
       </div>
     {/if}
@@ -1854,53 +1709,6 @@
       </div>
     </Modal>
   {/if}
-  {#if removeEntry}
-    <div class="modal-backdrop">
-      <div
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="remove-title"
-        tabindex="-1"
-        use:dialogFocus={{
-          opener: dialogOpener,
-          onClose: () => {
-            if (!libraryBusy) setRemoveEntry(null);
-          },
-        }}
-      >
-        <h2 id="remove-title">Remove saved scan?</h2>
-        <p>
-          Only the stored result for {locationName(
-            removeEntry.name,
-            removeEntry.rootPath,
-          )}
-          from
-          <time
-            datetime={formatScanTimestamp(removeEntry.completedAtMs).iso}
-            title={formatScanTimestamp(removeEntry.completedAtMs).absolute}
-            >{snapshotTime(removeEntry.completedAtMs, true)}</time
-          >
-          will be deleted. Your files stay. If this scan is open, it closes.
-        </p>
-        <p class="path" title={removeEntry.rootPath}>{removeEntry.rootPath}</p>
-        <p>
-          Saved {formatScanTimestamp(removeEntry.savedAtMs, undefined, true)
-            .label}
-        </p>
-        <button disabled={libraryBusy} onclick={() => setRemoveEntry(null)}>
-          Cancel
-        </button>
-        <button
-          disabled={libraryBusy}
-          class="danger"
-          onclick={() => void removeSaved()}
-        >
-          Remove saved result
-        </button>
-      </div>
-    </div>
-  {/if}
   {#if clearQueueOpen}
     <div class="modal-backdrop">
       <div
@@ -1935,9 +1743,6 @@
       {/key}
     {/if}
   </div>
-  {#if app.scanTransfer?.state === "pending"}
-    <ScanTransferFeedback report={app.scanTransfer} />
-  {/if}
   {#if trash}
     <TrashConfirmation
       items={trash.items}
@@ -1961,32 +1766,6 @@
       }}
       onRetry={() => void app.refreshQueue()}
       onDismiss={app.dismissCleanupReport}
-    />
-  {/if}
-  {#if failedTransfer}
-    <FailureModal
-      title={failedTransfer.operation === "import"
-        ? "Import failed"
-        : "Export failed"}
-      reason={failedTransfer.operation === "import"
-        ? "Hahakigami could not add this file to Saved Scans. The file may be damaged, or it may not be a Hahakigami scan. Check Saved Scans, then try again."
-        : "Hahakigami could not save the scan file. Check the place you chose before you try again."}
-      details={failedTransfer.error ?? ""}
-      actionLabel={failedTransfer.operation === "import"
-        ? "Choose another file"
-        : undefined}
-      actionDisabled={blocked ||
-        !!running ||
-        queueBusy ||
-        !!trash ||
-        app.libraryBusy}
-      closeLabel={failedTransfer.operation === "import" ? "Close" : "Done"}
-      opener={dialogOpener}
-      onAction={() => {
-        app.dismissScanTransfer();
-        void importScan();
-      }}
-      onClose={app.dismissScanTransfer}
     />
   {/if}
   {#if error}

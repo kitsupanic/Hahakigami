@@ -5,16 +5,16 @@ use rmcp::{
     Peer, RoleClient, ServiceExt,
 };
 use serde_json::{json, Value};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{process::Stdio, time::Duration};
 
-fn command(store: &Path) -> tokio::process::Command {
+fn command() -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_hahakigami"));
-    command.arg("--data-dir").arg(store).arg("mcp");
+    command.arg("mcp");
     command
 }
 
-async fn connect(store: &Path) -> RunningService<RoleClient, ()> {
-    ().serve(TokioChildProcess::new(command(store)).unwrap())
+async fn connect() -> RunningService<RoleClient, ()> {
+    ().serve(TokioChildProcess::new(command()).unwrap())
         .await
         .unwrap()
 }
@@ -43,8 +43,7 @@ async fn value(client: &Peer<RoleClient>, name: &str, args: Value) -> Value {
 #[tokio::test]
 async fn stdio_initializes_and_lists_metadata_tools() {
     tokio::time::timeout(Duration::from_secs(20), async {
-        let store = tempfile::tempdir().unwrap();
-        let client = connect(store.path()).await;
+        let client = connect().await;
         let info = client.peer_info().unwrap();
         assert_eq!(info.server_info.as_ref().unwrap().name, "Hahakigami");
         assert!(info.instructions.as_deref().unwrap().contains("metadata"));
@@ -53,13 +52,20 @@ async fn stdio_initializes_and_lists_metadata_tools() {
         names.sort_unstable();
         assert_eq!(
             names,
-            [
-                "cancel", "children", "issues", "list", "node", "scan", "search", "status",
-                "summary"
-            ]
+            ["cancel", "children", "issues", "node", "scan", "search", "status", "summary"]
         );
         let scan = tools.iter().find(|tool| tool.name == "scan").unwrap();
         assert_eq!(scan.input_schema["properties"]["path"]["type"], "string");
+        for tool in &tools {
+            assert!(
+                tool.input_schema
+                    .get("properties")
+                    .and_then(|properties| properties.get("scan_id"))
+                    .is_none(),
+                "{}",
+                tool.name
+            );
+        }
         client.cancel().await.unwrap();
     })
     .await
@@ -67,69 +73,54 @@ async fn stdio_initializes_and_lists_metadata_tools() {
 }
 
 #[tokio::test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-async fn stdio_scans_queries_errors_and_retains_results_across_sessions() {
+async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let store = tempfile::tempdir().unwrap();
         let fixture = tempfile::tempdir().unwrap();
         std::fs::write(fixture.path().join("needle.txt"), b"1234567").unwrap();
         std::fs::write(fixture.path().join("other.txt"), b"xyz").unwrap();
-        let client = connect(store.path()).await;
+        let client = connect().await;
         assert_eq!(value(&client, "status", json!({})).await["running"], false);
+        assert_eq!(value(&client, "status", json!({})).await["state"], "idle");
+        // Nothing to query before the first scan.
+        let early = call(&client, "summary", json!({})).await;
+        assert_eq!(early.is_error, Some(true), "{early:?}");
         let scanned = value(&client, "scan", json!({"path": fixture.path()})).await;
         assert_eq!(scanned["state"], "completed");
         assert_eq!(scanned["rootId"], 0);
         assert_eq!(scanned["incomplete"], false);
         assert!(scanned.get("accounting").is_some());
         assert!(scanned.get("coverage").is_some());
-        let scan_id = scanned["scanId"].as_str().unwrap();
-        assert!(uuid::Uuid::parse_str(scan_id).is_ok());
-        let found = value(
-            &client,
-            "search",
-            json!({"scan_id": scan_id, "query": "needle"}),
-        )
-        .await;
+        assert!(scanned.get("scanId").is_none());
+        let found = value(&client, "search", json!({"query": "needle"})).await;
         assert_eq!(found["total"], 1);
         assert_eq!(found["items"][0]["name"], "needle.txt");
+        assert!(found.get("scanId").is_none());
         let node_id = found["items"][0]["id"].as_u64().unwrap();
-        let node = value(
-            &client,
-            "node",
-            json!({"scan_id": scan_id, "node_id": node_id}),
-        )
-        .await;
+        let node = value(&client, "node", json!({"node_id": node_id})).await;
         assert_eq!(node["logicalBytes"], 7);
         assert!(node.get("allocatedBytes").is_some());
-        let first = value(
-            &client,
-            "children",
-            json!({"scan_id": scan_id, "node_id": 0, "limit": 1}),
-        )
-        .await;
+        assert!(node.get("scanId").is_none());
+        let first = value(&client, "children", json!({"node_id": 0, "limit": 1})).await;
         let second = value(
             &client,
             "children",
-            json!({"scan_id": scan_id, "node_id": 0, "offset": 1, "limit": 1}),
+            json!({"node_id": 0, "offset": 1, "limit": 1}),
         )
         .await;
         assert_eq!(first["total"], 2);
         assert_eq!(first["items"].as_array().unwrap().len(), 1);
         assert_eq!(second["items"].as_array().unwrap().len(), 1);
         assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
-        assert_eq!(
-            value(&client, "issues", json!({"scan_id": scan_id})).await["total"],
-            0
-        );
-        assert_eq!(
-            value(&client, "summary", json!({"scan_id": "current"})).await["scanId"],
-            scan_id
-        );
+        let issues = value(&client, "issues", json!({})).await;
+        assert_eq!(issues["total"], 0);
+        assert!(issues.get("scanId").is_none());
+        let summary = value(&client, "summary", json!({})).await;
+        assert_eq!(summary["logicalBytes"], scanned["logicalBytes"]);
+        assert_eq!(summary["state"], "completed");
         for (name, args) in [
-            ("summary", json!({"scan_id": "invalid"})),
-            ("node", json!({"scan_id": scan_id, "node_id": u32::MAX})),
-            ("list", json!({"limit": 0})),
-            ("search", json!({"scan_id": scan_id, "query": ""})),
+            ("node", json!({"node_id": u32::MAX})),
+            ("issues", json!({"limit": 0})),
+            ("search", json!({"query": ""})),
             ("scan", json!({"path": fixture.path().join("missing")})),
         ] {
             let result = call(&client, name, args).await;
@@ -138,6 +129,10 @@ async fn stdio_scans_queries_errors_and_retains_results_across_sessions() {
             assert!(!result.content.is_empty());
         }
         assert!(client
+            .call_tool(CallToolRequestParams::new("list"))
+            .await
+            .is_err());
+        assert!(client
             .call_tool(CallToolRequestParams::new("unknown"))
             .await
             .is_err());
@@ -145,75 +140,56 @@ async fn stdio_scans_queries_errors_and_retains_results_across_sessions() {
             call(&client, "scan", json!({"path": 42})).await.is_error,
             Some(true)
         );
-        client.cancel().await.unwrap();
-        let client = connect(store.path()).await;
-        let retained = value(&client, "list", json!({})).await;
-        assert_eq!(retained["total"], 1);
-        let summary = value(&client, "summary", json!({"scan_id": scan_id})).await;
-        assert_eq!(summary["logicalBytes"], scanned["logicalBytes"]);
-        assert_eq!(summary["state"], "completed");
+        // The scan_id input no longer exists.
         assert_eq!(
-            value(
+            call(
                 &client,
                 "search",
-                json!({"scan_id": scan_id, "query": "needle"})
+                json!({"scan_id": "current", "query": "needle"})
             )
-            .await["total"],
-            1
+            .await
+            .is_error,
+            Some(true)
         );
         client.cancel().await.unwrap();
     })
     .await
-    .expect("MCP scan and retained queries must finish within 30 seconds");
+    .expect("MCP scan and queries must finish within 30 seconds");
 }
 
+#[cfg(unix)]
 #[tokio::test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
-async fn stdio_save_failure_preserves_completed_current_snapshot() {
-    tokio::time::timeout(Duration::from_secs(20), async {
+async fn stdio_native_paths_round_trip_and_search_pages_can_exceed_five_hundred() {
+    tokio::time::timeout(Duration::from_secs(30), async {
         let fixture = tempfile::tempdir().unwrap();
-        std::fs::write(fixture.path().join("needle.txt"), b"1234567").unwrap();
-        let store = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(store.path(), b"existing store file").unwrap();
-        let client = connect(store.path()).await;
-
-        let failed = call(&client, "scan", json!({"path": fixture.path()})).await;
-        assert_eq!(failed.is_error, Some(true));
-        let error = failed.structured_content.unwrap()["error"]
+        let root = fixture.path().join("native-кіця \n%");
+        std::fs::create_dir(&root).unwrap();
+        for index in 0..501 {
+            std::fs::write(root.join(format!("match-{index}.txt")), b"x").unwrap();
+        }
+        let client = connect().await;
+        let summary = value(&client, "scan", json!({"path": root})).await;
+        assert!(summary["pathKey"]
             .as_str()
             .unwrap()
-            .to_owned();
-        assert!(error.contains("could not be saved"), "{error}");
-        let status = value(&client, "status", json!({})).await;
-        assert_eq!(status["state"], "completed");
-        assert_eq!(status["running"], false);
-        assert_eq!(status["error"], error);
-        assert!(status["scanId"].is_null());
-        let current = value(&client, "summary", json!({"scan_id": "current"})).await;
-        assert_eq!(current["state"], "completed");
-        assert_eq!(current["incomplete"], false);
-        assert!(current["scanId"].is_null());
-        assert_eq!(current["rootId"], 0);
-        let found = value(
-            &client,
-            "search",
-            json!({"scan_id": "current", "query": "needle"}),
-        )
-        .await;
-        assert_eq!(found["total"], 1);
-        assert_eq!(found["items"][0]["logicalBytes"], 7);
-        assert_eq!(std::fs::read(store.path()).unwrap(), b"existing store file");
+            .ends_with("native-%D0%BA%D1%96%D1%86%D1%8F%20%0A%25"));
+        let found = value(&client, "search", json!({"query": "match-", "limit": 1000})).await;
+        assert_eq!(found["total"], 501);
+        assert_eq!(found["items"].as_array().unwrap().len(), 501);
+        assert!(found["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["logicalBytes"] == 1));
         client.cancel().await.unwrap();
     })
     .await
-    .expect("MCP save failure must preserve current results within 20 seconds");
+    .expect("MCP native path scan must finish within 30 seconds");
 }
 
 #[tokio::test]
-#[ignore = "saved scans disabled: SAVED_SCANS_ENABLED"]
 async fn stdio_cancel_keeps_partial_results_and_disconnect_exits() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let store = tempfile::tempdir().unwrap();
         let fixture = tempfile::tempdir().unwrap();
         let seed = fixture.path().join("seed");
         std::fs::write(&seed, b"metadata fixture").unwrap();
@@ -225,7 +201,7 @@ async fn stdio_cancel_keeps_partial_results_and_disconnect_exits() {
             }
         }
         // Keep the process handle so this verifies EOF exit, not the SDK's kill-on-drop cleanup.
-        let mut child = command(store.path())
+        let mut child = command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -249,14 +225,12 @@ async fn stdio_cancel_keeps_partial_results_and_disconnect_exits() {
         assert_ne!(result.is_error, Some(true), "{result:?}");
         let partial = result.structured_content.unwrap();
         assert_eq!(partial["state"], "cancelled");
-        assert!(partial["scanId"].is_null());
         assert_eq!(partial["incomplete"], true);
         assert_eq!(
-            value(&client, "summary", json!({"scan_id": "current"})).await["state"],
+            value(&client, "summary", json!({})).await["state"],
             "cancelled"
         );
         assert_eq!(value(&client, "status", json!({})).await["running"], false);
-        assert_eq!(value(&client, "list", json!({})).await["total"], 0);
         assert_eq!(
             value(&client, "cancel", json!({})).await["cancelRequested"],
             false

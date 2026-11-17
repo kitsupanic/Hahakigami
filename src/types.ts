@@ -62,38 +62,9 @@ export interface NodeView {
   fileType?: string;
   fileCount?: number;
 }
-export interface SavedEntry {
-  id: string;
-  name: string;
-  rootPath: string;
-  startedAtMs: number;
-  completedAtMs: number;
-  savedAtMs: number;
-  entries: number;
-  logicalBytes: number;
-  allocatedBytes: number;
-  incomplete: boolean;
-  errors: number;
-  excluded: number;
-  fileBytes: number;
-}
-export interface LibraryProgress {
-  operation: "save" | "open" | "compare" | "import" | "export";
-  phase:
-    | "writing"
-    | "choosing"
-    | "reading"
-    | "validating"
-    | "readingBefore"
-    | "readingAfter"
-    | "comparing"
-    | "done";
-  bytes: number;
-}
 export interface ScanSummary {
   accountingModel?: "hardLinksV1" | "fullClonesV1";
   accountingWarnings?: string[];
-  origin?: "live" | "saved";
   scanMode?: "full" | "incremental";
   scanPhase?: "checking" | "scanning" | "verifying" | "caching" | "done";
   walkMs?: number;
@@ -103,7 +74,6 @@ export interface ScanSummary {
   cacheWarning?: string | null;
   startedAtMs?: number;
   completedAtMs?: number | null;
-  savedId?: string | null;
   workerMode?: WorkerMode;
   workerSource?: "manual" | "hardware" | "conservative" | "calibrated";
   workers: number;

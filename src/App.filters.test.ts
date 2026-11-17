@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setShowLogicalSize } from "./logicalSize.svelte";
 import App from "./App.svelte";
 import { menuItem } from "./fakeMenu";
-import type { NodeView, Page, SavedEntry, ScanSummary } from "./types";
+import type { NodeView, Page, ScanSummary } from "./types";
 const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
@@ -43,12 +43,8 @@ const image: NodeView = {
   kind: "file",
   childrenCount: 0,
 };
-const summary = (
-  id = "historical",
-  origin: "saved" | "live" = "saved",
-): ScanSummary => ({
+const summary = (id = "live"): ScanSummary => ({
   scanId: id,
-  origin,
   rootId: 0,
   workers: 1,
   workerStats: [],
@@ -60,21 +56,6 @@ const summary = (
   elapsedMs: 1000,
   errors: 0,
 });
-const saved: SavedEntry = {
-  id: "saved",
-  name: "Home",
-  rootPath: "/fixture",
-  startedAtMs: 1000,
-  completedAtMs: 2000,
-  savedAtMs: 3000,
-  entries: 3,
-  logicalBytes: 100,
-  allocatedBytes: 100,
-  incomplete: false,
-  errors: 0,
-  excluded: 0,
-  fileBytes: 100,
-};
 let container: HTMLDivElement, root: Root;
 function calls(command: string) {
   return mock.invoke.mock.calls.filter(([name]) => name === command);
@@ -142,10 +123,6 @@ beforeEach(async () => {
           return { sort: "sizeDescending", warning: null };
         case "set_explorer_sort":
           return { sort: args.sort, warning: null };
-        case "list_saved_scans":
-          return { entries: [saved], lastOpenedId: "saved" };
-        case "open_saved_scan":
-          return summary();
         case "full_disk_access_status":
           return {
             status: "on",
@@ -177,19 +154,8 @@ beforeEach(async () => {
           return { items: [image], total: 1 };
         case "start_scan":
           return "live";
-        case "rescan_saved_scan":
-          return {
-            scanId: "live",
-            target: {
-              id: "home",
-              name: "Home",
-              path: "/fixture",
-              totalBytes: null,
-              freeBytes: null,
-            },
-          };
         case "scan_summary":
-          return summary("live", "live");
+          return summary();
         default:
           return undefined;
       }
@@ -200,6 +166,7 @@ beforeEach(async () => {
   root = createRoot(container);
   await act(async () => root.render(App));
   await flush();
+  await click("Scan Home");
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -245,7 +212,7 @@ it("filters the entire scan, combines debounced query and preserves maps across 
   const mapCalls = calls("get_map").length;
   await choose("File category", "images");
   expect(calls("filter_nodes").at(-1)?.[1]).toMatchObject({
-    scanId: "historical",
+    scanId: "live",
     category: "images",
     query: "",
     minBytes: null,
@@ -338,7 +305,7 @@ it("ignores a stale native result immediately while a newer raw query is still d
   expect(calls("filter_nodes").at(-1)?.[1].query).toBe("new");
   expect(container.textContent).toContain("image-hit.jpg");
 });
-it("directory navigation and a fresh historical rescan clear filters and names", async () => {
+it("directory navigation and a fresh rescan clear filters and names", async () => {
   await choose("File category", "images");
   await search("Photos");
   await advance();
@@ -369,7 +336,7 @@ it("directory navigation and a fresh historical rescan clear filters and names",
       'select[aria-label="Size range"]',
     )!.value,
   ).toBe("any");
-  expect(calls("rescan_saved_scan").length).toBe(1);
+  expect(calls("start_scan").length).toBe(2);
 });
 
 it("retains existing rows and selection while a background revision is pending", async () => {
@@ -388,12 +355,12 @@ it("retains existing rows and selection while a background revision is pending",
           })
         : previous(command, args),
   );
-  const channel = calls("rescan_saved_scan").at(-1)![1].onEvent as {
+  const channel = calls("start_scan").at(-1)![1].onEvent as {
     onmessage: (event: ScanSummary) => void;
   };
   await act(async () =>
     channel.onmessage({
-      ...summary("live", "live"),
+      ...summary(),
       state: "running",
       elapsedMs: 2000,
       entries: 4,
@@ -432,12 +399,12 @@ it("clamps a filtered page when live or final size aggregation shrinks its total
         ? Promise.resolve({ items: args.offset === 0 ? [image] : [], total: 1 })
         : previous(command, args),
   );
-  const channel = calls("rescan_saved_scan").at(-1)![1].onEvent as {
+  const channel = calls("start_scan").at(-1)![1].onEvent as {
     onmessage: (event: ScanSummary) => void;
   };
   await act(async () =>
     channel.onmessage({
-      ...summary("live", "live"),
+      ...summary(),
       state: "running",
       elapsedMs: 2000,
     }),
@@ -458,7 +425,7 @@ it("clamps a filtered page when live or final size aggregation shrinks its total
         : previous(command, args),
   );
   await act(async () =>
-    channel.onmessage({ ...summary("live", "live"), elapsedMs: 3000 }),
+    channel.onmessage({ ...summary(), elapsedMs: 3000 }),
   );
   await flush();
   expect(container.querySelector(".pagination")).toBeNull();

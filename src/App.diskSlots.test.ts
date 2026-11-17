@@ -80,7 +80,6 @@ const makeSummary = (
   state: ScanSummary["state"],
 ): ScanSummary => ({
   scanId,
-  origin: "live",
   rootId: 0,
   state,
   workers: 1,
@@ -177,8 +176,6 @@ beforeEach(async () => {
         return chosen;
       case "cleanup_queue_target":
         return queueTarget;
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "list_cleanup_queue":
         return {
           entries: queueEntries,
