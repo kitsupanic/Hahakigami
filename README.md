@@ -4,6 +4,18 @@ A local disk-space analyzer for macOS, built with Rust, Tauri 2, Svelte 5, and T
 
 Hahakigami runs on macOS 14 and later. See [benchmark results and methodology](docs/BENCHMARKS.md) for the measured OpenDisk comparison and full-clone accounting cost. Windows and Linux releases are future work.
 
+## Install
+
+Download `Hahakigami-<version>-arm64.zip` from the [latest release](https://github.com/kitsupanic/Hahakigami/releases/latest), unzip it and move `Hahakigami.app` to Applications. The build is for Apple silicon Macs; on Intel, run from source.
+
+The release is ad-hoc signed and not notarized, so macOS blocks the first launch. Open the app once, then go to **System Settings → Privacy & Security** and choose **Open Anyway**. Alternatively, clear the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Hahakigami.app
+```
+
+Each release has a new ad-hoc identity, so Full Disk Access must be granted again after updating.
+
 ## Run from source
 
 Requires macOS 14+, Xcode command-line tools, a stable Rust toolchain, Node.js 22.12+ (Node 24 tested), and pnpm 11. Dependencies are pinned in `Cargo.lock` and `pnpm-lock.yaml`.
