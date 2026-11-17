@@ -1,7 +1,7 @@
 use super::*;
 use cleanup::{TrashOutcome, TrashOutcomeStatus};
 use disk_scan::Node;
-use std::time::Duration;
+use std::{sync::RwLock, time::Duration};
 use tauri::Manager;
 
 fn app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
@@ -340,7 +340,7 @@ fn start_recorded(
 ) -> Result<(String, Recorder), String> {
     start_scan_impl(state, Some(target.id.clone()), None, events.clone()).map(|id| (id, events))
 }
-fn install(state: &AppState, snapshot: Snapshot) -> Arc<Session> {
+pub(crate) fn install(state: &AppState, snapshot: Snapshot) -> Arc<Session> {
     install_in(state, Slot::Folder, "fixture", snapshot)
 }
 fn install_in(state: &AppState, slot: Slot, id: &str, snapshot: Snapshot) -> Arc<Session> {
@@ -386,7 +386,7 @@ fn install_on(
 fn fixture() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap()
 }
-fn snapshot(root: PathBuf) -> Snapshot {
+pub(crate) fn snapshot(root: PathBuf) -> Snapshot {
     disk_scan::scan(
         root,
         disk_scan::ScanOptions::default(),
@@ -2123,285 +2123,6 @@ fn cache_finalization_never_authorizes_completed_actions_or_replacement() {
 }
 
 #[test]
-fn speculative_candidate_selection_rejects_paths_listings_and_resolved_aliases() {
-    let baseline = synthetic(2);
-    let prepared = || {
-        Some(PreparedRescan {
-            snapshot: baseline.clone(),
-            stats: disk_scan::ReuseStats::default(),
-        })
-    };
-    assert!(choose_prepared(&events::Changes::default(), prepared()).is_some());
-    assert!(choose_prepared(&events::Changes::default(), None).is_none());
-    let dirty = events::Changes {
-        paths: vec![baseline.path(1).unwrap()],
-        ..Default::default()
-    };
-    assert!(choose_prepared(&dirty, prepared()).is_none());
-    let listing = events::Changes {
-        directories: vec![baseline.root.clone()],
-        ..Default::default()
-    };
-    assert!(choose_prepared(&listing, prepared()).is_none());
-    let alias = events::Changes {
-        shared_inodes: std::collections::HashSet::from([baseline.node(1).unwrap().identity.inode]),
-        ..Default::default()
-    }
-    .resolve(&baseline)
-    .unwrap();
-    assert_eq!(alias.paths, vec![baseline.path(1).unwrap()]);
-    assert!(choose_prepared(&alias, prepared()).is_none());
-}
-
-#[test]
-fn deferred_hardlink_reconstruction_observes_late_alias_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("scope");
-    std::fs::create_dir_all(root.join("linked")).unwrap();
-    std::fs::create_dir_all(root.join("clean/deep")).unwrap();
-    std::fs::write(root.join("linked/a"), b"old").unwrap();
-    std::fs::hard_link(root.join("linked/a"), root.join("linked/b")).unwrap();
-    std::fs::write(root.join("clean/deep/kept"), b"unchanged").unwrap();
-    let external = dir.path().join("external");
-    std::fs::hard_link(root.join("linked/a"), &external).unwrap();
-    let baseline = snapshot(root.canonicalize().unwrap());
-    let state = AppState::default();
-    let s = install(&state, baseline.clone());
-    let authority = disk_scan::ScanRoot::open(
-        baseline.root.clone(),
-        baseline.node(0).unwrap().identity.clone(),
-    )
-    .unwrap();
-    let token = cache::Token {
-        cursor: 1,
-        epoch: "test".into(),
-        full_scan_at_ms: now_ms(),
-    };
-    let (cached, prepared) = prepare_rescan(
-        &s,
-        &authority,
-        cache::CachedScan {
-            snapshot: baseline.clone(),
-            token: token.clone(),
-        },
-    );
-    assert!(prepared.is_none());
-    assert!(cached.token == token);
-    #[cfg(feature = "performance-benchmark")]
-    assert!(!s
-        .scan_details
-        .lock()
-        .unwrap()
-        .phase_timings_us
-        .contains_key("speculative_reconcile"));
-    // This happens after loading the baseline but before final alias resolution.
-    std::fs::write(&external, vec![3; 32768]).unwrap();
-    let changes = events::Changes {
-        uncertain_aliases: true,
-        ..Default::default()
-    }
-    .resolve(&cached.snapshot)
-    .unwrap();
-    assert_eq!(changes.paths.len(), 2);
-    assert_eq!(
-        s.store.read().unwrap().stats.logical_bytes,
-        baseline.stats.logical_bytes
-    );
-    let store = Arc::new(RwLock::new(Snapshot::empty(baseline.root.clone())));
-    let stats = disk_scan::scan_live_incremental_authorized(
-        authority,
-        disk_scan::ScanOptions::default(),
-        Arc::new(AtomicBool::new(false)),
-        store.clone(),
-        |_| {},
-        disk_scan::IncrementalSeed {
-            snapshot: cached.snapshot,
-            dirty_paths: changes.paths,
-            dirty_directories: changes.directories,
-        },
-    )
-    .unwrap();
-    assert!(stats.fallback_reason.is_none());
-    assert!(stats.reused_entries > 0);
-    let signature = |s: &Snapshot| -> std::collections::BTreeMap<_, _> {
-        s.iter_nodes()
-            .map(|n| {
-                (
-                    n.path().unwrap(),
-                    (
-                        n.identity.clone(),
-                        n.own_logical_size,
-                        n.own_allocated_size,
-                        n.logical_size,
-                        n.allocated_size,
-                        n.hard_link,
-                    ),
-                )
-            })
-            .collect()
-    };
-    let fresh = snapshot(baseline.root);
-    assert_eq!(signature(&store.read().unwrap()), signature(&fresh));
-    assert_eq!(
-        store.read().unwrap().stats.allocated_bytes,
-        fresh.stats.allocated_bytes
-    );
-}
-
-#[test]
-fn cancelled_speculative_preparation_never_changes_the_visible_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("clean")).unwrap();
-    std::fs::write(dir.path().join("clean/file"), b"old").unwrap();
-    let baseline = snapshot(std::fs::canonicalize(dir.path()).unwrap());
-    let state = AppState::default();
-    let s = install(&state, baseline.clone());
-    s.cancel.store(true, Ordering::Relaxed);
-    let authority = disk_scan::ScanRoot::open(
-        baseline.root.clone(),
-        baseline.node(0).unwrap().identity.clone(),
-    )
-    .unwrap();
-    let token = cache::Token {
-        cursor: 1,
-        epoch: "test".into(),
-        full_scan_at_ms: now_ms(),
-    };
-    let (cached, prepared) = prepare_rescan(
-        &s,
-        &authority,
-        cache::CachedScan {
-            snapshot: baseline.clone(),
-            token,
-        },
-    );
-    assert!(prepared.is_none());
-    assert_eq!(
-        cached.snapshot.stats.logical_bytes,
-        baseline.stats.logical_bytes
-    );
-    assert_eq!(
-        s.store.read().unwrap().stats.logical_bytes,
-        baseline.stats.logical_bytes
-    );
-    assert_eq!(s.store.read().unwrap().state, ScanState::Completed);
-}
-
-#[test]
-#[ignore = "opt-in native live-journal rejection of a late speculative change"]
-fn native_speculative_late_change() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("clean")).unwrap();
-    let file = dir.path().join("clean/file");
-    std::fs::write(&file, b"old").unwrap();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    let file = root.join("clean/file");
-    let baseline = snapshot(root.clone());
-    let state = AppState::default();
-    let s = install(&state, baseline.clone());
-    let authority =
-        disk_scan::ScanRoot::open(root.clone(), baseline.node(0).unwrap().identity.clone())
-            .unwrap();
-    let volume = local_volume(&authority).expect("local native fixture volume");
-    let since = events::current_id().expect("native FSEvents cursor");
-    let token = cache::Token {
-        cursor: since,
-        epoch: "native-fixture".into(),
-        full_scan_at_ms: now_ms(),
-    };
-    let ((cached, prepared), changes) =
-        events::replay_with_load_on_volume(&root, &volume, since, &s.cancel, || {
-            let (cached, prepared) = prepare_rescan(
-                &s,
-                &authority,
-                cache::CachedScan {
-                    snapshot: baseline.clone(),
-                    token,
-                },
-            );
-            let candidate = prepared.as_ref().expect("clean speculative reconstruction");
-            assert_eq!(
-                candidate
-                    .snapshot
-                    .iter_nodes()
-                    .find(|n| n.path().unwrap() == file)
-                    .unwrap()
-                    .own_logical_size,
-                3
-            );
-            assert!(candidate.stats.reused_entries > 0);
-            assert_eq!(
-                s.store
-                    .read()
-                    .unwrap()
-                    .iter_nodes()
-                    .find(|n| n.path().unwrap() == file)
-                    .unwrap()
-                    .own_logical_size,
-                3
-            );
-            // The live event stream must include this write after private construction.
-            std::fs::write(&file, b"larger content written after private preparation").unwrap();
-            Ok((cached, prepared))
-        })
-        .unwrap();
-    let changes = changes.resolve(&cached.snapshot).unwrap();
-    assert!(
-        !changes.paths.is_empty() || !changes.directories.is_empty(),
-        "late write must invalidate preparation: {changes:?}"
-    );
-    assert!(choose_prepared(&changes, prepared).is_none());
-    // The rejected private tree was never published. Reconcile the original seed.
-    assert_eq!(
-        s.store
-            .read()
-            .unwrap()
-            .iter_nodes()
-            .find(|n| n.path().unwrap() == file)
-            .unwrap()
-            .own_logical_size,
-        3
-    );
-    let store = Arc::new(RwLock::new(Snapshot::empty(root.clone())));
-    let reuse = disk_scan::scan_live_incremental_authorized(
-        authority.reopen().unwrap(),
-        disk_scan::ScanOptions::default(),
-        Arc::new(AtomicBool::new(false)),
-        store.clone(),
-        |_| {},
-        disk_scan::IncrementalSeed {
-            snapshot: cached.snapshot,
-            dirty_paths: changes.paths,
-            dirty_directories: changes.directories,
-        },
-    )
-    .unwrap();
-    assert!(reuse.fallback_reason.is_none());
-    let signature = |s: &Snapshot| -> std::collections::BTreeMap<_, _> {
-        s.iter_nodes()
-            .map(|n| {
-                (
-                    n.path().unwrap(),
-                    (
-                        n.identity.clone(),
-                        n.own_logical_size,
-                        n.own_allocated_size,
-                        n.logical_size,
-                        n.allocated_size,
-                        n.excluded,
-                    ),
-                )
-            })
-            .collect()
-    };
-    let actual = store.read().unwrap();
-    let fresh = snapshot(root);
-    assert_eq!(signature(&actual), signature(&fresh));
-    assert_eq!(actual.stats.entries, fresh.stats.entries);
-    assert_eq!(actual.stats.errors, 0);
-}
-
-#[test]
 #[ignore = "native journal/cache parity and timing on disposable local fixture"]
 fn native_rescan_cache_parity() {
     tauri::async_runtime::block_on(async {
@@ -2424,7 +2145,7 @@ fn native_rescan_cache_parity() {
         std::thread::sleep(Duration::from_secs(2));
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.rescan_cache.lock().unwrap() = Some(cache::Cache::new(dir.path().join("cache")));
+        state.baselines.configure(dir.path().join("cache"));
         let root = std::fs::canonicalize(root).unwrap();
         let target = register(
             &state,
@@ -2546,7 +2267,7 @@ fn native_rescan_cache_parity() {
         // A fresh backend process model reloads the persisted cache rather than transferring memory.
         let app2 = self::app(AppState::default());
         let state2 = app2.state::<AppState>();
-        *state2.rescan_cache.lock().unwrap() = Some(cache::Cache::new(dir.path().join("cache")));
+        state2.baselines.configure(dir.path().join("cache"));
         let target2 = register(
             &state2,
             platform::target(&root, "fixture".into()),
@@ -2634,7 +2355,7 @@ fn native_existing_folder_cache_reuse() {
         for process in 0..2 {
             let app = app(AppState::default());
             let state = app.state::<AppState>();
-            *state.rescan_cache.lock().unwrap() = Some(cache::Cache::new(dir.path().join("cache")));
+            state.baselines.configure(dir.path().join("cache"));
             let target = register(
                 &state,
                 platform::target(&root, "existing fixture".into()),
@@ -2735,100 +2456,6 @@ fn published_candidate_reindexes_issues_with_unchanged_error_count() {
                 .incomplete
         );
     });
-}
-
-#[test]
-fn disk_decode_refreshes_history_and_falls_back_on_final_replay_failure() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("source");
-    std::fs::create_dir_all(root.join("clean")).unwrap();
-    let file = root.join("clean/file");
-    std::fs::write(&file, b"old").unwrap();
-    let original = snapshot(root.clone());
-    let path = original.root.join("clean/file");
-    let token = cache::Token {
-        cursor: 42,
-        epoch: "epoch".into(),
-        full_scan_at_ms: now_ms(),
-    };
-    let (cached, dirty) = refresh_disk_baseline(
-        || {
-            std::fs::write(&file, b"longer data changed during cache decoding").unwrap();
-            Ok(cache::CachedScan {
-                snapshot: original,
-                token: token.clone(),
-            })
-        },
-        |cursor| {
-            assert_eq!(cursor, 42);
-            assert_eq!(
-                std::fs::read(&file).unwrap(),
-                b"longer data changed during cache decoding"
-            );
-            Ok(events::Changes {
-                paths: vec![path.clone()],
-                ..Default::default()
-            })
-        },
-        || true,
-    )
-    .unwrap();
-    let store = Arc::new(RwLock::new(Snapshot::empty(cached.snapshot.root.clone())));
-    let authority = disk_scan::ScanRoot::open(
-        cached.snapshot.root.clone(),
-        cached.snapshot.node(0).unwrap().identity.clone(),
-    )
-    .unwrap();
-    disk_scan::scan_live_incremental_authorized(
-        authority,
-        disk_scan::ScanOptions::default(),
-        Arc::new(AtomicBool::new(false)),
-        store.clone(),
-        |_| {},
-        disk_scan::IncrementalSeed {
-            snapshot: cached.snapshot,
-            dirty_paths: dirty.paths,
-            dirty_directories: dirty.directories,
-        },
-    )
-    .unwrap();
-    let actual = store.read().unwrap();
-    let expected = snapshot(root.clone());
-    assert_eq!(
-        actual
-            .iter_nodes()
-            .find(|n| n.path().unwrap() == path)
-            .unwrap()
-            .logical_size,
-        expected
-            .iter_nodes()
-            .find(|n| n.path().unwrap() == path)
-            .unwrap()
-            .logical_size
-    );
-    drop(actual);
-    assert!(refresh_disk_baseline(
-        || Ok(cache::CachedScan {
-            snapshot: snapshot(root.clone()),
-            token: token.clone()
-        }),
-        |_| Err("dropped history".into()),
-        || true
-    )
-    .err()
-    .unwrap()
-    .contains("dropped"));
-    assert!(refresh_disk_baseline(
-        || Ok(cache::CachedScan {
-            snapshot: snapshot(root),
-            token
-        }),
-        |_| Ok(events::Changes::default()),
-        || false
-    )
-    .err()
-    .unwrap()
-    .contains("journal changed"));
 }
 
 #[test]
@@ -3800,6 +3427,7 @@ fn preview_close_and_session_mutations_revoke_pending_authority() {
 #[ignore = "opt-in read-only cached directory validation worker sweep"]
 #[cfg(target_os = "macos")]
 fn native_validation_worker_sweep() {
+    use baseline::Journal;
     use std::os::unix::fs::OpenOptionsExt;
     fn clean(s: &Snapshot) -> bool {
         s.state == ScanState::Completed
@@ -3858,16 +3486,19 @@ fn native_validation_worker_sweep() {
         .unwrap();
         Arc::try_unwrap(store).unwrap().into_inner().unwrap()
     };
-    let baseline = full(3);
-    assert!(clean(&baseline), "baseline must be complete and clean");
+    let first_full = full(3);
+    assert!(clean(&first_full), "baseline must be complete and clean");
     // Public replay flushes pending history; resolving it preserves ambiguous hard-link refresh.
-    let volume = local_volume(&authority).expect("local volume required");
+    let volume = baseline::Fsevents
+        .history(&authority)
+        .expect("local volume required")
+        .volume;
     let (_, changes) =
         events::replay_with_load_on_volume(&root, &volume, cursor, &cancel, || Ok(())).unwrap();
-    let changes = changes.resolve(&baseline).unwrap();
+    let changes = changes.resolve(&first_full).unwrap();
     let mut report = serde_json::json!({"schema_version":1,"complete":false,
         "metric":"core reconciliation through completed publication; excludes seed clone, reopen, replay, cache decode/save and app launch",
-        "root":root,"baseline":totals(&baseline),"cursor":cursor,
+        "root":root,"baseline":totals(&first_full),"cursor":cursor,
         "dirty_paths":changes.paths.len(),"dirty_directories":changes.directories.len(),"runs":[]});
     checkpoint(&mut output, &report);
     let counts = [1, 2, 3, 4, 6, 8];
@@ -3876,7 +3507,7 @@ fn native_validation_worker_sweep() {
         for position in 0..counts.len() {
             let workers = counts[(position + round) % counts.len()];
             let seed = disk_scan::IncrementalSeed {
-                snapshot: baseline.clone(),
+                snapshot: first_full.clone(),
                 dirty_paths: changes.paths.clone(),
                 dirty_directories: changes.directories.clone(),
             };
@@ -3907,7 +3538,7 @@ fn native_validation_worker_sweep() {
                 && clean(&candidate)
                 && candidate.worker_stats.len() == workers
                 && opens == candidate.stats.directories.saturating_sub(1);
-            let matches_baseline = totals(&candidate) == totals(&baseline);
+            let matches_baseline = totals(&candidate) == totals(&first_full);
             qualified &= success && matches_baseline;
             report["runs"].as_array_mut().unwrap().push(serde_json::json!({
                 "round":round,"warm":round>0,"requested_workers":workers,"actual_workers":candidate.worker_stats.len(),
@@ -3920,7 +3551,7 @@ fn native_validation_worker_sweep() {
         }
     }
     let final_full = full(3);
-    let stable = clean(&final_full) && totals(&final_full) == totals(&baseline);
+    let stable = clean(&final_full) && totals(&final_full) == totals(&first_full);
     report["final_full"] = totals(&final_full);
     report["aggregate_stable"] = stable.into();
     report["qualified"] = (qualified && stable).into();
@@ -4835,7 +4466,7 @@ fn a_rescan_takes_only_its_own_disks_baseline_and_leaves_other_disks_intact() {
     let (_b_dir, b_root) = disk_root();
     let a = register_disk(&state, &a_root);
     register_disk(&state, &b_root);
-    let token = || cache::Token {
+    let token = || baseline::Token {
         cursor: 1,
         epoch: "epoch".into(),
         full_scan_at_ms: now_ms(),
@@ -5086,15 +4717,9 @@ fn a_poisoned_rescan_cache_does_not_stop_the_scans_that_follow() {
     let app = app(AppState::default());
     let state = app.state::<AppState>();
     let dir = tempfile::tempdir().unwrap();
-    *state.rescan_cache.lock().unwrap() = Some(cache::Cache::new(dir.path().join("cache")));
+    state.baselines.configure(dir.path().join("cache"));
     // A scan thread that panics while it holds the cache lock poisons it.
-    let cache = state.rescan_cache.clone();
-    let poisoner = std::thread::spawn(move || {
-        let _guard = cache.lock().unwrap();
-        panic!("scan thread failed while publishing");
-    });
-    assert!(poisoner.join().is_err());
-    assert!(state.rescan_cache.is_poisoned());
+    state.baselines.poison();
     let (_a_dir, a_root) = disk_root();
     let (_b_dir, b_root) = disk_root();
     for root in [a_root, b_root] {

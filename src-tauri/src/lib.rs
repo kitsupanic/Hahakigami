@@ -1,5 +1,6 @@
 mod access_setup;
 mod automation;
+mod baseline;
 mod budget;
 mod cache;
 mod cleanup;
@@ -33,7 +34,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError, RwLock,
+        Arc, Mutex,
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -325,7 +326,7 @@ struct AppState {
     scans: Arc<slots::Slots>,
     library: Arc<Mutex<Option<library::Library>>>,
     cleanup_queue: Arc<Mutex<cleanup_queue::Queue>>,
-    rescan_cache: Arc<Mutex<Option<cache::Cache>>>,
+    baselines: Arc<baseline::Baselines>,
     activity: Arc<ActivityGate>,
     saved_open: Arc<Mutex<Option<Arc<SavedOpen>>>>,
 }
@@ -961,129 +962,6 @@ async fn start_scan<R: tauri::Runtime>(
     quick_look::close(app.clone(), state.preview.clone()).await?;
     start_scan_impl(&state, target_id, path, on_event)
 }
-#[cfg(target_os = "macos")]
-fn local_volume(root: &disk_scan::ScanRoot) -> Option<PathBuf> {
-    use std::os::{
-        fd::{AsFd, AsRawFd},
-        unix::ffi::OsStrExt,
-    };
-    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstatfs(root.as_fd().as_raw_fd(), &mut stat) } != 0
-        || stat.f_flags & libc::MNT_LOCAL as u32 == 0
-    {
-        return None;
-    }
-    let length = stat.f_mntonname.iter().position(|byte| *byte == 0)?;
-    let bytes =
-        unsafe { std::slice::from_raw_parts(stat.f_mntonname.as_ptr().cast::<u8>(), length) };
-    let path = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
-    path.is_absolute().then_some(path)
-}
-#[cfg(not(target_os = "macos"))]
-fn local_volume(_: &disk_scan::ScanRoot) -> Option<PathBuf> {
-    None
-}
-#[cfg(test)]
-fn refresh_disk_baseline(
-    load: impl FnOnce() -> Result<cache::CachedScan, String>,
-    replay: impl FnOnce(u64) -> Result<events::Changes, String>,
-    epoch_valid: impl FnOnce() -> bool,
-) -> Result<(cache::CachedScan, events::Changes), String> {
-    let cached = load()?;
-    let dirty_paths = replay(cached.token.cursor)?.resolve(&cached.snapshot)?;
-    if !epoch_valid() {
-        return Err("Filesystem event journal changed while loading the cache".into());
-    }
-    Ok((cached, dirty_paths))
-}
-// Benchmark-only spans; normal builds evaluate the expression without timers or storage.
-macro_rules! scan_span {
-    ($session:expr, $phase:literal, $operation:expr) => {{
-        #[cfg(feature = "performance-benchmark")]
-        let began = Instant::now();
-        let result = $operation;
-        #[cfg(feature = "performance-benchmark")]
-        performance::record($session, $phase, began);
-        result
-    }};
-}
-struct PreparedRescan {
-    snapshot: Snapshot,
-    stats: disk_scan::ReuseStats,
-}
-fn choose_prepared(
-    changes: &events::Changes,
-    prepared: Option<PreparedRescan>,
-) -> Option<PreparedRescan> {
-    // Call only after resolving external inode events against the baseline.
-    if changes.paths.is_empty() && changes.directories.is_empty() {
-        prepared
-    } else {
-        None
-    }
-}
-// Cached hard-link scopes reconcile once, after final alias resolution. Even an
-// external directory event can dirty every link group, making speculation wasteful.
-// Other scopes keep private reconstruction while the live journal finishes; dirty
-// history discards it before reconciliation against the original validated baseline.
-fn prepare_rescan(
-    s: &Session,
-    root: &disk_scan::ScanRoot,
-    cached: cache::CachedScan,
-) -> (cache::CachedScan, Option<PreparedRescan>) {
-    if !cached.snapshot.incremental_accounting_eligible()
-        || cached.snapshot.iter_nodes().any(|node| node.hard_link)
-    {
-        return (cached, None);
-    }
-    let Ok(authority) = root.reopen() else {
-        return (cached, None);
-    };
-    let store = Arc::new(RwLock::new(Snapshot::empty(cached.snapshot.root.clone())));
-    let cancel = Arc::new(AtomicBool::new(s.cancel.load(Ordering::Relaxed)));
-    let result = scan_span!(
-        s,
-        "speculative_reconcile",
-        disk_scan::scan_live_incremental_authorized(
-            authority,
-            disk_scan::ScanOptions {
-                workers: s.workers,
-                qos: s.qos,
-                descriptor_limit: s.descriptor_limit,
-                ..Default::default()
-            },
-            cancel.clone(),
-            store.clone(),
-            |_| {
-                if s.cancel.load(Ordering::Relaxed) {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-            },
-            disk_scan::IncrementalSeed {
-                snapshot: cached.snapshot.clone(),
-                dirty_paths: vec![],
-                dirty_directories: vec![]
-            },
-        )
-    );
-    let prepared = result
-        .ok()
-        .filter(|stats| stats.fallback_reason.is_none())
-        .and_then(|stats| {
-            let snapshot = Arc::try_unwrap(store).ok()?.into_inner().ok()?;
-            (snapshot.state == ScanState::Completed
-                && !snapshot.stats.incomplete
-                && snapshot.incremental_accounting_eligible()
-                && !s.cancel.load(Ordering::Relaxed))
-            .then_some(PreparedRescan { snapshot, stats })
-        });
-    (cached, prepared)
-}
-// A scan thread that panicked while holding the cache lock poisons it; the cache's files stay
-// consistent (temp file, then rename; leftovers are swept), so other scans keep using it.
-fn lock_cache(cache: &Mutex<Option<cache::Cache>>) -> MutexGuard<'_, Option<cache::Cache>> {
-    cache.lock().unwrap_or_else(PoisonError::into_inner)
-}
 fn mark_failed(snapshot: &mut Snapshot, message: String) {
     if snapshot.state != ScanState::Failed {
         snapshot.state = ScanState::Failed;
@@ -1176,149 +1054,44 @@ impl Progress for Channel<Summary> {
 fn run_scan(
     s: Arc<Session>,
     root: disk_scan::ScanRoot,
-    previous: Option<cache::CachedScan>,
-    cache: Arc<Mutex<Option<cache::Cache>>>,
+    previous: Option<baseline::Taken>,
+    baselines: Arc<baseline::Baselines>,
     channel: impl Progress,
     grant: budget::Grant,
 ) {
     let pipeline_started = Instant::now();
-    let configured = lock_cache(&cache)
-        .as_ref()
-        .is_some_and(|c| !c.contains_storage(root.path()));
-    let volume = local_volume(&root);
-    let epoch = if configured && volume.is_some() && root.path() != std::path::Path::new("/") {
-        events::boot_session()
-            .zip(events::journal_identity(root.path()))
-            .map(|(boot, journal)| format!("{boot}:{journal}"))
-    } else {
-        None
+    let options = disk_scan::ScanOptions {
+        workers: s.workers,
+        qos: s.qos,
+        descriptor_limit: s.descriptor_limit,
+        ..Default::default()
     };
-    // Start cursor precedes replay and enumeration. Events during either operation
-    // remain in the next scan's replay, rather than advancing past unseen writes.
-    let token = epoch.as_ref().and_then(|epoch| {
-        events::current_id()
-            .filter(|id| *id != 0)
-            .map(|cursor| cache::Token {
-                epoch: epoch.clone(),
-                cursor,
-                full_scan_at_ms: s.started_at_ms,
-            })
-    });
-    channel.report(s.summary());
-    let mut fallback = None;
-    let mut seed = None;
-    let mut full_scan_at_ms = s.started_at_ms;
-    let mut prior_cache_token = None;
-    let mut unchanged_metadata = false;
-    let mut prepared_rescan = None;
-    if let Some(token) = &token {
-        enum Baseline {
-            Memory(Box<cache::CachedScan>),
-            Disk(cache::Candidate),
-        }
-        let cached = match previous {
-            Some(previous)
-                if previous.token.epoch == token.epoch
-                    && cache::eligible(&previous.snapshot)
-                    && cache::recent(&previous.token, s.started_at_ms, now_ms())
-                    && previous
-                        .snapshot
-                        .node(0)
-                        .is_some_and(|n| &n.identity == root.identity()) =>
-            {
-                Some(Baseline::Memory(Box::new(previous)))
-            }
-            _ => match scan_span!(
-                &s,
-                "cache_probe",
-                lock_cache(&cache).as_ref().unwrap().probe(
-                    root.path(),
-                    root.identity(),
-                    &token.epoch,
-                )
-            ) {
-                Ok(result) => result.map(Baseline::Disk),
-                Err(e) => {
-                    fallback = Some(format!("Rescan cache unavailable: {e}"));
-                    None
-                }
-            },
-        };
-        if let Some(cached) = cached {
-            let cursor = match &cached {
-                Baseline::Memory(cached) => cached.token.cursor,
-                Baseline::Disk(candidate) => candidate.token.cursor,
-            };
-            let loaded = scan_span!(
-                &s,
-                "journal_replay",
-                events::replay_with_load_on_volume(
-                    root.path(),
-                    volume.as_ref().unwrap(),
-                    cursor,
-                    &s.cancel,
-                    || {
-                        let cached = match cached {
-                            Baseline::Memory(cached) => *cached,
-                            Baseline::Disk(candidate) => {
-                                // Only the record check holds the cache lock. The archive decodes
-                                // without it, so another scan can publish meanwhile.
-                                let pending = lock_cache(&cache).as_ref().unwrap().begin_load(
-                                    candidate,
-                                    root.path(),
-                                    root.identity(),
-                                    &token.epoch,
-                                )?;
-                                scan_span!(
-                                    &s,
-                                    "cache_decode_validate",
-                                    pending.decode(root.path(), root.identity())
-                                )?
-                            }
-                        };
-                        if !cache::eligible(&cached.snapshot) {
-                            return Err(
-                                "Clone sharing or uncertain accounting requires a full scan".into(),
-                            );
-                        }
-                        Ok(prepare_rescan(&s, &root, cached))
-                    }
-                )
-            )
-            .and_then(|((cached, prepared), changes)| {
-                let changes =
-                    scan_span!(&s, "alias_resolution", changes.resolve(&cached.snapshot))?;
-                Ok((cached, prepared, changes))
-            });
-            match loaded {
-                Ok((cached, prepared, changes))
-                    if events::boot_session()
-                        .zip(events::journal_identity(root.path()))
-                        .is_some_and(|(boot, journal)| {
-                            format!("{boot}:{journal}") == token.epoch
-                        }) =>
-                {
-                    full_scan_at_ms = cached.token.full_scan_at_ms;
-                    prior_cache_token = Some(cached.token);
-                    if !s.cancel.load(Ordering::Acquire) {
-                        prepared_rescan = choose_prepared(&changes, prepared);
-                    }
-                    seed = Some(disk_scan::IncrementalSeed {
-                        snapshot: cached.snapshot,
-                        dirty_paths: changes.paths,
-                        dirty_directories: changes.directories,
-                    });
-                }
-                Ok(_) => fallback = Some("Filesystem event journal changed".into()),
-                Err(error) => fallback = Some(format!("Rescan cache unavailable: {error}")),
-            }
-        } else if fallback.is_none() {
-            fallback = Some("No compatible recent clean scan is cached".into());
-        }
-    } else {
-        fallback =
-            Some("This location requires a full scan or event history is unavailable".into());
-    }
+    #[cfg(feature = "performance-benchmark")]
+    let timing = |phase: &'static str, began: Instant| performance::record(&s, phase, began);
+    let (start, ticket) = baselines.acquire(
+        &baseline::Fsevents,
+        baseline::Request {
+            root: &root,
+            previous,
+            started_at_ms: s.started_at_ms,
+            cancel: &s.cancel,
+            options,
+            #[cfg(feature = "performance-benchmark")]
+            timing: &timing,
+        },
+        || {
+            channel.report(s.summary());
+        },
+    );
+    let (seed, prepared_rescan, fallback) = match start {
+        baseline::Start::Prepared {
+            snapshot,
+            stats,
+            seed,
+        } => (Some(*seed), Some((snapshot, stats)), None),
+        baseline::Start::Seed(seed) => (Some(seed), None, None),
+        baseline::Start::Full(reason) => (None, None, Some(reason)),
+    };
     {
         let mut details = s.scan_details.lock().unwrap();
         details.phase = "scanning".into();
@@ -1330,12 +1103,6 @@ fn run_scan(
         .into();
         details.fallback_reason = fallback;
     }
-    let options = disk_scan::ScanOptions {
-        workers: s.workers,
-        qos: s.qos,
-        descriptor_limit: s.descriptor_limit,
-        ..Default::default()
-    };
     let callback = |_| {
         if !channel.report(s.summary()) {
             s.cancel.store(true, Ordering::Relaxed);
@@ -1345,11 +1112,11 @@ fn run_scan(
     performance::record(&s, "cache_checks_total", pipeline_started);
     #[cfg(feature = "performance-benchmark")]
     let scanning_started = Instant::now();
-    let result = if let Some(prepared) =
+    let result = if let Some((snapshot, stats)) =
         prepared_rescan.filter(|_| !s.cancel.load(Ordering::Acquire))
     {
         drop(seed);
-        *s.store.write().unwrap() = prepared.snapshot;
+        *s.store.write().unwrap() = snapshot;
         callback(disk_scan::Progress {
             entries: 0,
             directories: 0,
@@ -1357,7 +1124,7 @@ fn run_scan(
             excluded: 0,
             elapsed_ms: 0,
         });
-        Ok(prepared.stats)
+        Ok(stats)
     } else if let Some(seed) = seed {
         disk_scan::scan_live_incremental_authorized_with_validation_workers(
             root,
@@ -1385,9 +1152,13 @@ fn run_scan(
     };
     #[cfg(feature = "performance-benchmark")]
     performance::record(&s, "scan_and_aggregation", scanning_started);
+    let mut scanned = baseline::Scanned::default();
     match result {
         Ok(stats) => {
-            unchanged_metadata = stats.unchanged_metadata;
+            scanned = baseline::Scanned {
+                fell_back: stats.fallback_reason.is_some(),
+                unchanged_metadata: stats.unchanged_metadata,
+            };
             let mut details = s.scan_details.lock().unwrap();
             details.reused_entries = stats.reused_entries;
             #[cfg(feature = "performance-benchmark")]
@@ -1398,53 +1169,38 @@ fn run_scan(
             if let Some(reason) = stats.fallback_reason {
                 details.mode = "full".into();
                 details.fallback_reason = Some(reason);
-                full_scan_at_ms = s.started_at_ms;
             }
         }
         Err(e) => mark_failed(&mut s.store.write().unwrap(), e.to_string()),
     }
-    if let Some(mut token) = token {
+    if let Some(ticket) = ticket {
         let snapshot = s.store.read().unwrap();
-        if cache::eligible(&snapshot) && !s.cancel.load(Ordering::Acquire) {
-            token.full_scan_at_ms = full_scan_at_ms;
-            s.scan_details.lock().unwrap().phase = "caching".into();
-            channel.report(s.summary());
-            let completed_at_ms = now_ms();
-            s.completed_at_ms.store(completed_at_ms, Ordering::Release);
-            let metadata = library::ScanMetadata {
-                started_at_ms: s.started_at_ms,
-                completed_at_ms,
-                workers: s.actual_workers(),
-                worker_mode: "auto".into(),
-                worker_source: s.worker_source.clone(),
-                qos: s.qos,
-            };
-            #[cfg(feature = "performance-benchmark")]
-            let caching_started = Instant::now();
-            let publication = (|| {
-                let cache = lock_cache(&cache);
-                let cache = cache.as_ref().unwrap();
-                if unchanged_metadata {
-                    if let Some(previous) = prior_cache_token.as_ref() {
-                        if cache.refresh_unchanged(
-                            &snapshot.root,
-                            &snapshot.node(0).ok_or("Missing root")?.identity,
-                            previous,
-                            &token,
-                        )? {
-                            return Ok(());
-                        }
-                    }
+        let published = ticket.publish(
+            &snapshot,
+            &s.cancel,
+            scanned,
+            || {
+                s.scan_details.lock().unwrap().phase = "caching".into();
+                channel.report(s.summary());
+                let completed_at_ms = now_ms();
+                s.completed_at_ms.store(completed_at_ms, Ordering::Release);
+                library::ScanMetadata {
+                    started_at_ms: s.started_at_ms,
+                    completed_at_ms,
+                    workers: s.actual_workers(),
+                    worker_mode: "auto".into(),
+                    worker_source: s.worker_source.clone(),
+                    qos: s.qos,
                 }
-                cache.save(&snapshot, &metadata, &token)
-            })();
-            if let Err(error) = publication {
-                s.scan_details.lock().unwrap().cache_warning =
-                    Some(format!("Could not keep the rescan cache: {error}"));
-            }
+            },
             #[cfg(feature = "performance-benchmark")]
-            performance::record(&s, "cache_publication", caching_started);
-            *s.cache_token.lock().unwrap() = Some(token);
+            &timing,
+        );
+        if let Some(published) = published {
+            if let Some(warning) = published.warning {
+                s.scan_details.lock().unwrap().cache_warning = Some(warning);
+            }
+            *s.cache_token.lock().unwrap() = Some(published.token);
         }
     }
     {
@@ -1559,12 +1315,12 @@ fn start_scan_impl(
             qos,
         },
     )?;
-    let cache = state.rescan_cache.clone();
+    let baselines = state.baselines.clone();
     let id = s.id.clone();
     std::thread::spawn(move || {
         let (session, events) = (s.clone(), on_event.clone());
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_scan(s, authorized_root, previous, cache, on_event, grant)
+            run_scan(s, authorized_root, previous, baselines, on_event, grant)
         }));
         // The grant went back as the closure unwound.
         if ended.is_err() {
@@ -2506,9 +2262,7 @@ pub fn run() {
             let config = app.path().app_config_dir()?;
             *app.state::<AppState>().explorer_preferences.lock().unwrap() =
                 explorer_preferences::Preferences::load(&config);
-            *app.state::<AppState>().rescan_cache.lock().unwrap() = Some(cache::Cache::new(
-                data.join("rescan-cache"),
-            ));
+            app.state::<AppState>().baselines.configure(data.join("rescan-cache"));
             *app.state::<AppState>().cleanup_queue.lock().unwrap() = cleanup_queue::Queue::load(data.join("cleanup-queue"));
             *app.state::<AppState>().library.lock().unwrap() = Some(library::Library::new(
                 data.join("saved-scans"),

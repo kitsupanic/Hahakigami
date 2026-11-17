@@ -152,13 +152,13 @@ fn configure(state: &AppState, config: &Config) -> Result<platform::Target, Stri
     *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(&preferences);
     *state.library.lock().unwrap() =
         Some(library::Library::new(config.state_dir.join("saved-scans")));
-    *state.rescan_cache.lock().unwrap() = Some(cache::Cache::new(config.state_dir.join(
-        if config.mode == "full" {
+    state
+        .baselines
+        .configure(config.state_dir.join(if config.mode == "full" {
             format!("full-cache-{}", uuid::Uuid::new_v4())
         } else {
             "rescan-cache".into()
-        },
-    )));
+        }));
     register(
         state,
         platform::target(&config.root, "Benchmark location".into()),

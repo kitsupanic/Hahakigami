@@ -32,6 +32,10 @@ _Avoid_: Scan everything, rescan all
 The workers and open files the whole app may use for scanning. Scans that run at the same time split it, so several disks can be scanned at once without starving the Mac. A scan gets its share when it starts and gives it back when it ends.
 _Avoid_: Scan limit, thread pool
 
+**Rescan baseline**:
+The earlier completed scan of the same location that a new scan starts from, so only what changed since is measured again. Without one, the scan measures everything.
+_Avoid_: Seed, cached scan, previous scan
+
 **On disk**:
 The space a file or folder occupies in allocated blocks, as recorded by the scan. Verified scans deduct shared APFS clone blocks. It does not predict space freed by moving items to the Trash.
 _Avoid_: Scanned on disk, on disk in scan, recorded allocation, allocated size
