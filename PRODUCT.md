@@ -10,7 +10,7 @@ web
 
 App: macOS desktop app, Tauri 2 + Svelte 5, following native macOS conventions.
 
-Website: SvelteKit in `site/` (matches the app), for Cloudflare Pages. The Retail Box landing page is built; download URL and domain are still unset (`site/src/lib/config.ts`).
+Website: https://hahakigami.com, a SvelteKit site (matches the app) kept in its own repository.
 
 ## Users
 

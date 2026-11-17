@@ -165,7 +165,7 @@
   }
 }
 
-/* Guardian theme: opt-in, the website's printed-box world (site/DESIGN.md).
+/* Guardian theme: opt-in, the website's printed-box world (the website's design system).
    Carton and paper surfaces, straw type on carton, one cord-red spot colour,
    Mac corners and soft shadows, no texture or ornament. Default chrome is untouched. */
 :root[data-theme="guardian"] {
