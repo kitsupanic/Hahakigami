@@ -300,7 +300,7 @@
     text-underline-offset: 2px;
     color: var(--muted);
   }
-  /* Dashed means incomplete, solid means complete (site/DESIGN.md). Not a warning colour:
+  /* Dashed means incomplete, solid means complete (the website's design system). Not a warning colour:
      restricted coverage is the expected result without Full Disk Access. */
   .scan-coverage-chip.partial-coverage {
     margin: 3px 0 3px 6px;

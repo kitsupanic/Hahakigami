@@ -1,4 +1,0 @@
-# Own pnpm root: keeps site/ independent of the app's lockfile.
-packages: []
-allowBuilds:
-  esbuild@0.25.12: true
