@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-file-types"
+description = "Enables the get_file_types command without any pre-configured scope."
+commands.allow = ["get_file_types"]
+
+[[permission]]
+identifier = "deny-get-file-types"
+description = "Denies the get_file_types command without any pre-configured scope."
+commands.deny = ["get_file_types"]

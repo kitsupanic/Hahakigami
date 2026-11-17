@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mounted-volumes"
+description = "Enables the mounted_volumes command without any pre-configured scope."
+commands.allow = ["mounted_volumes"]
+
+[[permission]]
+identifier = "deny-mounted-volumes"
+description = "Denies the mounted_volumes command without any pre-configured scope."
+commands.deny = ["mounted_volumes"]

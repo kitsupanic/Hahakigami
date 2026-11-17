@@ -1,0 +1,23 @@
+# Local macOS builds
+
+Use `pnpm desktop:build` when delivering a macOS `.app`. This helper selects an existing Apple Development identity, signs the bundle and verifies a stable designated requirement. Raw `pnpm tauri build --bundles app` can recreate a linker/ad-hoc identity and invalidate the user's macOS privacy grants. Use `--adhoc` only for an explicitly requested unsigned/ad-hoc build.
+
+Full Disk Access is detected only by the silent probes in ADR 0002 (`docs/adr/0002-detect-full-disk-access-with-silent-probes.md`). Never probe per-folder protected locations, use private TCC APIs, or change privacy grants. Do not export/import certificates, change keychain trust/ACLs, or weaken designated requirements to hide permission problems. Keep user app sessions and in-memory results intact when building updates.
+
+## Project docs
+
+### Issues
+
+Specs and tickets live in this repository's GitHub Issues.
+
+### Domain docs
+
+Domain terms live in `GLOSSARY.md`; hard-to-reverse decisions are ADRs in `docs/adr/`.
+
+### Scan sessions
+
+Current scan and saved scan slots, invalidation, save and compare: see `docs/architecture/session-lifecycle.md` before changing scan session state.
+
+### Review
+
+Code review applies the rules in `CODING_STANDARDS.md`.

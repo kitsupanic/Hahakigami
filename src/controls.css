@@ -1,0 +1,139 @@
+/* One control system for selects, text fields, secondary buttons and segmented controls. Sizes and colours are tokens (tokens.css). */
+select,
+.header-search,
+.explorer-filters input,
+.file-type-search,
+.filters-control > button,
+.explorer-filters button,
+.sort-warning button {
+  height: var(--control-height);
+  border: 1px solid var(--control-line);
+  border-radius: var(--control-radius);
+  background-color: var(--control-surface);
+  color: var(--text);
+  font-size: var(--font-secondary);
+  line-height: 1.2;
+}
+select,
+.explorer-filters input,
+.file-type-search,
+.filters-control > button,
+.explorer-filters button,
+.sort-warning button {
+  padding: 0 8px;
+}
+.filters-control > button,
+.explorer-filters button,
+.sort-warning button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.filters-control > button.chosen {
+  color: var(--accent-text);
+  background-color: var(--soft);
+}
+.header-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--muted);
+}
+.header-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-secondary);
+}
+
+/* Segmented: a quiet track, the chosen segment raised on it. Accent colour marks only keyboard focus. */
+.segmented {
+  /* Equal columns, so the raised thumb can slide by whole segments. */
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  flex-shrink: 0;
+  gap: 2px;
+  height: var(--control-height);
+  padding: 2px;
+  border-radius: var(--control-radius);
+  background: var(--control-track);
+  --segments: 2;
+  --chosen-index: 0;
+}
+.segmented:has(> :nth-child(3)) {
+  --segments: 3;
+}
+.segmented:has(> :nth-child(2):is(.chosen, [aria-selected="true"])) {
+  --chosen-index: 1;
+}
+.segmented:has(> :nth-child(3):is(.chosen, [aria-selected="true"])) {
+  --chosen-index: 2;
+}
+/* The thumb: one raised surface that slides under the chosen segment.
+   shortcut: handles up to 3 segments, add a :has() rule per extra segment. */
+.segmented::before {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+  top: 2px;
+  bottom: 2px;
+  /* Slides with left, not translate: WebKit leaves the thumb half painted after a translate transition. */
+  left: calc(2px + var(--chosen-index) * (100% - 2px) / var(--segments));
+  width: calc((100% - 2px - var(--segments) * 2px) / var(--segments));
+  border: 1px solid var(--control-chosen-edge);
+  border-radius: calc(var(--control-radius) - 2px);
+  background: var(--control-chosen);
+  box-shadow: var(--shadow-control);
+  opacity: 0;
+  transition: left 200ms cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.segmented:has(> :is(.chosen, [aria-selected="true"]))::before {
+  opacity: 1;
+}
+.segmented > button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--control-radius) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-secondary);
+  white-space: nowrap;
+  transition: color 200ms ease-out;
+}
+.segmented > button:hover:not(:disabled, .chosen, [aria-selected="true"]) {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+/* :hover outranks the generic button:hover fill, so the chosen segment never changes on hover. */
+.segmented > :is(.chosen, [aria-selected="true"]),
+.segmented > :is(.chosen, [aria-selected="true"]):hover {
+  background: transparent;
+  color: var(--control-chosen-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .segmented::before,
+  .segmented > button {
+    transition: none;
+  }
+}
+.segmented > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.segmented svg {
+  width: 16px;
+  height: 16px;
+}

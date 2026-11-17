@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-explorer-sort"
+description = "Enables the set_explorer_sort command without any pre-configured scope."
+commands.allow = ["set_explorer_sort"]
+
+[[permission]]
+identifier = "deny-set-explorer-sort"
+description = "Denies the set_explorer_sort command without any pre-configured scope."
+commands.deny = ["set_explorer_sort"]

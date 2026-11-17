@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-scan"
+description = "Enables the save_scan command without any pre-configured scope."
+commands.allow = ["save_scan"]
+
+[[permission]]
+identifier = "deny-save-scan"
+description = "Denies the save_scan command without any pre-configured scope."
+commands.deny = ["save_scan"]

@@ -1,0 +1,11 @@
+{
+  "appIdentifier": "app.hahakigami.desktop",
+  "signature": "Apple Development",
+  "sealedBundleVerified": true,
+  "stableDesignatedRequirement": true,
+  "ownedFixtureExecutablesDiffer": true,
+  "ownedFixtureRequirementsMatch": true,
+  "fixtureRequirementSha256": "44f709b5af282d6f21970415c7506323fb3db51959b9164632600f5d9a7fc99d",
+  "permissions": "No Full Disk Access grants, keychain trust/ACLs or OS privacy settings changed. Fixtures signed but never run.",
+  "limitations": "Stable signing verified; effective Full Disk Access and absence of all macOS prompts require user reauthorization and app scan."
+}

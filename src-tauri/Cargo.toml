@@ -1,0 +1,45 @@
+[package]
+name = "hahakigami"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/kitsupanic/Hahakigami"
+
+[lib]
+name = "hahakigami_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+performance-benchmark = ["tauri/test"]
+
+[[example]]
+name = "native_performance"
+required-features = ["performance-benchmark"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+disk-scan = { path = "../crates/disk-scan" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zstd = "=0.14.2"
+uuid = { version = "1", features = ["v4"] }
+libc = "0.2"
+tauri-plugin-clipboard-manager = "=2.4.1"
+clap = { version = "=4.6.7", features = ["derive"] }
+rmcp = { version = "=3.7.0", default-features = false, features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow", "NSPanel", "NSApplication", "NSEvent"] }
+objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "QLPreviewPanel", "QLPreviewItem"] }
+objc2-foundation = { version = "0.3", features = ["NSFileManager", "NSURL", "NSError", "NSString"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+rmcp = { version = "=3.7.0", default-features = false, features = ["client", "transport-child-process"] }

@@ -1,0 +1,504 @@
+.sidebar.compact-sidebar {
+  box-sizing: border-box;
+  width: var(--sidebar-width, 220px);
+  padding: 17px 10px 12px;
+  background: var(--sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+.sidebar.compact-sidebar > * {
+  flex-shrink: 0;
+}
+.macos-titlebar .sidebar.compact-sidebar {
+  padding-top: 0;
+}
+.sidebar-titlebar {
+  height: 60px;
+  margin-inline: -10px;
+}
+.compact-sidebar .sidebar-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+}
+.compact-sidebar .sidebar-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.compact-sidebar .sidebar-actions {
+  /* Keeps a selected row above (the last disk) clear of the rule. */
+  margin-top: 8px;
+  padding: 12px 0 8px;
+  border-top: 1px solid var(--line);
+}
+.compact-sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 7px 18px;
+  font-size: var(--font-title3);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.compact-sidebar .brand > div {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compact-sidebar .logo {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.compact-sidebar button {
+  font: inherit;
+  cursor: pointer;
+}
+.compact-sidebar button:disabled {
+  cursor: default;
+}
+.compact-sidebar .side-nav {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  text-align: left;
+  font-size: var(--font-body);
+  min-height: 38px;
+}
+.compact-sidebar .side-nav > span:not(.queue-count) {
+  flex: 1;
+  min-width: 0;
+}
+.compact-sidebar svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.compact-sidebar .side-label {
+  margin: 15px 8px 8px;
+  font-size: var(--font-body);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.compact-sidebar .disks-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compact-sidebar .batch-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.compact-sidebar .scan-all {
+  flex: none;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+.compact-sidebar .scan-all:hover:not(:disabled),
+.compact-sidebar .scan-all:focus-visible {
+  background: var(--soft);
+  color: var(--accent-text);
+}
+.compact-sidebar .scan-all:disabled {
+  opacity: 0.5;
+}
+.compact-sidebar .side-nav.active {
+  background: var(--soft);
+  color: inherit;
+}
+.compact-sidebar .saved-label {
+  margin-top: 24px;
+}
+.compact-sidebar .saved-library {
+  min-height: 0;
+  margin: 0;
+  overflow: visible;
+  max-height: none;
+}
+.compact-sidebar .empty-library {
+  display: block;
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+.compact-sidebar .saved-group {
+  margin: 0 0 12px;
+}
+.compact-sidebar .saved-history-toggle {
+  display: block;
+  width: 100%;
+  padding: 5px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent-text);
+  font-size: var(--font-secondary);
+  text-align: left;
+}
+.compact-sidebar .saved-history-toggle:hover:not(:disabled),
+.compact-sidebar .saved-history-toggle:focus-visible {
+  background: var(--accent-tint);
+}
+.compact-sidebar .saved-group-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px 0;
+}
+.compact-sidebar .saved-group-heading h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-sidebar .saved-group-heading > span {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+.compact-sidebar .saved-location-path {
+  margin: 3px 8px 5px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.compact-sidebar .saved-entry {
+  padding: 0;
+  margin: 0 0 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+}
+.compact-sidebar .saved-entry > .saved-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  background: transparent;
+  color: inherit;
+}
+.compact-sidebar .saved-copy {
+  flex: 1;
+  min-width: 0;
+}
+.compact-sidebar .saved-timestamp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px 5px;
+  line-height: 1.3;
+}
+.compact-sidebar .saved-day {
+  font-size: var(--font-body);
+  white-space: nowrap;
+}
+.compact-sidebar .saved-clock {
+  font-size: var(--font-secondary);
+  font-weight: 400;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.compact-sidebar .saved-metadata {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin-top: 3px;
+}
+.compact-sidebar .saved-metadata small,
+.compact-sidebar .saved-copy-time {
+  margin-top: 0;
+  font-size: var(--font-caption);
+  color: var(--muted);
+}
+.compact-sidebar .saved-metadata small {
+  line-height: 1.4;
+}
+.compact-sidebar .saved-copy-time {
+  display: block;
+  margin-top: 3px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.compact-sidebar .saved-entry.active {
+  background: var(--soft);
+  border-color: transparent;
+}
+.compact-sidebar .saved-summary svg {
+  color: var(--muted);
+  margin-top: 2px;
+}
+.compact-sidebar .saved-badge {
+  font-size: var(--font-caption);
+  line-height: 16px;
+  padding: 0 4px;
+  background: var(--accent-tint);
+  border-radius: var(--radius-xs);
+  color: var(--accent-text);
+}
+.compact-sidebar .saved-badge.partial {
+  color: var(--warning);
+  background: var(--warning-tint);
+}
+.compact-sidebar .queue-count {
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--line);
+  font-size: var(--font-caption);
+}
+.compact-sidebar .saved-actions {
+  position: relative;
+}
+.compact-sidebar .saved-menu-trigger {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 24px;
+  min-height: 30px;
+  padding: 0;
+  font-size: var(--font-title2);
+}
+.compact-sidebar .saved-menu {
+  position: fixed;
+  z-index: 20;
+  width: 160px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel, var(--sidebar));
+  box-shadow: var(--shadow-menu);
+}
+.compact-sidebar .saved-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: var(--font-secondary);
+}
+.compact-sidebar .saved-menu button:hover,
+.compact-sidebar .saved-menu button:focus-visible {
+  background: var(--accent-tint-strong);
+}
+/* The rule sits above the button, not on it, so the hover fill keeps its corners. */
+.compact-sidebar .import-button {
+  position: relative;
+  margin-top: 17px;
+}
+.compact-sidebar .import-button::before {
+  content: "";
+  position: absolute;
+  inset: -9px 0 auto;
+  border-top: 1px solid var(--line);
+}
+.compact-sidebar .side-bottom {
+  margin-top: auto;
+  /* Flush with the rows above, so the Settings fill lines up with theirs. */
+  padding: 0;
+  border: 0;
+}
+.compact-sidebar .settings-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-secondary);
+  border-radius: var(--radius-sm);
+}
+.compact-sidebar .settings-nav > span {
+  flex: 1;
+  text-align: left;
+}
+.compact-sidebar .settings-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning-mark);
+}
+.compact-sidebar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.compact-sidebar .side-nav:hover:not(:disabled),
+.compact-sidebar .saved-summary:hover:not(:disabled),
+.compact-sidebar .saved-menu-trigger:hover:not(:disabled) {
+  background: var(--soft);
+}
+
+@media (max-height: 700px) {
+  .sidebar.compact-sidebar {
+    padding-top: 12px;
+  }
+  .compact-sidebar .brand {
+    margin-bottom: 8px;
+  }
+  .compact-sidebar .side-label {
+    margin-top: 10px;
+  }
+  .compact-sidebar .saved-label {
+    margin-top: 14px;
+  }
+  .compact-sidebar .side-nav {
+    min-height: 34px;
+    padding-block: 7px;
+  }
+}
+
+.compact-sidebar .nav-copy {
+  display: block;
+}
+.compact-sidebar .nav-copy strong {
+  display: block;
+  font-weight: 500;
+}
+.compact-sidebar .nav-copy small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--font-caption);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-sidebar .scan-track {
+  display: block;
+  height: 4px;
+  margin-top: 5px;
+  background: var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.compact-sidebar .scan-track > span {
+  display: block;
+  height: 100%;
+  background: var(--capacity-fill);
+  border-radius: inherit;
+  transition: width 0.3s ease-out;
+}
+.compact-sidebar .scan-track.indeterminate > span {
+  width: 35%;
+  animation: scan-track-slide 1.4s ease-in-out infinite;
+}
+@keyframes scan-track-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(290%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .compact-sidebar .scan-track.indeterminate > span {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+.compact-sidebar .side-nav.active svg {
+  color: var(--accent-text);
+}
+.compact-sidebar .disk-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.compact-sidebar .disk-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-sidebar .disk-name em {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: var(--font-caption);
+  color: var(--accent-text);
+}
+.compact-sidebar .disk-name em.done {
+  color: var(--success);
+}
+.compact-sidebar .disk-track {
+  display: block;
+  height: 4px;
+  margin-top: 5px;
+  background: var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.compact-sidebar .disk-track > span {
+  display: block;
+  height: 100%;
+  background: var(--capacity-fill);
+  border-radius: inherit;
+}
+.compact-sidebar .disk-track.full > span {
+  background: var(--danger);
+}
+.compact-sidebar .disk-track.unknown {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--line) 0 4px,
+    transparent 4px 8px
+  );
+}

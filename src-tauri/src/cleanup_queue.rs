@@ -1,0 +1,1016 @@
+//! Persisted candidates are evidence only. Live sessions and Trash tickets own action authority.
+use crate::safety::{self, CheckedItem, Identity, Scan, Volume};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    ffi::{CString, OsString},
+    fs::{self, File, OpenOptions},
+    io::Read,
+    os::fd::{AsRawFd, FromRawFd},
+    os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::{OpenOptionsExt, PermissionsExt},
+    },
+    path::{Path, PathBuf},
+};
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_ENTRIES: usize = 1000;
+mod native_path {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
+        path.as_os_str().as_bytes().serialize(s)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
+        let bytes = Vec::<u8>::deserialize(d)?;
+        if bytes.is_empty() || bytes.len() > 32768 || bytes.contains(&0) {
+            return Err(serde::de::Error::custom("Invalid native queue path"));
+        }
+        let path = PathBuf::from(OsString::from_vec(bytes));
+        if !path.is_absolute()
+            || path.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(serde::de::Error::custom("Invalid queue path"));
+        }
+        Ok(path)
+    }
+}
+fn open_at(
+    directory: &File,
+    name: &std::ffi::CStr,
+    flags: i32,
+    mode: libc::mode_t,
+) -> std::io::Result<File> {
+    // Names are generated constants or UUID basenames, and directory stays open
+    // through publication so a directory-path replacement cannot redirect writes.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+fn rename_at(directory: &File, from: &std::ffi::CStr, to: &std::ffi::CStr) -> std::io::Result<()> {
+    if unsafe {
+        libc::renameat(
+            directory.as_raw_fd(),
+            from.as_ptr(),
+            directory.as_raw_fd(),
+            to.as_ptr(),
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+fn record_nonregular(directory: &File) -> std::io::Result<bool> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            c"queue.json".as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok(stat.st_mode & libc::S_IFMT != libc::S_IFREG)
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Guard {
+    #[serde(with = "native_path")]
+    pub path: PathBuf,
+    pub identity: Identity,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Candidate {
+    pub id: String,
+    pub item: Guard,
+    pub ancestors: Vec<Guard>,
+    pub root: Guard,
+    pub root_ancestors: Vec<Guard>,
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// The volume of the scan the entry was queued from. Missing in records written before it existed: such an
+    /// entry never reads ready and is never trashed (`safety::verify` rejects an unknown volume).
+    #[serde(default)]
+    pub volume: Option<Volume>,
+}
+impl Candidate {
+    pub fn checked(&self) -> CheckedItem {
+        CheckedItem {
+            path: self.item.path.clone(),
+            identity: self.item.identity.clone(),
+            ancestors: self
+                .ancestors
+                .iter()
+                .map(|g| (g.path.clone(), g.identity.clone()))
+                .collect(),
+            volume: self.volume.clone(),
+        }
+    }
+    pub fn root_checked(&self) -> CheckedItem {
+        CheckedItem {
+            path: self.root.path.clone(),
+            identity: self.root.identity.clone(),
+            ancestors: self
+                .root_ancestors
+                .iter()
+                .map(|g| (g.path.clone(), g.identity.clone()))
+                .collect(),
+            volume: self.volume.clone(),
+        }
+    }
+    fn valid(&self) -> bool {
+        let lineage_valid = |path: &Path, guards: &[Guard]| {
+            guards.len() <= 1024
+                && path
+                    .ancestors()
+                    .skip(1)
+                    .eq(guards.iter().map(|g| g.path.as_path()))
+                && guards.iter().all(|g| g.identity.kind == 1)
+        };
+        uuid::Uuid::parse_str(&self.id).is_ok_and(|id| id.to_string() == self.id)
+            && self
+                .last_error
+                .as_ref()
+                .is_none_or(|error| error.len() <= 32768)
+            && self.volume.as_ref().is_none_or(Volume::valid)
+            && self.item.path != self.root.path
+            && self.item.path.starts_with(&self.root.path)
+            && (1..=4).contains(&self.item.identity.kind)
+            && self.root.identity.kind == 1
+            && lineage_valid(&self.item.path, &self.ancestors)
+            && lineage_valid(&self.root.path, &self.root_ancestors)
+            && self
+                .ancestors
+                .iter()
+                .any(|g| g.path == self.root.path && g.identity == self.root.identity)
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct Record {
+    version: u32,
+    entries: Vec<Candidate>,
+}
+#[derive(Default)]
+pub(crate) struct Queue {
+    directory: Option<PathBuf>,
+    pub entries: Vec<Candidate>,
+    pub revision: u64,
+    pub warning: Option<String>,
+    pub blocked: bool,
+    #[cfg(test)]
+    fail_publication: bool,
+}
+impl Queue {
+    pub fn load(directory: PathBuf) -> Self {
+        let mut q = Self {
+            directory: Some(directory.clone()),
+            ..Self::default()
+        };
+        let read = (|| -> Result<Vec<Candidate>, std::io::Error> {
+            // Validate the private parent too; do not traverse an attacker-replaced directory.
+            let dir = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+                .open(&directory)?;
+            let file = open_at(&dir, c"queue.json", libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("Queue record is not regular"));
+            }
+            let mut bytes = vec![];
+            file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_BYTES {
+                return Err(std::io::Error::other("Queue record is too large"));
+            }
+            let record: Record = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+            if record.version != 1
+                || record.entries.len() > MAX_ENTRIES
+                || record.entries.iter().any(|c| !c.valid())
+            {
+                return Err(std::io::Error::other("Unsupported or invalid queue record"));
+            }
+            let mut ids = std::collections::HashSet::new();
+            for (i, c) in record.entries.iter().enumerate() {
+                if !ids.insert(&c.id)
+                    || record.entries[..i].iter().any(|p| {
+                        c.item.path.starts_with(&p.item.path)
+                            || p.item.path.starts_with(&c.item.path)
+                    })
+                {
+                    return Err(std::io::Error::other(
+                        "Duplicate or overlapping queue records",
+                    ));
+                }
+            }
+            Ok(record.entries)
+        })();
+        match read {
+            Ok(entries) => q.entries = entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                q.blocked = true;
+                q.warning = Some(format!(
+                    "Could not restore cleanup queue. Clear the queue to recover. {e}"
+                ));
+            }
+        }
+        q
+    }
+    /// Whether entries can be matched at all: not when empty or unreadable.
+    pub fn matchable(&self) -> bool {
+        !self.entries.is_empty() && !self.blocked
+    }
+    pub fn require_mutable(&self) -> Result<(), String> {
+        if self.blocked {
+            return Err("Clear the unreadable cleanup queue before changing it.".into());
+        }
+        Ok(())
+    }
+    fn publish(&mut self, entries: Vec<Candidate>, recovery: bool) -> Result<(), String> {
+        let directory = self
+            .directory
+            .as_ref()
+            .ok_or("Cleanup queue storage is unavailable.")?;
+        if entries.len() > MAX_ENTRIES || entries.iter().any(|c| !c.valid()) {
+            return Err("Cleanup queue supports at most 1,000 valid entries.".into());
+        }
+        let bytes = serde_json::to_vec(&Record {
+            version: 1,
+            entries: entries.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err("Cleanup queue record is too large.".into());
+        }
+        fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        let metadata = fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("Queue directory is not private.".into());
+        }
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(directory)
+            .map_err(|e| e.to_string())?;
+        dir.set_permissions(fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        let temp =
+            CString::new(format!("{}.tmp", uuid::Uuid::new_v4())).map_err(|e| e.to_string())?;
+        let mut quarantine = None;
+        let result = (|| -> Result<Option<String>, std::io::Error> {
+            use std::io::Write;
+            let mut file = open_at(
+                &dir,
+                &temp,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                0o600,
+            )?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            dir.sync_all()?;
+            if recovery && record_nonregular(&dir)? {
+                let name = CString::new(format!("quarantine-{}", uuid::Uuid::new_v4()))
+                    .map_err(std::io::Error::other)?;
+                rename_at(&dir, c"queue.json", &name)?;
+                quarantine = Some(name);
+                dir.sync_all()?;
+            }
+            #[cfg(test)]
+            if self.fail_publication {
+                return Err(std::io::Error::other("Injected publication failure"));
+            }
+            rename_at(&dir, &temp, c"queue.json")?;
+            Ok(dir
+                .sync_all()
+                .err()
+                .map(|e| format!("Queue saved, but durability could not be confirmed: {e}")))
+        })();
+        let warning = match result {
+            Ok(w) => w,
+            Err(e) => {
+                unsafe {
+                    libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0);
+                }
+                let rollback = quarantine
+                    .as_ref()
+                    .and_then(|name| rename_at(&dir, name, c"queue.json").err());
+                let _ = dir.sync_all();
+                return Err(match rollback {
+                    Some(error) => format!("Could not save cleanup queue: {e}. Original record remains quarantined; restoring its name failed: {error}"),
+                    None => format!("Could not save cleanup queue: {e}"),
+                });
+            }
+        };
+        self.entries = entries;
+        self.revision += 1;
+        self.warning = warning;
+        self.blocked = false;
+        Ok(())
+    }
+    pub fn add(&mut self, candidates: Vec<Candidate>) -> Result<(), String> {
+        self.require_mutable()?;
+        let mut candidates: Vec<_> = self
+            .entries
+            .iter()
+            .cloned()
+            .chain(candidates)
+            .enumerate()
+            .collect();
+        candidates.sort_by(|a, b| a.1.item.path.cmp(&b.1.item.path));
+        let mut entries: Vec<(usize, Candidate)> = Vec::new();
+        for c in candidates {
+            // Native path order groups descendants; stable sorting keeps existing duplicates.
+            if entries
+                .last()
+                .is_some_and(|p| c.1.item.path.starts_with(&p.1.item.path))
+            {
+                continue;
+            }
+            entries.push(c);
+        }
+        if entries.len() > MAX_ENTRIES {
+            return Err("Cleanup queue supports at most 1,000 entries. Remove items first.".into());
+        }
+        entries.sort_by_key(|(index, _)| *index);
+        let entries: Vec<_> = entries.into_iter().map(|(_, c)| c).collect();
+        if entries
+            .iter()
+            .map(|c| &c.id)
+            .eq(self.entries.iter().map(|c| &c.id))
+        {
+            return Ok(());
+        }
+        self.publish(entries, false)
+    }
+    pub fn remove(&mut self, ids: &[String]) -> Result<(), String> {
+        self.require_mutable()?;
+        if ids.len() > MAX_ENTRIES {
+            return Err("Remove at most 1,000 cleanup queue entries at a time.".into());
+        }
+        let ids: std::collections::HashSet<_> = ids.iter().collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if ids
+            .iter()
+            .any(|id| !self.entries.iter().any(|c| &c.id == *id))
+        {
+            return Err("Unknown cleanup queue entry.".into());
+        }
+        self.publish(
+            self.entries
+                .iter()
+                .filter(|c| !ids.contains(&c.id))
+                .cloned()
+                .collect(),
+            false,
+        )
+    }
+    pub fn clear(&mut self) -> Result<(), String> {
+        self.publish(vec![], true)
+    }
+    pub fn outcomes(
+        &mut self,
+        paths: &[PathBuf],
+        failures: &[(PathBuf, String)],
+    ) -> Result<(), String> {
+        let mut changed = false;
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|c| {
+                if paths.iter().any(|p| c.item.path.starts_with(p)) {
+                    changed = true;
+                    return None;
+                }
+                let mut c = c.clone();
+                if let Some((_, error)) = failures.iter().find(|(p, _)| c.item.path.starts_with(p))
+                {
+                    let error: String = error.chars().take(4096).collect();
+                    if c.last_error.as_ref() != Some(&error) {
+                        changed = true;
+                        c.last_error = Some(error);
+                    }
+                }
+                Some(c)
+            })
+            .collect();
+        if !changed {
+            return Ok(());
+        }
+        self.require_mutable()?;
+        self.publish(entries, false)
+    }
+    #[cfg(test)]
+    pub fn prune(&mut self, paths: &[PathBuf]) -> Result<(), String> {
+        self.outcomes(paths, &[])
+    }
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EntryView {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub path_key: String,
+    pub root_path: String,
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    pub status: String,
+    pub reason: Option<String>,
+    /// The live scan this entry is checked against, when it has one. Review is addressed to that scan.
+    pub matched_scan_id: Option<String>,
+    pub last_error: Option<String>,
+}
+#[derive(Serialize)]
+pub(crate) struct View {
+    pub entries: Vec<EntryView>,
+    pub revision: u64,
+    pub warning: Option<String>,
+    pub blocked: bool,
+}
+
+/// The queue entries for `items`, the checked items of `node_ids` in `scan`.
+pub(crate) fn candidates(
+    scan: &Scan,
+    items: Vec<CheckedItem>,
+    node_ids: &[u32],
+) -> Result<Vec<Candidate>, String> {
+    let snapshot = scan.snapshot;
+    let root = snapshot.node(0).ok_or("Missing scan root")?;
+    let root = Guard {
+        path: snapshot.root.clone(),
+        identity: Identity {
+            device: root.identity.device,
+            inode: root.identity.inode,
+            kind: 1,
+        },
+    };
+    let guards = |lineage: &[(PathBuf, Identity)]| {
+        lineage
+            .iter()
+            .map(|(path, identity)| Guard {
+                path: path.clone(),
+                identity: identity.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let ids: HashMap<_, _> = node_ids
+        .iter()
+        .map(|&id| Ok((snapshot.path(id)?, id)))
+        .collect::<Result<_, String>>()?;
+    items
+        .into_iter()
+        .map(|item| {
+            let node = snapshot
+                .node(ids[&item.path])
+                .ok_or("Missing selected node")?;
+            Ok(Candidate {
+                id: uuid::Uuid::new_v4().to_string(),
+                ancestors: guards(&item.ancestors),
+                item: Guard {
+                    path: item.path,
+                    identity: item.identity,
+                },
+                root: root.clone(),
+                root_ancestors: guards(scan.root_ancestors),
+                logical_bytes: node.logical_size,
+                allocated_bytes: node.allocated_size,
+                last_error: None,
+                volume: item.volume,
+            })
+        })
+        .collect()
+}
+
+/// How one queue entry stands against the scan it is matched to.
+pub(crate) struct EntryStatus {
+    pub status: &'static str,
+    pub reason: Option<String>,
+    /// The item's node in that scan, set only when the entry is ready.
+    pub node_id: Option<u32>,
+    pub scan_id: String,
+}
+
+/// Matches every queue entry to one of `scans` (all usable), then gives it a status from that scan. Entries are
+/// keyed by root path and item path, with no scan id, so the match is made here every time:
+/// 1. The scan whose root is the entry's own root. A disk scan wins over a folder scan of the same root, whatever
+///    the order of `scans`.
+/// 2. Otherwise the disk scan with the longest root that contains the item's path (never a folder scan), so an
+///    item queued from a folder still counts once its whole disk has been scanned. The item must then be found
+///    in that scan (and not be an excluded mount); if it is not, the entry has no status ("needs scan").
+///
+/// An entry with no scan has no status, which `view` shows as "needs scan". The item is verified through the
+/// matched scan itself in both cases: same identity and ancestor chain as recorded, then `safety::verify_paths`
+/// against that scan's root. `home` and `mounts` feed its protection rules.
+pub(crate) fn statuses(
+    queue: &Queue,
+    scans: &[Scan],
+    home: Option<&Path>,
+    mounts: &[PathBuf],
+) -> HashMap<String, EntryStatus> {
+    let mut statuses = HashMap::new();
+    if !queue.matchable() {
+        return statuses;
+    }
+    // (entry, whether the scan's root is the entry's own root), per scan.
+    let mut assigned: Vec<Vec<(&Candidate, bool)>> = vec![vec![]; scans.len()];
+    for c in &queue.entries {
+        let exact = scans
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| u.snapshot.root == c.root.path)
+            .min_by_key(|(_, u)| !u.disk)
+            .map(|(i, _)| i);
+        let covering = || {
+            scans
+                .iter()
+                .enumerate()
+                .filter(|(_, u)| u.disk && c.item.path.starts_with(&u.snapshot.root))
+                .max_by_key(|(_, u)| u.snapshot.root.components().count())
+                .map(|(i, _)| i)
+        };
+        if let Some((i, exact)) = exact
+            .map(|i| (i, true))
+            .or_else(|| covering().map(|i| (i, false)))
+        {
+            assigned[i].push((c, exact));
+        }
+    }
+    for (scan, entries) in scans.iter().zip(assigned) {
+        if entries.is_empty() {
+            continue;
+        }
+        let snapshot = scan.snapshot;
+        // Native paths are matched by walking native names down from the scan root, one lookup per entry,
+        // never by building every node's path. Display strings are never keys.
+        let walk = !snapshot.has_path_overrides();
+        let matches: HashMap<&Path, u32> = if walk {
+            entries
+                .iter()
+                .filter_map(|(c, _)| {
+                    Some((
+                        c.item.path.as_path(),
+                        safety::node_at(snapshot, &c.item.path)?,
+                    ))
+                })
+                .collect()
+        } else {
+            // Records with recorded path spellings are not reachable by names: match them in one traversal.
+            let wanted: std::collections::HashSet<_> =
+                entries.iter().map(|(c, _)| c.item.path.as_path()).collect();
+            let mut matches = HashMap::new();
+            for node in snapshot.iter_nodes() {
+                if let Ok(path) = node.path() {
+                    if let Some(&wanted) = wanted.get(path.as_path()) {
+                        matches.insert(wanted, node.id);
+                    }
+                }
+            }
+            matches
+        };
+        let root_identity = snapshot.node(0).map(|n| Identity {
+            device: n.identity.device,
+            inode: n.identity.inode,
+            kind: 1,
+        });
+        for (c, exact) in entries {
+            let found = matches.get(c.item.path.as_path()).copied();
+            let (status, reason, node_id) = if !exact {
+                // The queued root is not this scan's root, so its identity is not compared with it: it is
+                // part of the item's recorded ancestor chain, which is compared below.
+                // A disk scan that lacks the item, holds an excluded mount there, or holds a different
+                // item or ancestor chain than the record is stale for this entry, not a verdict on it:
+                // no match. A match that fails the on-disk check stays "blocked".
+                match found.filter(|&id| snapshot.node(id).is_some_and(|n| !n.excluded)) {
+                    None => continue,
+                    Some(id) => match item_status(scan, c, id, home, mounts) {
+                        ("changed", ..) => continue,
+                        status => status,
+                    },
+                }
+            } else if root_identity.as_ref() != Some(&c.root.identity)
+                || scan.root_ancestors != c.root_checked().ancestors
+            {
+                ("changed", Some("Original scan location or its ancestors changed. Remove this entry and deliberately add it again.".into()), None)
+            } else if let Some(id) = found {
+                item_status(scan, c, id, home, mounts)
+            } else {
+                (
+                    "missing",
+                    Some("Item is missing or was not included in this scan.".into()),
+                    None,
+                )
+            };
+            statuses.insert(
+                c.id.clone(),
+                EntryStatus {
+                    status,
+                    reason,
+                    node_id,
+                    scan_id: scan.id.to_string(),
+                },
+            );
+        }
+    }
+    statuses
+}
+
+/// Status of an entry whose item is node `id` of `scan`: the recorded volume, identity and ancestors must equal
+/// what the scan holds, and the item must pass the path checks of review time. The volume is compared in memory
+/// (polled by the UI: no volume read here); `safety::verify` reads it again before Trash.
+fn item_status(
+    scan: &Scan,
+    c: &Candidate,
+    id: u32,
+    home: Option<&Path>,
+    mounts: &[PathBuf],
+) -> (&'static str, Option<String>, Option<u32>) {
+    match safety::checked_item(scan, id) {
+        Err(error) => ("blocked", Some(error), None),
+        // An entry without a recorded volume (queued by an older version) fails closed here.
+        Ok(current) if c.volume.is_none() || current.volume != c.volume => ("changed", Some("This entry's volume was replaced, or the entry was queued by an older version. Remove it and deliberately add it again.".into()), None),
+        Ok(current) if current.identity != c.item.identity || current.ancestors != c.checked().ancestors => ("changed", Some("Item or its ancestors changed. Remove this entry and deliberately add it again.".into()), None),
+        Ok(_) => match safety::verify_paths(&c.checked(), &scan.snapshot.root, home, mounts) {
+            Ok(()) => ("ready", None, Some(id)),
+            Err(error) => ("blocked", Some(error), None),
+        },
+    }
+}
+
+/// The nodes of scan `scan_id` that entries are ready for: exactly what a review of that scan holds.
+pub(crate) fn ready_nodes(
+    queue: &Queue,
+    statuses: &HashMap<String, EntryStatus>,
+    scan_id: &str,
+) -> Vec<u32> {
+    queue
+        .entries
+        .iter()
+        .filter_map(|c| {
+            statuses
+                .get(&c.id)
+                .filter(|m| m.scan_id == scan_id)?
+                .node_id
+        })
+        .collect()
+}
+
+pub(crate) fn view(queue: &Queue, statuses: &HashMap<String, EntryStatus>) -> View {
+    View {
+        revision: queue.revision,
+        warning: queue.warning.clone(),
+        blocked: queue.blocked,
+        entries: queue
+            .entries
+            .iter()
+            .map(|c| {
+                let matched = statuses.get(&c.id);
+                EntryView {
+                    id: c.id.clone(),
+                    name: c
+                        .item
+                        .path
+                        .file_name()
+                        .unwrap_or(c.item.path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                    path: c.item.path.to_string_lossy().into_owned(),
+                    path_key: crate::path_key(&c.item.path),
+                    root_path: c.root.path.to_string_lossy().into_owned(),
+                    logical_bytes: c.logical_bytes,
+                    allocated_bytes: c.allocated_bytes,
+                    status: matched.map_or("needsScan", |m| m.status).into(),
+                    reason: match matched {
+                        Some(m) => m.reason.clone(),
+                        None => Some(
+                            "Complete a scan of this entry's location, or of the disk it is on, before cleanup."
+                                .into(),
+                        ),
+                    },
+                    matched_scan_id: matched.map(|m| m.scan_id.clone()),
+                    last_error: c.last_error.clone(),
+                }
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn candidate(root: &Path, path: &Path) -> Candidate {
+        let guard = |path: &Path| Guard {
+            path: path.to_path_buf(),
+            identity: Identity::read(path).unwrap(),
+        };
+        let ancestors = |path: &Path| {
+            crate::safety::ancestors(path)
+                .unwrap()
+                .into_iter()
+                .map(|(path, identity)| Guard { path, identity })
+                .collect()
+        };
+        Candidate {
+            id: uuid::Uuid::new_v4().to_string(),
+            item: guard(path),
+            ancestors: ancestors(path),
+            root: guard(root),
+            root_ancestors: ancestors(root),
+            logical_bytes: 12,
+            allocated_bytes: 4096,
+            last_error: None,
+            volume: Some(Volume::read(crate::platform::VolumeOf::Path(root)).unwrap()),
+        }
+    }
+    #[test]
+    fn restart_preserves_native_bytes_private_modes_and_overlap_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let folder = root.join("folder");
+        fs::create_dir(&folder).unwrap();
+        let native = folder.join(OsString::from_vec(vec![b'f', 0xff]));
+        // APFS rejects invalid UTF-8 names; exercise the lossless record codec
+        // using a native path and identities captured from a disposable real item.
+        let actual = folder.join("actual");
+        fs::write(&actual, b"data").unwrap();
+        let storage = root.join("queue");
+        let mut queue = Queue::load(storage.clone());
+        let mut child = candidate(&root, &actual);
+        child.item.path = native.clone();
+        queue.add(vec![child.clone()]).unwrap();
+        queue.add(vec![child.clone()]).unwrap();
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.revision, 1);
+        let restored = Queue::load(storage.clone());
+        assert_eq!(restored.entries[0].id, child.id);
+        assert_eq!(restored.entries[0].item.path, native);
+        assert_eq!(
+            fs::metadata(storage.join("queue.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&storage).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let parent = candidate(&root, &folder);
+        queue.add(vec![parent.clone()]).unwrap();
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.entries[0].id, parent.id);
+        queue.add(vec![child]).unwrap();
+        assert_eq!(queue.entries[0].id, parent.id);
+        queue.prune(&[folder]).unwrap();
+        assert!(Queue::load(storage).entries.is_empty());
+    }
+    #[test]
+    fn records_without_a_volume_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("item");
+        fs::write(&path, []).unwrap();
+        let storage = root.join("queue");
+        let mut entry = serde_json::to_value(candidate(&root, &path)).unwrap();
+        entry.as_object_mut().unwrap().remove("volume");
+        fs::create_dir(&storage).unwrap();
+        fs::write(
+            storage.join("queue.json"),
+            serde_json::to_vec(&serde_json::json!({"version": 1, "entries": [entry]})).unwrap(),
+        )
+        .unwrap();
+        let q = Queue::load(storage);
+        assert!(!q.blocked);
+        assert!(q.entries[0].volume.is_none());
+        assert!(q.entries[0].checked().volume.is_none());
+    }
+    #[test]
+    fn corrupt_unsupported_nonregular_and_symlink_records_require_explicit_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        fs::create_dir(&storage).unwrap();
+        let path = storage.join("queue.json");
+        for bytes in [
+            b"bad".as_slice(),
+            br#"{"version":2,"entries":[]}"#.as_slice(),
+        ] {
+            fs::write(&path, bytes).unwrap();
+            let mut q = Queue::load(storage.clone());
+            assert!(q.blocked && q.warning.is_some());
+            assert!(q.add(vec![]).is_err());
+            assert!(q.remove(&["missing".into()]).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            q.clear().unwrap();
+            assert!(!Queue::load(storage.clone()).blocked);
+        }
+        fs::remove_file(&path).unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        let mut q = Queue::load(storage.clone());
+        assert!(q.blocked);
+        q.clear().unwrap();
+        assert_eq!(fs::read(victim).unwrap(), b"untouched");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(Queue::load(storage).blocked);
+    }
+    #[test]
+    fn failed_publication_keeps_previous_memory_and_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("item");
+        fs::write(&path, []).unwrap();
+        let storage = root.join("queue");
+        let mut q = Queue::load(storage.clone());
+        q.add(vec![candidate(&root, &path)]).unwrap();
+        let revision = q.revision;
+        let original = fs::read(storage.join("queue.json")).unwrap();
+        let moved = root.join("original-storage");
+        fs::rename(&storage, &moved).unwrap();
+        fs::write(&storage, b"blocks directory creation").unwrap();
+        assert!(q.clear().is_err());
+        assert_eq!(q.entries.len(), 1);
+        assert_eq!(q.revision, revision);
+        assert_eq!(fs::read(moved.join("queue.json")).unwrap(), original);
+    }
+    #[test]
+    fn batch_removal_validates_before_publishing_and_preserves_record_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let mut entries = vec![];
+        for name in ["a", "b", "c"] {
+            let path = root.join(name);
+            fs::write(&path, []).unwrap();
+            entries.push(candidate(&root, &path));
+        }
+        let ids: Vec<_> = entries.iter().map(|c| c.id.clone()).collect();
+        let storage = root.join("queue");
+        let mut q = Queue::load(storage.clone());
+        q.add(entries).unwrap();
+        let revision = q.revision;
+        let original = fs::read(storage.join("queue.json")).unwrap();
+        q.remove(&[]).unwrap();
+        assert!(q.remove(&[ids[0].clone(), "missing".into()]).is_err());
+        assert!(q.remove(&vec![ids[0].clone(); MAX_ENTRIES + 1]).is_err());
+        q.fail_publication = true;
+        assert!(q.remove(&ids[..2]).is_err());
+        assert_eq!(q.entries.len(), 3);
+        assert_eq!(q.revision, revision);
+        assert_eq!(fs::read(storage.join("queue.json")).unwrap(), original);
+        q.fail_publication = false;
+        q.remove(&[ids[0].clone(), ids[1].clone(), ids[0].clone()])
+            .unwrap();
+        assert_eq!(q.revision, revision + 1);
+        assert_eq!(q.entries.len(), 1);
+        assert_eq!(q.entries[0].id, ids[2]);
+        let restored = Queue::load(storage);
+        assert_eq!(restored.entries.len(), 1);
+        assert_eq!(restored.entries[0].id, ids[2]);
+    }
+    #[test]
+    fn capacity_checked_after_collapsing_overlaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let parent = root.join("parent");
+        fs::create_dir(&parent).unwrap();
+        let mut entries = vec![];
+        for i in 0..=MAX_ENTRIES {
+            let path = parent.join(i.to_string());
+            fs::write(&path, []).unwrap();
+            entries.push(candidate(&root, &path));
+        }
+        let mut q = Queue::load(root.join("queue"));
+        assert!(q.add(entries.clone()).is_err());
+        assert!(q.entries.is_empty());
+        entries.push(candidate(&root, &parent));
+        q.add(entries).unwrap();
+        assert_eq!(q.entries.len(), 1);
+    }
+    #[test]
+    fn large_sibling_addition_is_atomic_and_parent_replacement_preserves_queue_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = |path: &str| Guard {
+            path: path.into(),
+            identity: Identity {
+                device: 1,
+                inode: 1,
+                kind: 1,
+            },
+        };
+        let template = Candidate {
+            id: uuid::Uuid::new_v4().to_string(),
+            item: guard("/synthetic/parent"),
+            ancestors: vec![guard("/synthetic"), guard("/")],
+            root: guard("/synthetic"),
+            root_ancestors: vec![guard("/")],
+            logical_bytes: 0,
+            allocated_bytes: 0,
+            last_error: None,
+            volume: None,
+        };
+        let mut existing = template.clone();
+        existing.id = uuid::Uuid::new_v4().to_string();
+        existing.item.path = "/synthetic/other".into();
+        existing.last_error = Some("Keep this failure".into());
+        let mut q = Queue::load(dir.path().join("queue"));
+        q.add(vec![existing.clone()]).unwrap();
+        let original = fs::read(dir.path().join("queue/queue.json")).unwrap();
+        let siblings = || {
+            (0..100_000)
+                .map(|i| {
+                    let mut child = template.clone();
+                    child.id = format!("00000000-0000-4000-8000-{i:012x}");
+                    child.item.path = template.item.path.join(format!("file-{i}"));
+                    child.ancestors.insert(0, template.item.clone());
+                    child
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(q.add(siblings()).is_err());
+        assert_eq!(q.revision, 1);
+        assert_eq!(q.entries[0].last_error, existing.last_error);
+        assert_eq!(
+            fs::read(dir.path().join("queue/queue.json")).unwrap(),
+            original
+        );
+        let mut entries = siblings();
+        let mut duplicate = existing.clone();
+        duplicate.id = uuid::Uuid::new_v4().to_string();
+        duplicate.last_error = None;
+        entries.push(duplicate);
+        entries.push(template.clone());
+        q.add(entries).unwrap();
+        assert_eq!(q.revision, 2);
+        assert_eq!(q.entries.len(), 2);
+        assert_eq!(q.entries[0].id, existing.id);
+        assert_eq!(q.entries[0].last_error, existing.last_error);
+        assert_eq!(q.entries[1].id, template.id);
+        assert_eq!(Queue::load(dir.path().join("queue")).entries.len(), 2);
+    }
+    #[test]
+    fn explicit_clear_quarantines_directory_record_and_preserves_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        let record = storage.join("queue.json");
+        fs::create_dir_all(&record).unwrap();
+        fs::write(record.join("keep"), b"preserved").unwrap();
+        let mut q = Queue::load(storage.clone());
+        assert!(q.blocked);
+        q.clear().unwrap();
+        assert!(!q.blocked);
+        let restored = Queue::load(storage.clone());
+        assert!(!restored.blocked && restored.entries.is_empty());
+        let preserved = fs::read_dir(&storage)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("quarantine-")
+            })
+            .unwrap();
+        assert_eq!(fs::read(preserved.join("keep")).unwrap(), b"preserved");
+    }
+    #[test]
+    fn failed_clear_restores_quarantined_record_before_reporting_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        let record = storage.join("queue.json");
+        fs::create_dir_all(&record).unwrap();
+        fs::write(record.join("keep"), b"preserved").unwrap();
+        let mut q = Queue::load(storage.clone());
+        q.fail_publication = true;
+        assert!(q.clear().is_err());
+        assert!(q.blocked && q.revision == 0);
+        assert!(record.is_dir());
+        assert_eq!(fs::read(record.join("keep")).unwrap(), b"preserved");
+        assert_eq!(fs::read_dir(storage).unwrap().count(), 1);
+    }
+}

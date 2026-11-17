@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-quick-look"
+description = "Enables the close_quick_look command without any pre-configured scope."
+commands.allow = ["close_quick_look"]
+
+[[permission]]
+identifier = "deny-close-quick-look"
+description = "Denies the close_quick_look command without any pre-configured scope."
+commands.deny = ["close_quick_look"]

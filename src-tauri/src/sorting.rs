@@ -1,0 +1,506 @@
+//! Stable metadata-only list ordering. Maps retain their independent layout ordering.
+#[cfg(test)]
+use disk_scan::Node;
+use disk_scan::{NodeKind, NodeRef, ScanState, Snapshot};
+use serde::{Deserialize, Serialize};
+use std::{cmp::Ordering, os::unix::ffi::OsStrExt, path::PathBuf};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Order {
+    #[default]
+    SizeDescending,
+    SizeAscending,
+    NameAscending,
+    NameDescending,
+}
+impl Order {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("sizeDescending") => Ok(Self::SizeDescending),
+            Some("sizeAscending") => Ok(Self::SizeAscending),
+            Some("nameAscending") => Ok(Self::NameAscending),
+            Some("nameDescending") => Ok(Self::NameDescending),
+            _ => Err("Unknown sort order".into()),
+        }
+    }
+}
+fn group(a: &NodeRef<'_>, b: &NodeRef<'_>) -> Ordering {
+    (b.identity.kind == NodeKind::Directory).cmp(&(a.identity.kind == NodeKind::Directory))
+}
+fn tie(snapshot: &Snapshot, a: u32, b: u32, left: &mut PathBuf, right: &mut PathBuf) -> Ordering {
+    // Every selected path is checked before sorting; the immutable snapshot
+    // cannot change between that pass and this comparator.
+    snapshot.path_into(a, left).expect("prevalidated sort path");
+    snapshot
+        .path_into(b, right)
+        .expect("prevalidated sort path");
+    left.as_os_str()
+        .as_bytes()
+        .cmp(right.as_os_str().as_bytes())
+        .then(a.cmp(&b))
+}
+/// Case folding is done before sorting; arbitrarily long ASCII numbers never overflow.
+fn natural(a: &[u8], b: &[u8]) -> Ordering {
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let (start_a, start_b) = (i, j);
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let (mut significant_a, mut significant_b) = (start_a, start_b);
+            while significant_a < i && a[significant_a] == b'0' {
+                significant_a += 1;
+            }
+            while significant_b < j && b[significant_b] == b'0' {
+                significant_b += 1;
+            }
+            let order = (i - significant_a)
+                .cmp(&(j - significant_b))
+                .then_with(|| a[significant_a..i].cmp(&b[significant_b..j]))
+                .then((i - start_a).cmp(&(j - start_b)));
+            if order != Ordering::Equal {
+                return order;
+            }
+        } else {
+            let order = a[i].cmp(&b[j]);
+            if order != Ordering::Equal {
+                return order;
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+pub(crate) fn sort_ids(
+    snapshot: &Snapshot,
+    ids: &mut [u32],
+    order: Order,
+    allocated: bool,
+) -> Result<(), String> {
+    let (mut left, mut right) = (PathBuf::new(), PathBuf::new());
+    for &id in ids.iter() {
+        snapshot.node(id).ok_or("Invalid sort node ID")?;
+        snapshot.path_into(id, &mut left)?;
+    }
+    match order {
+        Order::SizeDescending | Order::SizeAscending => ids.sort_unstable_by(|&a, &b| {
+            let (a, b) = (
+                snapshot.node(a).expect("checked sort id"),
+                snapshot.node(b).expect("checked sort id"),
+            );
+            let size = |n: &NodeRef<'_>| {
+                if allocated {
+                    n.allocated_size
+                } else {
+                    n.logical_size
+                }
+            };
+            let sizes = if order == Order::SizeDescending {
+                size(&b).cmp(&size(&a))
+            } else {
+                size(&a).cmp(&size(&b))
+            };
+            group(&a, &b)
+                .then(sizes)
+                .then_with(|| tie(snapshot, a.id, b.id, &mut left, &mut right))
+        }),
+        Order::NameAscending | Order::NameDescending => {
+            // Keep keys only for the selected IDs, not for every node in the snapshot.
+            let mut keyed: Vec<_> = ids
+                .iter()
+                .map(|&id| {
+                    (
+                        id,
+                        snapshot
+                            .node(id)
+                            .expect("checked sort id")
+                            .display_name()
+                            .to_lowercase(),
+                    )
+                })
+                .collect();
+            keyed.sort_unstable_by(|(a, ka), (b, kb)| {
+                let (a, b) = (
+                    snapshot.node(*a).expect("checked sort id"),
+                    snapshot.node(*b).expect("checked sort id"),
+                );
+                let names = natural(ka.as_bytes(), kb.as_bytes());
+                group(&a, &b)
+                    .then(if order == Order::NameDescending {
+                        names.reverse()
+                    } else {
+                        names
+                    })
+                    .then_with(|| tie(snapshot, a.id, b.id, &mut left, &mut right))
+            });
+            for (slot, (id, _)) in ids.iter_mut().zip(keyed) {
+                *slot = id;
+            }
+        }
+    }
+    Ok(())
+}
+struct Entry {
+    node_id: u32,
+    order: Order,
+    allocated: bool,
+    nodes_address: usize,
+    count: usize,
+    root: PathBuf,
+    ids: Vec<u32>,
+}
+#[derive(Default)]
+pub(crate) struct Cache {
+    entry: Option<Entry>,
+    #[cfg(test)]
+    builds: usize,
+}
+impl Cache {
+    /// Owned payload buffers only; excludes stack fields and allocator overhead.
+    #[cfg(any(test, feature = "performance-benchmark"))]
+    pub(crate) fn retained_buffer_storage(&self) -> disk_scan::BufferStorage {
+        let Some(entry) = &self.entry else {
+            return disk_scan::BufferStorage::default();
+        };
+        let storage = disk_scan::BufferStorage {
+            length_bytes: entry.ids.len() * std::mem::size_of::<u32>()
+                + entry.root.as_os_str().len(),
+            capacity_bytes: entry.ids.capacity() * std::mem::size_of::<u32>()
+                + entry.root.capacity(),
+        };
+        storage
+    }
+    pub(crate) fn page(
+        &mut self,
+        snapshot: &Snapshot,
+        node_id: u32,
+        order: Order,
+        allocated: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<u32>, usize), String> {
+        let node = snapshot
+            .node(node_id)
+            .filter(|n| n.id == node_id)
+            .ok_or("Unknown node ID")?;
+        let completed = snapshot.state == ScanState::Completed;
+        let address = snapshot.storage_identity();
+        let reuse = completed
+            && self.entry.as_ref().is_some_and(|e| {
+                e.node_id == node_id
+                    && e.order == order
+                    && e.allocated == allocated
+                    && e.nodes_address == address
+                    && e.count == snapshot.node_count()
+                    && e.root == snapshot.root
+            });
+        if !reuse {
+            self.entry = None;
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+            let mut ids = node.children().to_vec();
+            if ids
+                .iter()
+                .any(|&id| snapshot.node(id).is_none_or(|n| n.id != id))
+            {
+                return Err("Invalid child node ID".into());
+            }
+            sort_ids(snapshot, &mut ids, order, allocated)?;
+            if completed {
+                self.entry = Some(Entry {
+                    node_id,
+                    order,
+                    allocated,
+                    nodes_address: address,
+                    count: snapshot.node_count(),
+                    root: snapshot.root.clone(),
+                    ids,
+                });
+            } else {
+                return Ok(page(&ids, offset, limit));
+            }
+        }
+        Ok(page(
+            &self.entry.as_ref().expect("completed cache populated").ids,
+            offset,
+            limit,
+        ))
+    }
+}
+fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
+    let start = offset.min(ids.len());
+    let end = start.saturating_add(limit.min(500)).min(ids.len());
+    (ids[start..end].to_vec(), ids.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disk_scan::Identity;
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    fn fixture() -> Snapshot {
+        let mut s = Snapshot::empty(PathBuf::from("/fixture"));
+        for (id, (name, kind, logical, allocated)) in [
+            ("root", NodeKind::Directory, 99, 99),
+            ("Folder10", NodeKind::Directory, 1, 100),
+            ("Folder2", NodeKind::Directory, 2, 0),
+            ("file10", NodeKind::File, 10, 1),
+            ("File2", NodeKind::File, 2, 10),
+            ("file02", NodeKind::File, 2, 0),
+            ("Ä", NodeKind::File, 0, 0),
+            ("ä", NodeKind::File, 0, 0),
+            ("�", NodeKind::File, 0, 0),
+            ("�", NodeKind::File, 0, 0),
+            ("foo", NodeKind::Symlink, 0, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = id as u32;
+            let path = if id == 8 || id == 9 {
+                s.root
+                    .join(OsString::from_vec(vec![if id == 8 { 0xff } else { 0xfe }]))
+            } else {
+                s.root.join(name)
+            };
+            s.append_legacy_node(Node {
+                id,
+                parent: if id == 0 { None } else { Some(0) },
+                children: vec![],
+                name: name.into(),
+                path,
+                identity: Identity {
+                    device: 1,
+                    inode: u64::from(id),
+                    kind,
+                },
+                logical_size: logical,
+                allocated_size: allocated,
+                own_logical_size: logical,
+                own_allocated_size: allocated,
+                is_directory: kind == NodeKind::Directory,
+                hard_link: false,
+                clone_metadata: None,
+                excluded: false,
+            })
+            .unwrap();
+        }
+        s.set_children(0, &(1..=10).collect::<Vec<_>>()).unwrap();
+        s.set_children(1, &[3, 4]).unwrap();
+        s.set_children(2, &[5]).unwrap();
+        s.state = ScanState::Completed;
+        s
+    }
+    #[test]
+    fn retained_buffers_track_completed_pages_and_running_release() {
+        let mut snapshot = fixture();
+        let mut cache = Cache::default();
+        assert_eq!(cache.retained_buffer_storage().capacity_bytes, 0);
+        cache
+            .page(&snapshot, 0, Order::default(), false, 0, 2)
+            .unwrap();
+        let storage = cache.retained_buffer_storage();
+        assert!(storage.length_bytes >= 10 * 4 + snapshot.root.as_os_str().len());
+        assert!(storage.capacity_bytes >= storage.length_bytes);
+        cache
+            .page(&snapshot, 0, Order::default(), false, 2, 2)
+            .unwrap();
+        assert_eq!(
+            cache.retained_buffer_storage().capacity_bytes,
+            storage.capacity_bytes
+        );
+        snapshot.state = ScanState::Running;
+        cache
+            .page(&snapshot, 0, Order::default(), false, 0, 2)
+            .unwrap();
+        assert_eq!(cache.retained_buffer_storage().capacity_bytes, 0);
+    }
+    #[test]
+    fn orders_group_folders_and_preserve_raw_ties() {
+        let s = fixture();
+        for (order, expected) in [
+            (Order::SizeDescending, vec![2, 1, 3, 4, 5, 10, 6, 7, 9, 8]),
+            (Order::SizeAscending, vec![1, 2, 10, 6, 7, 9, 8, 4, 5, 3]),
+            (Order::NameAscending, vec![2, 1, 4, 5, 3, 10, 6, 7, 9, 8]),
+            (Order::NameDescending, vec![1, 2, 9, 8, 6, 7, 10, 3, 5, 4]),
+        ] {
+            let mut ids = s.node(0).unwrap().children().to_vec();
+            ids.reverse();
+            sort_ids(&s, &mut ids, order, false).unwrap();
+            assert_eq!(ids, expected, "{order:?}");
+        }
+        let mut ids = s.node(0).unwrap().children().to_vec();
+        sort_ids(&s, &mut ids, Order::SizeAscending, true).unwrap();
+        assert_eq!(ids, vec![2, 1, 5, 10, 6, 7, 9, 8, 3, 4]);
+        sort_ids(&s, &mut ids, Order::SizeDescending, true).unwrap();
+        assert_eq!(ids, vec![1, 2, 4, 3, 5, 10, 6, 7, 9, 8]);
+    }
+    #[test]
+    fn identical_native_paths_use_ascending_id_in_every_mode() {
+        let mut s = fixture();
+        let mut duplicate = s.legacy_node(4).unwrap();
+        duplicate.id = 11;
+        s.append_legacy_node(duplicate).unwrap();
+        for order in [
+            Order::SizeDescending,
+            Order::SizeAscending,
+            Order::NameAscending,
+            Order::NameDescending,
+        ] {
+            let mut ids = vec![11, 4];
+            sort_ids(&s, &mut ids, order, false).unwrap();
+            assert_eq!(ids, vec![4, 11]);
+        }
+    }
+    #[test]
+    fn folder_pages_cap_output_without_cloning_full_list() {
+        let mut s = fixture();
+        for id in 11..=610 {
+            let mut node = s.legacy_node(3).unwrap();
+            node.id = id;
+            node.name = format!("file{id}");
+            node.path = s.root.join(&node.name);
+            s.append_legacy_node(node).unwrap();
+            let mut children = s.node(0).unwrap().children().to_vec();
+            children.push(id);
+            s.set_children(0, &children).unwrap();
+        }
+        let mut cache = Cache::default();
+        let first = cache
+            .page(&s, 0, Order::NameAscending, false, 0, usize::MAX)
+            .unwrap();
+        assert_eq!((first.0.len(), first.1), (500, 610));
+        let last = cache
+            .page(&s, 0, Order::NameAscending, false, 500, usize::MAX)
+            .unwrap();
+        assert_eq!((last.0.len(), last.1), (110, 610));
+        assert_eq!(cache.builds, 1);
+        assert_eq!(cache.entry.as_ref().unwrap().ids.len(), 610);
+    }
+
+    #[test]
+    fn invalid_selected_paths_fail_before_reordering() {
+        let mut s = fixture();
+        assert!(sort_ids(&s, &mut [1, 99], Order::NameAscending, false).is_err());
+        let mut root = s.legacy_node(0).unwrap();
+        root.path = s.root.clone();
+        let mut child = s.legacy_node(1).unwrap();
+        child.path = s.root.join("child");
+        child.id = 1;
+        child.parent = Some(0);
+        let mut compact = Snapshot::empty(s.root.clone());
+        compact.append_legacy_node(root).unwrap();
+        compact.append_legacy_node(child).unwrap();
+        compact.update_node(1, |n| n.parent = Some(1)).unwrap();
+        let mut ids = [1, 0];
+        assert!(sort_ids(&compact, &mut ids, Order::SizeAscending, false).is_err());
+        assert_eq!(ids, [1, 0]);
+        s.set_children(0, &[99]).unwrap();
+        assert!(Cache::default()
+            .page(&s, 0, Order::default(), false, 0, 1)
+            .is_err());
+    }
+
+    #[test]
+    fn natural_numbers_have_no_parse_limit_and_order_zero_padding() {
+        assert_eq!(natural(b"file2", b"file10"), Ordering::Less);
+        assert_eq!(natural(b"file2", b"file02"), Ordering::Less);
+        assert_eq!(natural(b"file0", b"file00"), Ordering::Less);
+        assert_eq!(natural(b"file0002", b"file3"), Ordering::Less);
+        assert_eq!(natural(b"a1b2", b"a1b10"), Ordering::Less);
+        assert_eq!(natural(b"a", b"a0"), Ordering::Less);
+        let huge = format!("file{}", "9".repeat(1000));
+        let larger = format!("file1{}", "0".repeat(1000));
+        assert_eq!(natural(huge.as_bytes(), larger.as_bytes()), Ordering::Less);
+        assert_eq!(Order::parse(None).unwrap(), Order::SizeDescending);
+        for order in [
+            Order::SizeDescending,
+            Order::SizeAscending,
+            Order::NameAscending,
+            Order::NameDescending,
+        ] {
+            let text = serde_json::to_value(order).unwrap();
+            assert_eq!(Order::parse(text.as_str()).unwrap(), order);
+        }
+        assert!(Order::parse(Some("unknown")).is_err());
+        assert!(Order::parse(Some("")).is_err());
+    }
+    #[test]
+    fn last_folder_cache_pages_and_running_changes() {
+        let mut s = fixture();
+        let mut cache = Cache::default();
+        assert_eq!(
+            cache
+                .page(&s, 0, Order::NameAscending, false, 0, 2)
+                .unwrap(),
+            (vec![2, 1], 10)
+        );
+        assert_eq!(
+            cache
+                .page(&s, 0, Order::NameAscending, false, 2, 2)
+                .unwrap(),
+            (vec![4, 5], 10)
+        );
+        assert_eq!(cache.builds, 1);
+        assert_eq!(
+            cache
+                .page(&s, 0, Order::NameAscending, false, usize::MAX, 500)
+                .unwrap(),
+            (vec![], 10)
+        );
+        assert_eq!(
+            cache
+                .page(&s, 0, Order::NameAscending, false, 0, 0)
+                .unwrap(),
+            (vec![], 10)
+        );
+        cache
+            .page(&s, 1, Order::NameAscending, false, 0, 500)
+            .unwrap();
+        assert_eq!(cache.builds, 2);
+        assert_eq!(cache.entry.as_ref().unwrap().node_id, 1);
+        cache
+            .page(&s, 0, Order::NameAscending, false, 0, 500)
+            .unwrap();
+        assert_eq!(cache.builds, 3);
+        cache
+            .page(&s, 0, Order::SizeAscending, true, 0, 500)
+            .unwrap();
+        assert_eq!(cache.builds, 4);
+        assert!(cache.page(&s, 99, Order::default(), true, 0, 500).is_err());
+        s.state = ScanState::Running;
+        cache
+            .page(&s, 0, Order::NameAscending, false, 0, 500)
+            .unwrap();
+        let mut node = s.legacy_node(4).unwrap();
+        node.name = "zzz".into();
+        s.replace_node(4, node).unwrap();
+        assert_eq!(
+            cache
+                .page(&s, 0, Order::NameAscending, false, 2, 1)
+                .unwrap()
+                .0,
+            vec![5]
+        );
+        assert_eq!(cache.builds, 6);
+        assert!(cache.entry.is_none());
+        s.state = ScanState::Completed;
+        cache
+            .page(&s, 0, Order::NameAscending, false, 0, 500)
+            .unwrap();
+        assert_eq!(cache.builds, 7);
+        let other = fixture();
+        cache
+            .page(&other, 0, Order::NameAscending, false, 0, 500)
+            .unwrap();
+        assert_eq!(cache.builds, 8);
+    }
+}

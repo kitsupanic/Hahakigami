@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-filter-nodes"
+description = "Enables the filter_nodes command without any pre-configured scope."
+commands.allow = ["filter_nodes"]
+
+[[permission]]
+identifier = "deny-filter-nodes"
+description = "Denies the filter_nodes command without any pre-configured scope."
+commands.deny = ["filter_nodes"]

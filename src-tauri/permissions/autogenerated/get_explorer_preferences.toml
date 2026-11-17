@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-explorer-preferences"
+description = "Enables the get_explorer_preferences command without any pre-configured scope."
+commands.allow = ["get_explorer_preferences"]
+
+[[permission]]
+identifier = "deny-get-explorer-preferences"
+description = "Denies the get_explorer_preferences command without any pre-configured scope."
+commands.deny = ["get_explorer_preferences"]

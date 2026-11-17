@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-cleanup-queue"
+description = "Enables the add_cleanup_queue command without any pre-configured scope."
+commands.allow = ["add_cleanup_queue"]
+
+[[permission]]
+identifier = "deny-add-cleanup-queue"
+description = "Denies the add_cleanup_queue command without any pre-configured scope."
+commands.deny = ["add_cleanup_queue"]

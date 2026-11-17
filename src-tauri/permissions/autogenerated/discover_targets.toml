@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discover-targets"
+description = "Enables the discover_targets command without any pre-configured scope."
+commands.allow = ["discover_targets"]
+
+[[permission]]
+identifier = "deny-discover-targets"
+description = "Denies the discover_targets command without any pre-configured scope."
+commands.deny = ["discover_targets"]

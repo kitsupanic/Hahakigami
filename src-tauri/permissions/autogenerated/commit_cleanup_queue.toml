@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-commit-cleanup-queue"
+description = "Enables the commit_cleanup_queue command without any pre-configured scope."
+commands.allow = ["commit_cleanup_queue"]
+
+[[permission]]
+identifier = "deny-commit-cleanup-queue"
+description = "Denies the commit_cleanup_queue command without any pre-configured scope."
+commands.deny = ["commit_cleanup_queue"]

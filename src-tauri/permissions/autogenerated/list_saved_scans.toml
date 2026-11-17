@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-saved-scans"
+description = "Enables the list_saved_scans command without any pre-configured scope."
+commands.allow = ["list_saved_scans"]
+
+[[permission]]
+identifier = "deny-list-saved-scans"
+description = "Denies the list_saved_scans command without any pre-configured scope."
+commands.deny = ["list_saved_scans"]

@@ -1,0 +1,689 @@
+/* Scan identity and actions stay above the shared explorer navigation. */
+:root {
+  --sidebar-width: clamp(200px, 16.3vw, 260px);
+}
+main {
+  height: 100dvh;
+  min-width: 0;
+  padding: 0;
+  background: var(--panel);
+}
+.navigation-sidebar-hidden {
+  --sidebar-width: 0px;
+}
+.titlebar-sidebar-toggle,
+.header-controls .toolbar-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 5px;
+  color: var(--muted);
+}
+.titlebar-sidebar-toggle {
+  position: fixed;
+  top: 13px;
+  left: calc(var(--sidebar-width) - 54px);
+  z-index: 10;
+}
+.navigation-sidebar-hidden .titlebar-sidebar-toggle {
+  left: 20px;
+}
+.macos-titlebar.navigation-sidebar-hidden .titlebar-sidebar-toggle {
+  left: 88px;
+}
+.navigation-sidebar-hidden .window-toolbar {
+  padding-left: 62px;
+}
+.macos-titlebar.navigation-sidebar-hidden .window-toolbar {
+  padding-left: 130px;
+}
+.navigation-sidebar-hidden .window-toolbar-fallback {
+  padding-left: 62px;
+}
+.macos-titlebar.navigation-sidebar-hidden .window-toolbar-fallback {
+  padding-left: 130px;
+}
+.app:not(.macos-titlebar) .compact-sidebar .brand {
+  padding-right: 50px;
+}
+.toolbar-navigation {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.toolbar-navigation button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.toolbar-navigation button + button {
+  border-left: 1px solid var(--line);
+}
+.toolbar-navigation button:hover:not(:disabled) {
+  background: var(--soft);
+}
+.back-chevron {
+  transform: rotate(180deg);
+}
+/* Rescan turns into Stop in place: one fixed footprint, so the toolbar doesn't shift
+   and the red state isn't taller than the paper one. */
+.rescan-action,
+.rescan-action.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 104px;
+  padding: 8px 12px;
+}
+main > .window-toolbar {
+  display: flex;
+  align-items: center;
+  position: relative;
+  order: -2;
+  gap: 12px;
+  /* Matches the fallback toolbar and sidebar titlebar so the fixed left toggle lines up. */
+  min-height: 60px;
+  margin: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+.toolbar-crumbs {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.toolbar-crumbs::-webkit-scrollbar {
+  display: none;
+}
+.toolbar-crumbs > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+/* Ancestors give up width first; every crumb truncates with an ellipsis instead of clipping. */
+.toolbar-crumbs button {
+  flex-shrink: 1;
+  min-width: 2.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 0;
+  padding: 4px 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+.toolbar-crumbs button[aria-current] {
+  flex-shrink: 0.2;
+  min-width: 4em;
+  color: var(--text);
+  font-size: var(--font-title3);
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.window-toolbar-fallback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  order: -2;
+  min-height: 60px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+.header-controls {
+  flex: 0 0 auto;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.header-controls > button {
+  min-height: 34px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  font-size: var(--font-secondary);
+}
+.window-toolbar .header-search {
+  flex: 0 0 auto;
+  width: 220px;
+  /* Toolbar tier: matches the 34px toolbar buttons beside it. */
+  height: 34px;
+  transition: width 0.15s;
+}
+.window-toolbar .header-search:focus-within {
+  width: 320px;
+}
+/* The field, not the bare input, carries the focus ring. */
+.window-toolbar .header-search:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.window-toolbar .header-search input:focus-visible {
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .window-toolbar .header-search {
+    transition: none;
+  }
+}
+.workspace-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.workspace-controls {
+  flex: 0 0 auto;
+  min-height: 48px;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+/* On the scan status row the controls are a group of that row, not a bar of their own. */
+.scan-status-line .workspace-controls {
+  min-height: 0;
+  flex-wrap: nowrap;
+  padding: 0 4px 0 0;
+  border-bottom: 0;
+  background: transparent;
+}
+.workspace-controls .view-switch > button {
+  width: 32px;
+  padding: 0;
+  gap: 0;
+  font-size: 0;
+}
+.map-control-label {
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+.map-control-divider {
+  flex: 0 0 1px;
+  align-self: center;
+  height: 24px;
+  margin-inline: 2px;
+  background: var(--line);
+}
+.analysis-layout,
+.analysis-layout:not(.has-scan) {
+  display: flex;
+  flex: 1 0 0;
+  flex-direction: column;
+  min-height: 0;
+  gap: 0;
+}
+.analysis-main,
+.analysis-main .explorer-content.has-scan {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 0;
+  min-height: 0;
+}
+.analysis-layout.has-scan {
+  min-height: 520px;
+}
+.analysis-main .explorer {
+  --map-min-width: 300px;
+  --list-min-width: 320px;
+  display: grid;
+  grid-template-columns: minmax(0, var(--map-share)) 8px minmax(
+      0,
+      var(--list-share)
+    );
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1 0 0;
+  min-height: 0;
+  gap: 0;
+}
+.analysis-main .explorer.inspector-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+.explorer.inspector-hidden > .visual {
+  grid-column: 1;
+}
+.visual {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--map-surface);
+  overflow: hidden;
+}
+.visual .map-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 18px 12px;
+  background: var(--map-surface);
+}
+/* DiskMap reads this computed color for the selection outline; canvas cannot resolve var(). */
+.map-wrap canvas {
+  accent-color: var(--accent);
+}
+.map-wrap .map-caption {
+  max-width: calc(100% - 24px);
+  font-size: var(--font-caption);
+  background: var(--map-surface);
+}
+.visual .map-legend-bar {
+  min-height: 34px;
+  gap: 12px;
+  padding: 6px 16px;
+  font-size: var(--font-caption);
+  border-top: 1px solid var(--line);
+}
+.visual .map-legend {
+  min-height: 0;
+  padding: 0;
+}
+.workspace-side {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+.workspace-side .file-list {
+  --file-relative-width: 54px;
+  --file-size-width: 84px;
+  --file-contents-width: 54px;
+  --file-column-gap: 10px;
+  --file-cell-padding: 14px;
+  flex: 1 1 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+}
+.workspace-side .panel-title {
+  position: relative;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 46px;
+  padding: 7px 14px;
+}
+.workspace-side .panel-title strong {
+  font-size: var(--font-body);
+  font-weight: 600;
+}
+.workspace-side .panel-title small {
+  margin-left: 4px;
+  font-size: var(--font-caption);
+  font-weight: 400;
+}
+.list-heading {
+  min-width: 0;
+}
+.file-list .table-head {
+  padding-block: 9px;
+  font-size: var(--font-caption);
+}
+.file-list .row {
+  min-height: 36px;
+  padding-block: 5px;
+  font-size: var(--font-body);
+  border-bottom: 1px solid var(--line);
+}
+.file-list .row.selected {
+  background: var(--soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--radius-sm);
+}
+.file-list .file-size {
+  font-size: var(--font-secondary);
+}
+.file-row-name > .icon {
+  width: 20px;
+  height: 20px;
+}
+.file-list .file-share {
+  height: 5px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+}
+.file-list .file-parent-path {
+  font-size: var(--font-caption);
+}
+#selection-inspector {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+/* Two list views as a segmented control (controls.css); the list itself never hides. */
+.list-view-tabs {
+  margin: 8px 14px;
+}
+.list-view-tabs > button {
+  flex: 1 1 0;
+}
+.list-view-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+#file-types-panel {
+  overflow-y: auto;
+}
+.details-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.details-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.details-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.details-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-body);
+}
+.details-size {
+  flex: 0 0 auto;
+  font-size: var(--font-body);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.details-size small {
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: 400;
+}
+.details-strip .inspector-actions,
+.details-strip .inspector-actions.historical-actions {
+  padding: 0;
+  border: 0;
+  max-height: none;
+  overflow: visible;
+  gap: 6px;
+}
+.details-primary {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.details-primary > :is(.primary, .queue-included) {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.details-primary > .icon-action {
+  flex: 0 0 32px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+.details-strip .inspector-actions .queue-included {
+  margin-top: 0;
+  min-height: 32px;
+}
+.inspector-actions,
+.inspector-actions.historical-actions {
+  flex-shrink: 0;
+  padding: 10px 20px 16px;
+  max-height: none;
+  overflow: visible;
+  gap: 7px;
+}
+.inspector-actions button {
+  min-height: 32px;
+  font-size: var(--font-secondary);
+}
+.historical-context > button {
+  margin-top: 10px;
+}
+.historical-context {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin: 0;
+}
+.inspector-actions .historical-context p {
+  margin: 0;
+  font-size: var(--font-secondary);
+  line-height: 1.5;
+}
+.queue-strip {
+  margin: 0;
+  padding: 10px 20px;
+  min-height: 44px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  font-size: var(--font-secondary);
+}
+.saved-open-feedback,
+main > .error,
+.results-return-context {
+  margin: 10px 20px;
+}
+.saved-open-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  main > header {
+    background: var(--header-surface);
+  }
+}
+@media (max-width: 1050px) {
+  :root {
+    --sidebar-width: 208px;
+  }
+  main {
+    margin-left: var(--sidebar-width);
+    padding: 0;
+  }
+  .workspace-side .file-list {
+    --file-relative-width: 32px;
+    --file-size-width: 70px;
+    --file-contents-width: 44px;
+    --file-column-gap: 7px;
+    --file-cell-padding: 10px;
+  }
+}
+/* The 900px minimum window keeps list and map side by side. */
+@media (max-width: 899px) {
+  .analysis-main .explorer {
+    display: flex;
+    flex-direction: column;
+    flex: 1 0 auto;
+  }
+  .analysis-main .explorer-content.has-scan {
+    flex: 1 0 auto;
+  }
+  .explorer > .visual {
+    order: -1;
+    flex: 0 0 420px;
+  }
+  .explorer > .panel-divider {
+    display: none;
+  }
+  .workspace-side {
+    flex: 0 0 500px;
+    min-height: 340px;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+  }
+  .workspace-side .file-list {
+    flex: 1 1 0;
+  }
+  .workspace-controls {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 600px) {
+  :root {
+    --sidebar-width: 160px;
+  }
+  .workspace-controls {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+.file-list .row :is(.file-row-name, .file-label, .file-name) {
+  color: inherit;
+}
+.file-list .row {
+  font-size: var(--font-body);
+}
+.file-list .file-size {
+  font-size: var(--font-body);
+}
+.file-list .file-relative {
+  color: var(--muted);
+  font-size: var(--font-secondary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.file-list :is(.row, .table-head) {
+  grid-template-columns:
+    minmax(0, 1fr) var(--file-size-width) var(--file-relative-width)
+    var(--file-contents-width);
+}
+.file-list :is(.file-size, .size-heading) {
+  grid-column: 2;
+  grid-row: 1;
+}
+.file-list :is(.file-relative, .relative-size-heading) {
+  grid-column: 3;
+  grid-row: 1;
+}
+.file-list :is(.file-contents, .contents-heading) {
+  grid-column: 4;
+  grid-row: 1;
+}
+/* The full status remains available in the scan information disclosure. */
+/* Popovers stay inside the workspace after moving the list above the details. */
+.workspace-side .filters-popover {
+  position: fixed;
+  bottom: auto;
+  right: auto;
+  z-index: 20;
+}
+
+/* Short windows: the details strip yields height so the list above keeps a few rows. */
+@media (max-height: 700px) {
+  .details-strip {
+    max-height: 30%;
+  }
+}
+
+/* Sidebar toggles run as a view transition (App.svelte animateLayout). The two side
+   panels slide in from their own edge; the workspace and map grow or shrink into the
+   freed space. Snapshots keep their real size (no stretching) and stay pinned to the
+   edge that does not move. */
+.sidebar.compact-sidebar {
+  view-transition-name: nav-sidebar;
+}
+.titlebar-sidebar-toggle {
+  view-transition-name: sidebar-toggle;
+}
+main {
+  view-transition-name: workspace;
+}
+.explorer > .visual {
+  view-transition-name: map-panel;
+}
+.workspace-side {
+  view-transition-name: file-panel;
+}
+::view-transition-group(*) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-image-pair(workspace),
+::view-transition-image-pair(map-panel) {
+  overflow: clip;
+}
+::view-transition-old(workspace),
+::view-transition-new(workspace),
+::view-transition-old(map-panel),
+::view-transition-new(map-panel) {
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+::view-transition-old(nav-sidebar):only-child {
+  animation: 240ms cubic-bezier(0.2, 0, 0, 1) both slide-to-left;
+}
+::view-transition-new(nav-sidebar):only-child {
+  animation: 240ms cubic-bezier(0.2, 0, 0, 1) both slide-from-left;
+}
+::view-transition-old(file-panel):only-child {
+  animation: 240ms cubic-bezier(0.2, 0, 0, 1) both slide-to-right;
+}
+::view-transition-new(file-panel):only-child {
+  animation: 240ms cubic-bezier(0.2, 0, 0, 1) both slide-from-right;
+}
+@keyframes slide-to-left {
+  to {
+    transform: translateX(-100%);
+  }
+}
+@keyframes slide-from-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes slide-to-right {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes slide-from-right {
+  from {
+    transform: translateX(100%);
+  }
+}

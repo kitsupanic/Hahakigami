@@ -1,0 +1,396 @@
+/* Every color and type-size token lives here and is loaded first; see docs/adr/0001. */
+:root {
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Tabular figures: sizes, counts and dates. */
+  --font-figures: inherit;
+
+  --font-count: 10px;
+  --font-caption: 11px;
+  --font-secondary: 12px;
+  --font-body: 13px;
+  --font-title3: 15px;
+  --font-title2: 18px;
+  --font-title1: 22px;
+  --font-large: 26px;
+
+  /* macOS regular control size, shared by selects, fields, buttons and segmented controls. */
+  --control-height: 28px;
+  --control-radius: 6px;
+  /* Corner scale: marks and focus rings, controls and rows, panels and popovers, dialogs. */
+  --radius-xs: 3px;
+  --radius-sm: var(--control-radius);
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  /* Map legend colour keys. */
+  --radius-swatch: 50%;
+
+  --text: #272c35;
+  --bg: #f4f5f7;
+  --panel: #fff;
+  --sidebar: #eef0f4;
+  --header-surface: #fff;
+  --map-surface: #f5f7fa;
+  --soft: #eaf1fc;
+  --control-surface: var(--panel);
+  --control-line: var(--line);
+  /* Segmented controls: a quiet track with the chosen segment raised on it. */
+  --control-track: color-mix(in srgb, var(--text) 8%, var(--panel));
+  --control-chosen: var(--panel);
+  --control-chosen-edge: transparent;
+  --control-chosen-text: var(--text);
+  --share-track: var(--soft);
+  --line: #dce0e7;
+  --muted: #596678;
+  --scrim: #0005;
+  --swatch-edge: #0001;
+  /* Theme picker previews: fixed, so each swatch shows its own theme in any theme. */
+  --preview-mac-surface: #f4f5f7;
+  --preview-mac-accent: #007aff;
+  --preview-guardian-surface: #0e1319;
+  --preview-guardian-accent: #c42a20;
+  /* Settings: inset group surface, the chosen theme's ring, and the switch. */
+  --group-surface: color-mix(in srgb, var(--text) 3%, var(--panel));
+  --theme-pick: var(--accent);
+  --switch-on: var(--accent);
+  --switch-edge: transparent;
+  --switch-knob: #fff;
+  --switch-knob-on: #fff;
+  /* Folder icons outside a coloured branch (the welcome screen, details). */
+  --folder-icon: #469bea;
+
+  --shadow-control: 0 1px 3px #0000000c;
+  --shadow-raised: 0 4px 14px #0002;
+  --shadow-menu: 0 6px 20px #0004;
+  --shadow-popover: 0 10px 35px #0003;
+  --shadow-modal: 0 18px 65px #0004;
+
+  /* --accent is a fill; --accent-text is for accent-colored text (system blue is 4.02:1 on white). */
+  --accent: #007aff;
+  --accent-text: #0064d1;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
+  --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-tint-strong: color-mix(in srgb, var(--accent) 16%, transparent);
+  --capacity-fill: linear-gradient(
+    90deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 60%, white)
+  );
+  --on-accent: #fff;
+
+  --danger: #bc3333;
+  --danger-surface: #f9e4e8;
+  --danger-wash: #fdf5f7;
+  --danger-line: #ecd0d7;
+
+  --success: #206e58;
+  --success-surface: #e7f5ee;
+  --success-line: #90c8aa;
+  --success-tint: #29a57918;
+
+  --warning: #805a12;
+  --warning-surface: #fbf5e8;
+  --warning-line: #ddc58e;
+  --warning-tint: #bf852318;
+  --warning-mark: #b47a21;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #f0f2f7;
+    --bg: #181d23;
+    --panel: #1e232a;
+    --sidebar: #1e232a;
+    --header-surface: #20252d;
+    --map-surface: #181d23;
+    --soft: #2c3b56;
+    --control-surface: #2d333c;
+    --control-line: #424a57;
+    --control-track: color-mix(in srgb, black 25%, var(--panel));
+    --control-chosen: var(--control-surface);
+    --share-track: #1e2c40;
+    --line: #303741;
+    --muted: #b0b9cc;
+
+    --shadow-popover: 0 10px 35px #0006;
+
+    --accent: #0a84ff;
+    --accent-text: #7db4ff;
+    --accent-hover: color-mix(in srgb, var(--accent) 85%, white);
+
+    --danger: #ffb0bf;
+    --danger-surface: #492e36;
+    --danger-wash: #392730;
+    --danger-line: #63404d;
+
+    --success: #9bdfb9;
+    --success-surface: #263e34;
+    --success-line: #47785d;
+
+    --warning: #f2c55c;
+    --warning-surface: #2b2822;
+    --warning-line: #625335;
+    --warning-mark: #ffd287;
+  }
+}
+
+/* Follow the person's macOS accent where the web view resolves it. */
+@supports (color: AccentColor) {
+  :root {
+    --preview-mac-accent: AccentColor;
+    --accent: AccentColor;
+  }
+}
+
+/* Increased contrast: darker muted text, stronger borders. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #3b4658;
+    --line: #8a93a3;
+    --control-chosen-edge: var(--control-line);
+    --accent-text: #0050a8;
+  }
+}
+
+@media (prefers-color-scheme: dark) and (prefers-contrast: more) {
+  :root {
+    --muted: #d0d7e6;
+    --line: #6b7686;
+    --control-line: #6b7686;
+    --accent-text: #a5cdff;
+  }
+}
+
+/* Guardian theme: opt-in, the website's printed-box world (site/DESIGN.md).
+   Carton and paper surfaces, straw type on carton, one cord-red spot colour,
+   Mac corners and soft shadows, no texture or ornament. Default chrome is untouched. */
+:root[data-theme="guardian"] {
+  /* Light only for now: the window is held light too (theme.svelte.ts). */
+  color-scheme: light;
+  --font-sans: "Archivo Variable", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-figures: inherit;
+  font-variant-numeric: tabular-nums;
+
+  --control-radius: 6px;
+  --radius-xs: 3px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --radius-swatch: 50%;
+
+  --text: #16140f;
+  /* White board, like a printed retail box; straw stays on carton surfaces only. */
+  --bg: #ebebe8;
+  --panel: #f2ede1;
+  --control-surface: #fff;
+  --sidebar: #0e1319;
+  --header-surface: #f2ede1;
+  --map-surface: #f2ede1;
+  --soft: #e8e0cd;
+  /* Ink at ~25% on white: the website's hairline. */
+  --line: #c6c5c2;
+  --muted: #55534e;
+  --control-line: #16140f;
+  --control-track: #ddd2ba;
+  --control-chosen: #16140f;
+  --control-chosen-edge: #16140f;
+  --control-chosen-text: #e9d9b4;
+  --share-track: #ddd2ba;
+  --scrim: #0e131980;
+  --swatch-edge: #16140f40;
+  --folder-icon: #ba882e;
+
+  /* Rounded surfaces float on soft shadows. */
+  --shadow-control: none;
+  --shadow-raised: 0 4px 14px #0002;
+  --shadow-menu: 0 6px 20px #0004;
+  --shadow-popover: 0 10px 35px #0003;
+  --shadow-modal: 0 18px 65px #0004;
+
+  --accent: #c42a20;
+  --accent-text: #a8231b;
+  --accent-hover: #a8231b;
+  /* Selection is an ink tint, not red: the spot colour stays scarce. */
+  --accent-tint: #e4e3df;
+  --accent-tint-strong: #d6d5d0;
+  --capacity-fill: #c42a20;
+  --on-accent: #f6efdf;
+
+  /* Settings groups are white panels on paper; switches are ink, not the spot red. */
+  --group-surface: var(--control-surface);
+  --theme-pick: var(--text);
+  --switch-on: var(--control-chosen);
+  --switch-edge: var(--control-line);
+  --switch-knob: var(--muted);
+  --switch-knob-on: var(--control-chosen-text);
+}
+
+/* The sidebar is the box spine: carton with straw type. */
+:root[data-theme="guardian"] .sidebar.compact-sidebar {
+  color-scheme: dark;
+  color: #e9d9b4;
+  --panel: #0e1319;
+  --text: #e9d9b4;
+  --muted: #b3a98f;
+  --line: #2a3038;
+  --soft: #232d3a;
+  --accent-text: #f07a6a;
+  --accent-tint: #e9d9b4;
+  --accent-tint-strong: #e9d9b4;
+  --control-surface: #1b222b;
+  --control-line: #8f8670;
+  --share-track: #1b222b;
+  /* Used space is ordinary, so it is straw-dim; red stays for a nearly full disk. */
+  --capacity-fill: #8f8670;
+  /* The light-board green is ~3:1 on carton; this one passes AA. */
+  --success: #9bdfb9;
+}
+
+/* On the spine a straw fill under straw type vanishes, so a highlighted menu item lifts
+   to the carton step; the Saved tag is a keyline. */
+:root[data-theme="guardian"] .compact-sidebar .saved-menu button:is(:hover, :focus-visible) {
+  background: var(--soft);
+}
+:root[data-theme="guardian"] .compact-sidebar .saved-badge:not(.partial) {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
+/* The sidebar toggle floats over the spine while the sidebar is shown. */
+:root[data-theme="guardian"] :not(.navigation-sidebar-hidden) > .titlebar-sidebar-toggle {
+  --panel: #0e1319;
+  --line: #2a3038;
+  color: #b3a98f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="guardian"] {
+    --text: #e9d9b4;
+    --bg: #0e1319;
+    --panel: #121820;
+    --sidebar: #0a0e13;
+    --header-surface: #0e1319;
+    --map-surface: #0e1319;
+    --soft: #1b222b;
+    --line: #2a3038;
+    --muted: #b3a98f;
+    --control-surface: #161c24;
+    --control-line: #8f8670;
+    --control-track: #0a0e13;
+    --control-chosen: #e9d9b4;
+    --control-chosen-edge: #e9d9b4;
+    --control-chosen-text: #0e1319;
+    --share-track: #1b222b;
+    --scrim: #000a;
+
+    --accent-text: #f07a6a;
+    --accent-hover: #d8382c;
+    --accent-tint: #e9d9b433;
+    --accent-tint-strong: #e9d9b44d;
+  }
+}
+
+/* Doodles print on light board where there is no data: the empty welcome screen and
+   the map's paper (tiles are opaque). Never on carton, so not in dark mode. */
+@media not (prefers-color-scheme: dark) {
+  :root[data-theme="guardian"] :has(> .welcome),
+  :root[data-theme="guardian"] .visual .map-wrap {
+    background-image: url("./guardian/doodles.svg");
+  }
+}
+
+/* The inspector is one step deeper paper beside the map. */
+@media not (prefers-color-scheme: dark) {
+  :root[data-theme="guardian"] .workspace-side {
+    --panel: #ebe3d0;
+    --soft: #e0d6c0;
+    --line: #d3c8b1;
+  }
+}
+/* Selection is a neutral paper step (mustard is a data colour in the map and legend);
+   the outline stays free for keyboard focus. */
+:root[data-theme="guardian"] .file-list .row.selected {
+  outline: 0;
+  background: var(--control-track);
+}
+:root[data-theme="guardian"] .file-list .row.selected .file-name {
+  font-weight: 500;
+}
+:root[data-theme="guardian"] .file-list .row.selected:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+/* Secondary controls sit on the board fill with a warm edge. */
+:root[data-theme="guardian"]
+  :is(.toolbar-navigation, .rescan-action:not(.primary), .toolbar-sidebar-toggle, .details-primary > .icon-action) {
+  background: var(--control-surface);
+  border-color: var(--control-line);
+}
+@media not (prefers-color-scheme: dark) {
+  :root[data-theme="guardian"] {
+    --control-surface: #fcf7eb;
+    --control-line: #d1ccc2;
+    --control-hover: #f7f2e6;
+    /* Danger is cord red type on the same board, not a cool pink wash. */
+    --danger: #a8231b;
+    --danger-wash: var(--control-surface);
+    --danger-line: var(--control-line);
+  }
+  :root[data-theme="guardian"] .modal button:not(.primary, .access-link, .theme-swatch, .segmented > *) {
+    background: var(--control-surface);
+    border-color: var(--control-line);
+  }
+  :root[data-theme="guardian"] .modal button:not(.primary, .access-link, .theme-swatch, .segmented > *):hover:not(:disabled) {
+    background: var(--control-hover);
+  }
+  :root[data-theme="guardian"]
+    :is(.rescan-action:not(.primary), .toolbar-sidebar-toggle, .details-primary > .icon-action,
+      .filters-control > button, .explorer-filters button, .sort-warning button, select):hover:not(:disabled) {
+    background-color: var(--control-hover);
+  }
+}
+/* Disabled is a quiet outline, so it reads as unavailable rather than faded red. */
+:root[data-theme="guardian"] .primary:disabled {
+  opacity: 1;
+  background: transparent;
+  border-color: var(--control-line);
+  color: var(--muted);
+}
+:root[data-theme="guardian"] .welcome-target {
+  background-color: var(--control-surface);
+}
+:root[data-theme="guardian"] :is(h1, h2) {
+  font-weight: 900;
+  font-variation-settings: "wdth" 112;
+}
+
+/* Cleanup queue as a printed ledger: a 4px ink rule under the heading, 2px under each
+   location, solid ink disk bands, and ink (not red) review and scan buttons. */
+:root[data-theme="guardian"] .cleanup-head {
+  border-bottom: 4px solid var(--text);
+}
+:root[data-theme="guardian"] .cleanup-group-head {
+  border-bottom: 2px solid var(--text);
+}
+:root[data-theme="guardian"] .cleanup-band {
+  --band-solid: var(--text);
+  --band-on-solid: var(--panel);
+}
+/* Review and the disk's Scan are ink, not the cord red kept for the Trash confirmation. */
+:root[data-theme="guardian"] .primary.cleanup-primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--panel);
+}
+:root[data-theme="guardian"] .primary.cleanup-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 80%, var(--panel));
+}
+:root[data-theme="guardian"] .primary.cleanup-primary:disabled {
+  background: color-mix(in srgb, var(--text) 35%, var(--panel));
+  border-color: transparent;
+  color: var(--panel);
+}

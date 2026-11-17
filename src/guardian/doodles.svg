@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" fill="none" stroke="#8f8670" stroke-opacity=".24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Guardian doodles: broom, bristles, knotted cord, folder, disk, dust. One stroke weight, tiles seamlessly. -->
+  <!-- broom -->
+  <g transform="translate(34 30) rotate(-24)">
+    <path d="M0 0v30"/><path d="M-3 30h6M-3 33h6"/><path d="M-3 35C-6 43-11 51-13 60q13 4 26 0C11 51 6 43 3 35"/><path d="M-5 45l-3 13M0 41v19M5 45l3 13"/>
+  </g>
+  <!-- folder -->
+  <g transform="translate(150 22) rotate(10)">
+    <path d="M0 6V2a2 2 0 0 1 2-2h9l3 4h16a2 2 0 0 1 2 2v18a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2Z"/><path d="M0 9h32"/>
+  </g>
+  <!-- knotted cord (overhand knot) -->
+  <g transform="translate(96 92) rotate(-8)">
+    <path d="M-26 2C-16 2-11-8-2-6c8 2 6 13-3 11-7-2-4-10 6-8 9 2 14 6 25 5"/>
+  </g>
+  <!-- disk -->
+  <g transform="translate(196 104) rotate(18)">
+    <rect x="-13" y="-9" width="26" height="18" rx="2"/><circle cx="7" cy="0" r="2"/><path d="M-8 4h8"/>
+  </g>
+  <!-- bristle sweep -->
+  <g transform="translate(30 150) rotate(12)">
+    <path d="M0 0c10-6 22-6 32 0"/><path d="M4 6c8-4 16-4 24 0"/><path d="M8 12c5-2 11-2 16 0"/>
+  </g>
+  <!-- small broom -->
+  <g transform="translate(140 170) rotate(32) scale(.8)">
+    <path d="M0 0v30"/><path d="M-3 30h6M-3 33h6"/><path d="M-3 35C-6 43-11 51-13 60q13 4 26 0C11 51 6 43 3 35"/><path d="M-5 45l-3 13M0 41v19M5 45l3 13"/>
+  </g>
+  <!-- file -->
+  <g transform="translate(206 186) rotate(-14)">
+    <path d="M-9-12h12l6 6v18h-18Z"/><path d="M3-12v6h6"/>
+  </g>
+  <!-- dust -->
+  <g stroke-width="1.2">
+    <circle cx="80" cy="44" r="1.6"/><circle cx="118" cy="140" r="2"/><circle cx="214" cy="56" r="1.4"/><circle cx="66" cy="208" r="1.8"/><circle cx="176" cy="230" r="1.4"/><circle cx="12" cy="104" r="1.6"/>
+    <path d="M226 150l3-3M229 150l-3-3"/><path d="M98 220l3-3M101 220l-3-3"/>
+  </g>
+</svg>

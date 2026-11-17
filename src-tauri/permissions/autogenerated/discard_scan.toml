@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discard-scan"
+description = "Enables the discard_scan command without any pre-configured scope."
+commands.allow = ["discard_scan"]
+
+[[permission]]
+identifier = "deny-discard-scan"
+description = "Denies the discard_scan command without any pre-configured scope."
+commands.deny = ["discard_scan"]

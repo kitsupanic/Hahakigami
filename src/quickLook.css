@@ -1,0 +1,6 @@
+.quick-look-error {
+  font-size: var(--font-secondary);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}

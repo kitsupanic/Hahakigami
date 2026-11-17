@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-commit-trash"
+description = "Enables the commit_trash command without any pre-configured scope."
+commands.allow = ["commit_trash"]
+
+[[permission]]
+identifier = "deny-commit-trash"
+description = "Denies the commit_trash command without any pre-configured scope."
+commands.deny = ["commit_trash"]

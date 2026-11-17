@@ -1,0 +1,23 @@
+/target/
+/node_modules/
+/dist/
+/src-tauri/gen/
+.DS_Store
+*.log
+/benchmark-results/
+__pycache__/
+*.pyc
+
+# Graphify knowledge graph: local agent tooling, not source
+/graphify-out/
+
+# Impeccable local runtime (mockups, review captures)
+/.impeccable/
+
+# Local agent and tool state
+/.claude/
+/.scratch/
+/.playwright-cli/
+/.graphifyignore
+/docs/agents/
+/output/

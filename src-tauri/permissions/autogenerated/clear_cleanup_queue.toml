@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-cleanup-queue"
+description = "Enables the clear_cleanup_queue command without any pre-configured scope."
+commands.allow = ["clear_cleanup_queue"]
+
+[[permission]]
+identifier = "deny-clear-cleanup-queue"
+description = "Denies the clear_cleanup_queue command without any pre-configured scope."
+commands.deny = ["clear_cleanup_queue"]
