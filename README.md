@@ -53,7 +53,9 @@ cp "$icon_output/generated/"{32x32.png,128x128.png,128x128@2x.png,icon.png,icon.
 
 ## CLI and local MCP
 
-The application executable also runs independent metadata scans without opening the UI. Completed automation scans are retained separately from the desktop app's saved scans, under `~/Library/Application Support/app.hahakigami.automation`. The desktop app can remain open or closed. Use `--data-dir DIRECTORY` to select a dedicated automation store, including for disposable tests.
+The application executable also runs independent metadata scans without opening the UI. The desktop app can remain open or closed.
+
+**Saved scans are turned off in this version**, so nothing is retained between runs: `scan` prints the finished result with `scanId: null`, and `list`, `summary`, `node`, `children`, `search` and `issues` report that saved scans are off. To browse a scan's results, use the MCP server, where `scan_id: "current"` reads the session's latest scan. `--data-dir DIRECTORY` selects the automation store used once saved scans return.
 
 After building the app, run its bundled executable directly:
 
@@ -61,13 +63,6 @@ After building the app, run its bundled executable directly:
 app="$PWD/target/release/bundle/macos/Hahakigami.app/Contents/MacOS/hahakigami"
 "$app" --help
 "$app" scan /path/to/folder
-"$app" list --limit 20
-# Copy scanId and rootId from the scan response:
-"$app" summary SCAN_ID
-"$app" children SCAN_ID ROOT_ID --limit 50 --offset 0
-"$app" search SCAN_ID '.zip' --limit 50
-"$app" node SCAN_ID NODE_ID
-"$app" issues SCAN_ID --limit 100
 ```
 
 Successful commands write one JSON value to stdout; diagnostics go to stderr. Exit codes are `0` for success, `1` for an operation failure, `2` for invalid command arguments, and `130` after Ctrl-C requests cancellation. Help and version output are plain text. Ctrl-C returns the latest available status; an in-flight filesystem read may still be stopping when the process exits. Cancelled and failed scans are not retained on disk.
@@ -87,7 +82,7 @@ For an MCP client that supports local stdio servers, configure the exact executa
 }
 ```
 
-The server exposes `scan`, `status`, `cancel`, `list`, `summary`, `node`, `children`, `search`, and `issues`. Inputs use `scan_id` and `node_id`; responses use camelCase field names. `scan` waits for completion while `status` and `cancel` remain available concurrently. One scan runs per server session. Use `scan_id: "current"` to query that session's active/latest result, including cancelled or failed partial results. A completed scan returns a saved UUID that also works in later CLI commands and MCP sessions. Before completion, `scanId` can be null. Disconnecting or interrupting the server requests cancellation. No protocol-level request-cancellation guarantee is made; use the `cancel` tool.
+The server exposes `scan`, `status`, `cancel`, `list`, `summary`, `node`, `children`, `search`, and `issues`. Inputs use `scan_id` and `node_id`; responses use camelCase field names. `scan` waits for completion while `status` and `cancel` remain available concurrently. One scan runs per server session. Use `scan_id: "current"` to query that session's active/latest result, including cancelled or failed partial results. With saved scans turned off, `scanId` stays null and `list` and saved-scan IDs are refused; `current` is the only way to query results, and they end with the session. Disconnecting or interrupting the server requests cancellation. No protocol-level request-cancellation guarantee is made; use the `cancel` tool.
 
 Command mode uses the same scanner and validated archive format as the app, with its own storage and locking. Scanning reads metadata; it does not preview contents, move files, control the GUI, or host a network endpoint. No client configuration or PATH installation is changed. macOS still controls filesystem access: command mode does not open the desktop Full Disk Access dialog or apply its scan block, and invoking the bundled executable is not proof that it inherits the GUI's Full Disk Access grant. Check coverage and issue results for denied locations. No protected-folder probes or privacy-grant changes are performed.
 
@@ -99,7 +94,7 @@ Command mode uses the same scanner and validated archive format as the app, with
 4. Search names across the scan, select items to inspect, or reveal them in Finder. Cmd-click adds/removes items from the selection.
 5. After a scan completes, review the exact paths in the Trash confirmation. Cancelling leaves the files in place. Successful cleanup invalidates the old results and starts a fresh scan of the original location.
 
-The toolbar shows the displayed scan as a folder breadcrumb; the last crumb is the current folder and earlier crumbs open their folders. **Back / Forward** restore visited folders and their search or filter context within that scan; **Enclosing Folder** (⌘↑) opens the parent folder and stops at the scan root. The sidebar buttons hide or show Locations and the explorer pane while retaining their contents. Navigation history resets when changing scans, and sidebar visibility resets when reopening the app. Choosing a disk or folder in Locations (or **Choose a folder**) sets the scan target without changing those results or starting a scan. The toolbar action reads **Rescan** for the displayed source or **Scan** for another target (its tooltip names the location); pressing it starts the scan and, while a live scan runs, it becomes **Stop**. A status line under the toolbar says whether the displayed results are a **Saved scan** or a live scan that is **Not saved** (press **Save** to keep it), and its size and entry totals open the scan information. Saved results stay read-only until a live scan starts. The inspector keeps long names compact, stacks the recorded sizes, scan percentage and contents, and provides **Copy path**. Expand **Full path** to select the complete path with the keyboard.
+The toolbar shows the displayed scan as a folder breadcrumb; the last crumb is the current folder and earlier crumbs open their folders. **Back / Forward** restore visited folders and their search or filter context within that scan; **Enclosing Folder** (⌘↑) opens the parent folder and stops at the scan root. The sidebar buttons hide or show Locations and the explorer pane while retaining their contents. Navigation history resets when changing scans, and sidebar visibility resets when reopening the app. Choosing a disk or folder in Locations (or **Choose a folder**) sets the scan target without changing those results or starting a scan. The toolbar action reads **Rescan** for the displayed source or **Scan** for another target (its tooltip names the location); pressing it starts the scan and, while a live scan runs, it becomes **Stop**. A status line under the toolbar says whether the displayed results are a **Saved scan** or a live scan that is **Not saved** (press **Save** to keep it; both are hidden while saved scans are turned off), and its size and entry totals open the scan information. Saved results stay read-only until a live scan starts. The inspector keeps long names compact, stacks the recorded sizes, scan percentage and contents, and provides **Copy path**. Expand **Full path** to select the complete path with the keyboard.
 
 If macOS still displays Documents/Desktop/Downloads prompts, quit Hahakigami, remove its old Full Disk Access entry, add the exact `.app` shown in the dialog again, enable it, and reopen. Rebuilt ad-hoc applications can have a different code identity despite the same filename; the local signed build avoids that specific problem. Apple does not provide a public Full Disk Access status API, so the status comes from opening (never reading) a few files only Full Disk Access can open, such as `TCC.db`; protected folders are never probed. See [ADR 0002](docs/adr/0002-detect-full-disk-access-with-silent-probes.md). See [Apple's stable-signing guidance](https://developer.apple.com/forums/thread/663889) and [FDA API limitations](https://developer.apple.com/forums/thread/114452).
 
@@ -157,6 +152,8 @@ After cleanup, a summary separates items moved to Trash, failed moves and the ve
 
 ## Saved scans and history
 
+> **Turned off in this version.** Saved scans are disabled (`SAVED_SCANS_ENABLED` in `src-tauri/src/lib.rs`). This section describes the feature for when it returns; the Save, Saved Scans, import, export and compare controls are hidden.
+
 History shows the newest three scans per location. **Show older scans** expands one location; **Show fewer** restores its compact list. An older active scan stays visible when collapsed. Timestamp precision and per-scan action menus remain available.
 
 After a completed live scan, choose **Save Scan** to keep its results in the local application data library. Desktop saving is explicit: desktop scans are never saved automatically. Completed scans with access failures can be saved, with their incomplete-coverage notices and issue details preserved. Running, cancelled, failed, and cleanup-invalidated scans cannot be saved.
@@ -190,6 +187,8 @@ The optimization cache uses checksummed, bounded binary node records with native
 History replay watches the selected local filesystem mount. Extended event inode IDs invalidate cached files changed through outside-folder hard-link aliases; hard-link events without a usable identity still require a full scan. File events are matched by inode even without a hard-link flag. Other ambiguous external alias history refreshes every cached hard-link member through held descriptors and discards speculative results. Clone events invalidate their reported paths under the current per-file allocation model. Detailed directory creation/metadata events refresh directory listings without discarding unchanged descendants; renames, removals and ambiguous history remain conservative. Disk-cache metadata is checked before decoding. One historical stream stays alive while decoding, then flushes and drains queued changes. Baselines containing hard links wait for final alias resolution before constructing the tree once. Other scopes may privately reconstruct a candidate during replay. The candidate is used only after final epoch checks and a replay with no relevant changes; otherwise reconciliation runs against the original validated baseline. Unchanged metadata can retain the existing archive and atomically advance its cursor without extending the original full-scan age. This proof requires an exact fresh root listing and validated reuse of every descendant listing. Speculation temporarily retains additional snapshot memory; cancellation cannot interrupt an in-flight decoding/reconstruction join. Reuse is opportunistic and does not guarantee faster end-to-end scans. Unresolved same-volume hard-link events and required historical overlap can force conservative full scans even for a quiet selected folder. Small trees may cost more to check and cache than to enumerate fully. Read [verification notes](docs/VERIFICATION.md) for candidate-matched fixture evidence and performance limits. No new Full Disk Access verification or protected-folder probes are introduced.
 
 ## Compare saved scans
+
+> **Turned off in this version**, together with saved scans.
 
 Choose **Compare saved scans** in the sidebar, select two saved results from the same location, then click **Compare scans**. The default pair uses the most recent compatible completion dates. Precise timestamps, save times and neutral saved-result labels distinguish scans sharing a completion time. **Swap scans** changes the selected order without automatically loading archives; compare explicitly to refresh the result.
 

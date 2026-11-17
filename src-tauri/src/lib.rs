@@ -42,6 +42,7 @@ use tauri::{ipc::Channel, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 /// Master switch for the Saved scans feature. Flip to `true` and un-skip the tests marked with this name.
+/// Also restore the "turned off" wording in README.md, cli.rs and mcp.rs.
 pub(crate) const SAVED_SCANS_ENABLED: bool = false;
 pub(crate) const SAVED_SCANS_DISABLED: &str = "Saved scans are turned off in this version.";
 
@@ -349,20 +350,31 @@ fn register(
 /// Records `target` with the `guard` its scan start validates; the path scanned is the guard's.
 fn retain_target(
     state: &AppState,
-    target: platform::Target,
+    mut target: platform::Target,
     guard: safety::CheckedItem,
 ) -> platform::Target {
     let path = guard.path.clone();
-    state
-        .target_guards
-        .lock()
-        .unwrap()
-        .insert(target.id.clone(), guard);
-    state
-        .targets
-        .lock()
-        .unwrap()
-        .insert(target.id.clone(), (target.clone(), path));
+    let mut guards = state.target_guards.lock().unwrap();
+    let mut targets = state.targets.lock().unwrap();
+    // One entry per location and kind, so repeated discovery and folder picks don't pile up. The same unchanged
+    // folder keeps its ID, which the UI may still hold; a replaced folder gets a new one.
+    let previous = targets
+        .iter()
+        .find(|(_, (t, p))| *p == path && t.volume == target.volume && t.home == target.home)
+        .map(|(id, _)| id.clone());
+    if let Some(id) = previous {
+        let unchanged = guards
+            .get(&id)
+            .is_some_and(|old| old.identity == guard.identity && old.ancestors == guard.ancestors);
+        if unchanged {
+            target.id = id;
+        } else {
+            guards.remove(&id);
+            targets.remove(&id);
+        }
+    }
+    guards.insert(target.id.clone(), guard);
+    targets.insert(target.id.clone(), (target.clone(), path));
     target
 }
 
@@ -946,21 +958,20 @@ async fn rescan_saved_scan<R: tauri::Runtime>(
     // Historical identities never authorize current filesystem access. Register
     // the location afresh and let the normal held-root scanner validate it.
     let target = register(&state, platform::target(&path, name), path)?;
-    let scan_id = start_scan_impl(&state, Some(target.id.clone()), None, on_event)?;
+    let scan_id = start_scan_impl(&state, target.id.clone(), on_event)?;
     Ok(ScanStart { scan_id, target })
 }
 #[tauri::command]
 async fn start_scan<R: tauri::Runtime>(
     state: State<'_, AppState>,
-    target_id: Option<String>,
-    path: Option<String>,
+    target_id: String,
     on_event: Channel<Summary>,
     app: tauri::AppHandle<R>,
 ) -> Result<String, String> {
     // Starts share the gate, so scans on different slots can begin at the same time.
     let _activity = Activity::begin_shared(&state.activity)?;
     quick_look::close(app.clone(), state.preview.clone()).await?;
-    start_scan_impl(&state, target_id, path, on_event)
+    start_scan_impl(&state, target_id, on_event)
 }
 fn mark_failed(snapshot: &mut Snapshot, message: String) {
     if snapshot.state != ScanState::Failed {
@@ -1226,8 +1237,7 @@ fn run_scan(
 }
 fn start_scan_impl(
     state: &AppState,
-    target_id: Option<String>,
-    path: Option<String>,
+    target_id: String,
     on_event: impl Progress,
 ) -> Result<String, String> {
     // Hold through session registration, so restart cannot race a scan.
@@ -1242,27 +1252,10 @@ fn start_scan_impl(
     let qos = scan_settings.qos;
     let (resolved_id, root, disk) = {
         let targets = state.targets.lock().unwrap();
-        if let Some(id) = target_id {
-            let (target, root) = targets
-                .get(&id)
-                .ok_or("Choose a registered folder or volume first.")?;
-            (id, root.clone(), target.volume)
-        } else if let Some(path) = path {
-            let matches: Vec<_> = targets
-                .iter()
-                .filter(|(_, (target, _))| target.path == path)
-                .collect();
-            if matches.len() != 1 {
-                return Err("Choose the target by its registered ID.".into());
-            }
-            (
-                matches[0].0.clone(),
-                matches[0].1 .1.clone(),
-                matches[0].1 .0.volume,
-            )
-        } else {
-            return Err("Choose a registered folder or volume first.".into());
-        }
+        let (target, root) = targets
+            .get(&target_id)
+            .ok_or("Choose a registered folder or volume first.")?;
+        (target_id, root.clone(), target.volume)
     };
     let (expected, root_ancestors) = {
         let guards = state.target_guards.lock().unwrap();

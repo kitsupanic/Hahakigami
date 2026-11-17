@@ -65,8 +65,7 @@ fn scan_starts_are_refused_only_while_off_unless_scanning_anyway() {
             force_access(&state, status);
             let start = start_scan(
                 app.state(),
-                None,
-                None,
+                "missing".into(),
                 Channel::new(|_| Ok(())),
                 app.handle().clone(),
             )
@@ -93,8 +92,7 @@ fn scan_starts_are_refused_only_while_off_unless_scanning_anyway() {
         scan_without_full_disk_access(app.state()).await.unwrap();
         let start = start_scan(
             app.state(),
-            None,
-            None,
+            "missing".into(),
             Channel::new(|_| Ok(())),
             app.handle().clone(),
         )
@@ -338,7 +336,7 @@ fn start_recorded(
     target: &platform::Target,
     events: Recorder,
 ) -> Result<(String, Recorder), String> {
-    start_scan_impl(state, Some(target.id.clone()), None, events.clone()).map(|id| (id, events))
+    start_scan_impl(state, target.id.clone(), events.clone()).map(|id| (id, events))
 }
 pub(crate) fn install(state: &AppState, snapshot: Snapshot) -> Arc<Session> {
     install_in(state, Slot::Folder, "fixture", snapshot)
@@ -1120,6 +1118,30 @@ fn registration_rejects_changed_folder() {
     assert!(validate_target(&state.target_guards.lock().unwrap()[&target.id]).is_err());
 }
 #[test]
+fn registering_a_location_again_keeps_one_entry() {
+    let d = fixture();
+    let parent = std::fs::canonicalize(d.path()).unwrap();
+    let path = parent.join("selected");
+    std::fs::create_dir(&path).unwrap();
+    let state = AppState::default();
+    let pick = || {
+        register(
+            &state,
+            platform::target(&path, "selected".into()),
+            path.clone(),
+        )
+        .unwrap()
+    };
+    let first = pick();
+    assert_eq!(pick().id, first.id, "an unchanged folder keeps its ID");
+    std::fs::rename(&path, parent.join("old")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let replaced = pick();
+    assert_ne!(replaced.id, first.id, "a replaced folder gets a new ID");
+    assert_eq!(state.targets.lock().unwrap().len(), 1);
+    assert_eq!(state.target_guards.lock().unwrap().len(), 1);
+}
+#[test]
 fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
     tauri::async_runtime::block_on(async {
         let app = app(AppState::default());
@@ -1128,8 +1150,7 @@ fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
         std::fs::write(root.join("file"), b"abc").unwrap();
         assert!(start_scan(
             app.state(),
-            None,
-            Some(root.display().to_string()),
+            root.display().to_string(),
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -1145,8 +1166,7 @@ fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
         old.store.write().unwrap().state = ScanState::Running;
         assert!(start_scan(
             app.state(),
-            Some(target.id.clone()),
-            None,
+            target.id.clone(),
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -1306,8 +1326,7 @@ fn reselecting_replaced_folder_uses_exact_new_target_guard() {
         .unwrap();
         assert!(start_scan(
             app.state(),
-            Some(old.id),
-            None,
+            old.id,
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -1315,8 +1334,7 @@ fn reselecting_replaced_folder_uses_exact_new_target_guard() {
         .is_err());
         assert!(start_scan(
             app.state(),
-            None,
-            Some(root.display().to_string()),
+            root.display().to_string(),
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -1484,8 +1502,7 @@ fn automatic_workers_probe() {
         let before = automatic_info(&state, &target.id);
         let id = start_scan(
             app.state(),
-            Some(target.id.clone()),
-            None,
+            target.id.clone(),
             Channel::new(|_| Ok(())),
             app.handle().clone(),
         )
@@ -1950,8 +1967,7 @@ fn library_failure_and_activity_guards_preserve_current_session() {
         let activity = Activity::begin(&state.activity).unwrap();
         assert!(start_scan(
             app.state(),
-            None,
-            None,
+            "missing".into(),
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -2087,8 +2103,7 @@ fn cache_finalization_never_authorizes_completed_actions_or_replacement() {
         let target = register(&state, platform::target(&root, "fixture".into()), root).unwrap();
         assert!(start_scan(
             app.state(),
-            Some(target.id),
-            None,
+            target.id,
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -2166,8 +2181,7 @@ fn native_rescan_cache_parity() {
         };
         let first = start_scan(
             app.state(),
-            Some(target.id.clone()),
-            None,
+            target.id.clone(),
             Channel::new(|_| Ok(())),
             app.handle().clone(),
         )
@@ -2214,8 +2228,7 @@ fn native_rescan_cache_parity() {
         std::fs::remove_file(dir.path().join("external-clone")).unwrap();
         let second = start_scan(
             app.state(),
-            Some(target.id.clone()),
-            None,
+            target.id.clone(),
             Channel::new(|_| Ok(())),
             app.handle().clone(),
         )
@@ -2276,8 +2289,7 @@ fn native_rescan_cache_parity() {
         .unwrap();
         let id = start_scan(
             app2.state(),
-            Some(target2.id),
-            None,
+            target2.id,
             Channel::new(|_| Ok(())),
             app2.handle().clone(),
         )
@@ -2366,8 +2378,7 @@ fn native_existing_folder_cache_reuse() {
             for scan in 0..scans {
                 let id = start_scan(
                     app.state(),
-                    Some(target.id.clone()),
-                    None,
+                    target.id.clone(),
                     Channel::new(|_| Ok(())),
                     app.handle().clone(),
                 )
@@ -3389,8 +3400,7 @@ fn preview_close_and_session_mutations_revoke_pending_authority() {
             .unwrap();
         assert!(start_scan(
             app.state(),
-            Some("missing".into()),
-            None,
+            "missing".into(),
             Channel::new(|_| Ok(())),
             app.handle().clone()
         )
@@ -4375,8 +4385,7 @@ fn opening_saved_scans_keeps_the_current_scan_until_a_new_scan_replaces_it() {
         let target = register(&state, platform::target(&root, "fixture".into()), root).unwrap();
         let id = start_scan(
             app.state(),
-            Some(target.id),
-            None,
+            target.id,
             Channel::new(|_| Ok(())),
             app.handle().clone(),
         )
