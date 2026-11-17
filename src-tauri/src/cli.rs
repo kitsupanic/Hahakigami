@@ -29,7 +29,7 @@ struct Page {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scan a directory and retain the completed result. Ctrl-C requests cancellation.
+    /// Scan a directory and print the result. Ctrl-C requests cancellation.
     Scan { path: PathBuf },
     /// List retained automation scans, newest first.
     List(Page),

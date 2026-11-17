@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, Mutex, MutexGuard, RwLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +19,8 @@ struct Session {
     cancel: Arc<AtomicBool>,
     progress: Option<Progress>,
     error: Option<String>,
+    /// The last folder `children` sorted in `current`, so paging through it sorts once.
+    sorted_children: Option<(u32, Arc<Vec<u32>>)>,
 }
 
 pub(crate) struct Service {
@@ -78,6 +80,8 @@ impl Service {
                 ..Session::default()
             };
         }
+        // Clears `active` on every exit, including a scanner panic or an early `?`, so later scans are not refused.
+        let _active = ActiveGuard(&self.session);
         let started = now_ms();
         let result = disk_scan::scan_live_authorized(
             root,
@@ -192,6 +196,19 @@ impl Service {
         id: &str,
         operation: impl FnOnce(&Snapshot, Option<&str>) -> Result<Value, String>,
     ) -> Result<Value, String> {
+        self.with_store(id, |snapshot, id, _| operation(snapshot, id))
+    }
+
+    /// `with_snapshot`, also passing the session's store when the snapshot is the current one.
+    fn with_store(
+        &self,
+        id: &str,
+        operation: impl FnOnce(
+            &Snapshot,
+            Option<&str>,
+            Option<&Arc<RwLock<Snapshot>>>,
+        ) -> Result<Value, String>,
+    ) -> Result<Value, String> {
         if id != "current" {
             crate::require_saved_scans()?;
             if uuid::Uuid::parse_str(id).is_err() {
@@ -216,13 +233,49 @@ impl Service {
             let snapshot = store
                 .read()
                 .map_err(|_| "Automation snapshot lock poisoned")?;
-            return operation(&snapshot, saved_id.as_deref());
+            return operation(&snapshot, saved_id.as_deref(), Some(&store));
         }
         if id == "current" {
             return Err("No current scan; start a scan or use a saved scan ID.".into());
         }
         let (snapshot, _) = self.library(|library| library.load(id, |_| {}))?;
-        operation(&snapshot, Some(id))
+        operation(&snapshot, Some(id), None)
+    }
+
+    /// The children of `node_id`, folders first then largest allocated size. Cached for a finished `current` scan,
+    /// and only while `store` is still the session's, so a scan started meanwhile never sees another scan's order.
+    fn sorted_children(
+        &self,
+        store: Option<&Arc<RwLock<Snapshot>>>,
+        snapshot: &Snapshot,
+        node_id: u32,
+    ) -> Result<Arc<Vec<u32>>, String> {
+        let store = store.filter(|_| snapshot.state != ScanState::Running);
+        let session = || -> Result<Option<MutexGuard<Session>>, String> {
+            let Some(store) = store else { return Ok(None) };
+            let session = self
+                .session
+                .lock()
+                .map_err(|_| "Automation session lock poisoned")?;
+            let same = session
+                .current
+                .as_ref()
+                .is_some_and(|c| Arc::ptr_eq(c, store));
+            Ok(same.then_some(session))
+        };
+        if let Some((_, ids)) = session()?
+            .and_then(|s| s.sorted_children.clone())
+            .filter(|(id, _)| *id == node_id)
+        {
+            return Ok(ids);
+        }
+        let mut ids = snapshot.children(node_id)?.to_vec();
+        sorting::sort_ids(snapshot, &mut ids, sorting::Order::SizeDescending, true)?;
+        let ids = Arc::new(ids);
+        if let Some(mut session) = session()? {
+            session.sorted_children = Some((node_id, ids.clone()));
+        }
+        Ok(ids)
     }
 
     pub(crate) fn summary(&self, scan_id: &str) -> Result<Value, String> {
@@ -251,9 +304,8 @@ impl Service {
         limit: usize,
     ) -> Result<Value, String> {
         validate_page(limit)?;
-        self.with_snapshot(scan_id, |snapshot, id| {
-            let mut ids = snapshot.children(node_id)?.to_vec();
-            sorting::sort_ids(snapshot, &mut ids, sorting::Order::SizeDescending, true)?;
+        self.with_store(scan_id, |snapshot, id, store| {
+            let ids = self.sorted_children(store, snapshot, node_id)?;
             node_page(
                 snapshot,
                 id,
@@ -310,6 +362,13 @@ impl Service {
                 })).collect();
             Ok(json!({"items": items, "total": total, "offset": offset, "limit": limit, "scanId": id, "coverage": coverage(snapshot)}))
         })
+    }
+}
+
+struct ActiveGuard<'a>(&'a Mutex<Session>);
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).active = false;
     }
 }
 
@@ -377,4 +436,74 @@ fn node_page(
     Ok(
         json!({"items": items, "total": total, "offset": offset, "limit": limit, "scanId": scan_id, "coverage": coverage(snapshot)}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_flag_clears_when_a_scan_panics() {
+        let service = Service::new(PathBuf::from("/nonexistent"));
+        service.session.lock().unwrap().active = true;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _active = ActiveGuard(&service.session);
+            panic!("scanner failure");
+        }));
+        assert!(result.is_err());
+        assert!(!service.session.lock().unwrap().active);
+    }
+
+    #[test]
+    fn children_pages_share_one_sort_and_a_new_scan_drops_it() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("small"), vec![1; 10]).unwrap();
+        std::fs::write(root.join("large"), vec![1; 100_000]).unwrap();
+        let service = Service::new(root.join("store"));
+        let names = |page: Value| -> Vec<String> {
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        service.scan(root.clone()).unwrap();
+        assert_eq!(
+            names(service.children("current", 0, 0, 1).unwrap()),
+            ["large"]
+        );
+        let cached = service
+            .session
+            .lock()
+            .unwrap()
+            .sorted_children
+            .clone()
+            .unwrap()
+            .1;
+        assert_eq!(
+            names(service.children("current", 0, 1, 1).unwrap()),
+            ["small"]
+        );
+        let reused = service
+            .session
+            .lock()
+            .unwrap()
+            .sorted_children
+            .clone()
+            .unwrap()
+            .1;
+        assert!(
+            Arc::ptr_eq(&cached, &reused),
+            "the second page reuses the sort"
+        );
+
+        std::fs::write(root.join("largest"), vec![1; 1_000_000]).unwrap();
+        service.scan(root.clone()).unwrap();
+        assert_eq!(
+            names(service.children("current", 0, 0, 1).unwrap()),
+            ["largest"]
+        );
+    }
 }

@@ -31,7 +31,7 @@ struct PageInput {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SnapshotInput {
-    /// Saved scan UUID, or "current" for this session's latest snapshot.
+    /// "current" for this session's latest snapshot. Saved scan UUIDs are refused while saved scans are turned off.
     scan_id: String,
 }
 
@@ -98,10 +98,11 @@ impl Mcp {
     }
 }
 
+// Tool texts say saved scans are off; reword them when SAVED_SCANS_ENABLED flips back on.
 #[tool_router]
 impl Mcp {
     #[tool(
-        description = "Scan a directory's metadata and retain completed results. One active scan per session. Sizes do not represent reclaimable space."
+        description = "Scan a directory's metadata. One active scan per session; query its result with scan_id \"current\". Saved scans are turned off in this version, so results are not kept after the session. Sizes do not represent reclaimable space."
     )]
     async fn scan(&self, Parameters(input): Parameters<ScanInput>) -> CallToolResult {
         self.execute(move |service| service.scan(PathBuf::from(input.path)))
@@ -123,7 +124,7 @@ impl Mcp {
     }
 
     #[tool(
-        description = "List retained scan metadata, paginated. These are saved snapshots, not live filesystem state."
+        description = "List saved scans, paginated. Saved scans are turned off in this version, so this always returns an error."
     )]
     async fn list(&self, Parameters(input): Parameters<PageInput>) -> CallToolResult {
         self.execute(move |service| service.list(input.offset, input.limit))
@@ -173,7 +174,7 @@ impl Mcp {
 
 #[tool_handler(
     name = "Hahakigami",
-    instructions = "Scan and query local filesystem metadata without reading file contents. Results are retained metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; logical and allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
+    instructions = "Scan and query local filesystem metadata without reading file contents. Query results with scan_id \"current\"; saved scans are turned off in this version, so results end with the session. Results are metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; logical and allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
 )]
 impl ServerHandler for Mcp {}
 
