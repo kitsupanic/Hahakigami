@@ -7,8 +7,8 @@
 //! the same way for the same reason. Lock order: activity gate, access setup, `operation`, cleanup queue, snapshot
 //! store. `Held` reads the store only on `completed_snapshot`, so holding a scan never reverses it.
 use crate::{
-    budget, cache, filters, library, now_ms, safety, session_running, settings, sorting, Activity,
-    ActivityGate, ScanDetails, SessionOrigin,
+    baseline, budget, filters, library, now_ms, safety, session_running, settings, sorting,
+    Activity, ActivityGate, ScanDetails, SessionOrigin,
 };
 use disk_scan::{ScanState, Snapshot};
 use std::{
@@ -43,7 +43,7 @@ pub(crate) struct Session {
     pub(crate) completed_at_ms: AtomicU64,
     pub(crate) finishing: AtomicBool,
     pub(crate) scan_details: Mutex<ScanDetails>,
-    pub(crate) cache_token: Mutex<Option<cache::Token>>,
+    pub(crate) cache_token: Mutex<Option<baseline::Token>>,
     pub(crate) store: Arc<RwLock<Snapshot>>,
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) root_ancestors: Vec<(PathBuf, safety::Identity)>,
@@ -230,16 +230,16 @@ impl Session {
     }
     /// Moves the results out as the next scan's rescan baseline, when they can be one: a live scan of the same
     /// root with a cache token and clean results. The scan is left empty.
-    fn take_baseline(&self, root: &Path) -> Option<cache::CachedScan> {
+    fn take_baseline(&self, root: &Path) -> Option<baseline::Taken> {
         let token = self.cache_token.lock().unwrap().clone()?;
         let mut snapshot = self.store.write().unwrap();
         if self.origin != SessionOrigin::Live
             || snapshot.root != root
-            || !cache::eligible(&snapshot)
+            || !baseline::eligible(&snapshot)
         {
             return None;
         }
-        Some(cache::CachedScan {
+        Some(baseline::Taken {
             snapshot: std::mem::replace(&mut *snapshot, Snapshot::empty(root.to_path_buf())),
             token,
         })
@@ -276,7 +276,7 @@ impl LiveSlots {
 /// rescan, and the scan's share of the budget, which the scan thread gives back when it ends.
 pub(crate) struct Started {
     pub(crate) session: Arc<Session>,
-    pub(crate) previous: Option<cache::CachedScan>,
+    pub(crate) previous: Option<baseline::Taken>,
     pub(crate) grant: budget::Grant,
 }
 
@@ -436,7 +436,7 @@ impl Slots {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::Token;
+    use crate::baseline::Token;
 
     fn slots() -> Slots {
         Slots::with_budget(budget::Budget::new(budget::Share {

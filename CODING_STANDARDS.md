@@ -14,5 +14,8 @@ While Home, the cleanup queue or the comparison is shown, the explorer's results
 ## New menu commands update the Home allowlist
 When adding a command id to `commandIds`, update `enabledOnHome` in src/App.menu.test.ts on purpose. Add the id only if the command is fine on the welcome page (global, library, or visibly acting on the scan). Otherwise gate it on `!homeOpen`. Do not paste the id in just to make the test pass.
 
+## The scan run gets its Rescan baseline through baseline.rs
+`run_scan` asks `baseline.rs` for the baseline before the scan (`acquire`) and hands the ticket back after it (`publish`). Nothing else locks the rescan cache, calls `cache::` or `events::`, or compares journal epochs and cursors. See "The baseline module" in docs/architecture/session-lifecycle.md.
+
 ## Commands get scans through slots
 A Tauri command gets a scan from `slots.rs`: `find` for reads, `hold` before changing state or touching files, `completed_snapshot` when it needs a completed scan. Never lock a slot, read or store a session's `valid`, or check `finishing` and `Completed` by hand in a command. See "The slots module" in docs/architecture/session-lifecycle.md for the lock order.
