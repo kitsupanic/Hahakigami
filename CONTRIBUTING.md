@@ -6,6 +6,7 @@ Thanks for helping with Hahakigami. Bug reports, fixes and focused features are 
 
 - Open an issue first for anything larger than a small fix, so we can agree on the approach.
 - Hahakigami runs on macOS 14+ only. See [Run from source](README.md#run-from-source) for setup.
+- Follow the [code of conduct](CODE_OF_CONDUCT.md).
 - Read [GLOSSARY.md](GLOSSARY.md) for the project's terms and [docs/adr/](docs/adr/) for past decisions.
 
 ## Making a change
