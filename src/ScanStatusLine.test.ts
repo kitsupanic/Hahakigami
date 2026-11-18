@@ -3,11 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => new Promise(() => {})),
 }));
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import ScanStatusLine from "./ScanStatusLine.svelte";
 import { act, createTestRoot, type Root } from "./testUtils";
 import { formatScanTimestamp } from "./uiFormat";
-import type { Metric, ScanSummary } from "./types";
+import type { ScanSummary } from "./types";
 
 let container: HTMLDivElement, root: Root;
 const base: ScanSummary = {
@@ -19,13 +18,11 @@ const base: ScanSummary = {
   workerStats: [],
   finalizationUs: 0,
   entries: 1250,
-  logicalBytes: 4096,
   allocatedBytes: 2048,
   elapsedMs: 1234,
   errors: 0,
 };
 beforeEach(() => {
-  setShowLogicalSize(true);
   container = document.createElement("div");
   document.body.append(container);
   root = createTestRoot(container);
@@ -38,13 +35,11 @@ async function render(
   summary: Partial<ScanSummary> = {},
   props: {
     cancelling?: boolean;
-    metric?: Metric;
   } = {},
 ) {
   await act(() =>
     root.render(ScanStatusLine, {
       summary: { ...base, ...summary },
-      metric: "allocated",
       cancelling: false,
       ...props,
     }),
@@ -173,7 +168,7 @@ it("puts totals, coverage and workers in one popover with a tab each", async () 
     [...popover()!.querySelectorAll(".scan-facts dt")].map((n) =>
       n.textContent?.trim(),
     ),
-  ).toEqual(["On disk", "Logical size", "Entries", "Scan duration", "Scan type"]);
+  ).toEqual(["On disk", "Entries", "Scan duration", "Scan type"]);
   expect(popover()!.querySelector(".scan-facts .active dt")?.textContent).toBe(
     "On disk",
   );
@@ -192,13 +187,10 @@ it("puts totals, coverage and workers in one popover with a tab each", async () 
   await render({ scanId: "next-scan", state: "completed" });
   expect(popover()?.hidden).toBe(true);
 });
-it("keeps both sizes in the popover whichever metric is shown", async () => {
-  for (const metric of ["allocated", "logical"] as const) {
-    await render({}, { metric });
-    expect(popover()?.textContent).toContain("2 KiB (2.05 KB)");
-    expect(popover()?.textContent).toContain("4 KiB (4.10 KB)");
-    expect(popover()?.textContent).toContain("On disk so far");
-  }
+it("shows the exact on-disk size in the popover", async () => {
+  await render({});
+  expect(popover()?.textContent).toContain("2 KiB (2.05 KB)");
+  expect(popover()?.textContent).toContain("On disk so far");
 });
 it("shows nonfatal cache trouble with its exact reason discoverable", async () => {
   await render({

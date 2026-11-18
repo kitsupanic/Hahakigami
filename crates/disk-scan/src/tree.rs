@@ -14,9 +14,8 @@ const NO_PARENT: u32 = u32::MAX;
 pub(crate) struct Record {
     pub device: u64,
     pub inode: u64,
-    pub logical_size: u64,
     pub allocated_size: u64,
-    pub own_logical_size: u64,
+    pub length: u64,
     pub own_allocated_size: u64,
     pub name_offset: u64,
     pub children_offset: u64,
@@ -41,9 +40,8 @@ pub struct NodeRef<'a> {
     pub id: u32,
     pub parent: Option<u32>,
     pub identity: Identity,
-    pub logical_size: u64,
     pub allocated_size: u64,
-    pub own_logical_size: u64,
+    pub length: u64,
     pub own_allocated_size: u64,
     pub is_directory: bool,
     pub hard_link: bool,
@@ -274,9 +272,8 @@ impl Snapshot {
                 inode: r.inode,
                 kind,
             },
-            logical_size: r.logical_size,
             allocated_size: r.allocated_size,
-            own_logical_size: r.own_logical_size,
+            length: r.length,
             own_allocated_size: r.own_allocated_size,
             is_directory: r.flags & 4 != 0,
             hard_link: r.flags & 8 != 0,
@@ -480,9 +477,8 @@ impl Snapshot {
         Ok(Record {
             device: m.identity.device,
             inode: m.identity.inode,
-            logical_size: m.logical_size,
             allocated_size: m.allocated_size,
-            own_logical_size: m.own_logical_size,
+            length: m.length,
             own_allocated_size: m.own_allocated_size,
             name_offset: self.tree.names.len() as u64,
             children_offset: self.tree.children.len() as u64,
@@ -496,9 +492,8 @@ impl Snapshot {
         NodeMetadata {
             parent: n.parent,
             identity: n.identity.clone(),
-            logical_size: n.logical_size,
             allocated_size: n.allocated_size,
-            own_logical_size: n.own_logical_size,
+            length: n.length,
             own_allocated_size: n.own_allocated_size,
             is_directory: n.is_directory,
             hard_link: n.hard_link,
@@ -590,9 +585,8 @@ impl Snapshot {
             name: n.display_name().into_owned(),
             path: n.path()?,
             identity: n.identity,
-            logical_size: n.logical_size,
             allocated_size: n.allocated_size,
-            own_logical_size: n.own_logical_size,
+            length: n.length,
             own_allocated_size: n.own_allocated_size,
             is_directory: n.is_directory,
             hard_link: n.hard_link,
@@ -604,7 +598,6 @@ impl Snapshot {
         for id in 0..self.node_count() {
             let r = &mut self.tree.records[id];
             let allocated = allocation(id as u32, r.own_allocated_size);
-            r.logical_size = r.own_logical_size;
             r.allocated_size = allocated;
         }
     }
@@ -614,10 +607,10 @@ impl Snapshot {
         while remaining != 0 {
             let id = remaining - 1;
             let r = &self.tree.records[id];
-            let (parent, logical, allocated) = (r.parent, r.logical_size, r.allocated_size);
+            let (parent, allocated) = (r.parent, r.allocated_size);
             remaining = id;
             if parent != NO_PARENT {
-                let (mut logical, mut allocated) = (logical, allocated);
+                let mut allocated = allocated;
                 // Adjacent siblings share an earlier parent, so no record in
                 // this run can depend on another record's pending total.
                 // Saturating addition is associative for these unsigned sizes.
@@ -626,7 +619,6 @@ impl Snapshot {
                     if previous.parent != parent {
                         break;
                     }
-                    logical = logical.saturating_add(previous.logical_size);
                     allocated = allocated.saturating_add(previous.allocated_size);
                     remaining -= 1;
                 }
@@ -637,7 +629,6 @@ impl Snapshot {
                     .records
                     .get_mut(parent as usize)
                     .ok_or("invalid node id")?;
-                parent.logical_size = parent.logical_size.saturating_add(logical);
                 parent.allocated_size = parent.allocated_size.saturating_add(allocated);
             }
         }
@@ -652,9 +643,8 @@ impl Snapshot {
         let mut value = NodeMetadata {
             parent: n.parent,
             identity: n.identity,
-            logical_size: n.logical_size,
             allocated_size: n.allocated_size,
-            own_logical_size: n.own_logical_size,
+            length: n.length,
             own_allocated_size: n.own_allocated_size,
             is_directory: n.is_directory,
             hard_link: n.hard_link,
@@ -665,9 +655,8 @@ impl Snapshot {
         r.parent = value.parent.unwrap_or(NO_PARENT);
         r.device = value.identity.device;
         r.inode = value.identity.inode;
-        r.logical_size = value.logical_size;
         r.allocated_size = value.allocated_size;
-        r.own_logical_size = value.own_logical_size;
+        r.length = value.length;
         r.own_allocated_size = value.own_allocated_size;
         r.flags = value.flags();
         Ok(())
@@ -676,9 +665,8 @@ impl Snapshot {
 pub struct NodeMetadata {
     pub parent: Option<u32>,
     pub identity: Identity,
-    pub logical_size: u64,
     pub allocated_size: u64,
-    pub own_logical_size: u64,
+    pub length: u64,
     pub own_allocated_size: u64,
     pub is_directory: bool,
     pub hard_link: bool,
@@ -727,9 +715,8 @@ impl Snapshot {
         self.update_node(id, |m| {
             m.parent = n.parent;
             m.identity = n.identity.clone();
-            m.logical_size = n.logical_size;
             m.allocated_size = n.allocated_size;
-            m.own_logical_size = n.own_logical_size;
+            m.length = n.length;
             m.own_allocated_size = n.own_allocated_size;
             m.is_directory = n.is_directory;
             m.hard_link = n.hard_link;
@@ -955,9 +942,8 @@ mod tests {
                     NodeKind::File
                 },
             },
-            logical_size: 7,
             allocated_size: 8,
-            own_logical_size: 9,
+            length: 9,
             own_allocated_size: 10,
             is_directory: directory,
             hard_link: false,
@@ -1030,9 +1016,8 @@ mod tests {
             snapshot.tree.records.push(Record {
                 device: 7,
                 inode: id as u64 + 1,
-                logical_size: sizes[(id + salt as usize) % sizes.len()],
                 allocated_size: sizes[(id * 3 + salt as usize) % sizes.len()],
-                own_logical_size: id as u64,
+                length: id as u64,
                 own_allocated_size: id as u64 * 2,
                 name_offset: id as u64,
                 children_offset: id as u64,
@@ -1048,14 +1033,13 @@ mod tests {
     fn original_size_rollup(s: &mut Snapshot) -> Result<(), String> {
         for id in (0..s.node_count()).rev() {
             let r = &s.tree.records[id];
-            let (parent, logical, allocated) = (r.parent, r.logical_size, r.allocated_size);
+            let (parent, allocated) = (r.parent, r.allocated_size);
             if parent != NO_PARENT {
                 let parent = s
                     .tree
                     .records
                     .get_mut(parent as usize)
                     .ok_or("invalid node id")?;
-                parent.logical_size = parent.logical_size.saturating_add(logical);
                 parent.allocated_size = parent.allocated_size.saturating_add(allocated);
             }
         }
@@ -1095,9 +1079,8 @@ mod tests {
                 for id in (0..expected.node_count()).rev() {
                     let n = expected.node(id as u32).unwrap();
                     if let Some(parent) = n.parent {
-                        let (logical, allocated) = (n.logical_size, n.allocated_size);
+                        let allocated = n.allocated_size;
                         expected.update_node(parent, |n| {
-                            n.logical_size = n.logical_size.saturating_add(logical);
                             n.allocated_size = n.allocated_size.saturating_add(allocated);
                         })?;
                     }
@@ -1137,7 +1120,7 @@ mod tests {
                     clone_id: 9,
                     data_allocated_size: 8,
                     reference_count: 2,
-                    data_logical_size: 7,
+                    data_length: 7,
                     may_share_blocks: true,
                     verified: true,
                 });
@@ -1174,7 +1157,7 @@ mod tests {
     #[test]
     fn compact_layout_and_full_path_oracle() {
         use std::os::unix::ffi::OsStringExt;
-        assert_eq!(std::mem::size_of::<Record>(), 80);
+        assert_eq!(std::mem::size_of::<Record>(), 72);
         let root = PathBuf::from("/fixture/root/");
         let mut s = Snapshot::empty(root.clone());
         let mut oracle = vec![dto(0, None, root, true)];
@@ -1570,18 +1553,16 @@ mod tests {
                 }
                 n.identity.device = u64::MAX - 5;
                 n.identity.inode = u64::MAX - id as u64;
-                n.logical_size = 100 + id as u64;
                 n.allocated_size = 200 + id as u64;
-                n.own_logical_size = 300 + id as u64;
+                n.length = 300 + id as u64;
                 n.own_allocated_size = 400 + id as u64;
                 n.hard_link = id == 2;
                 n.excluded = id == 1;
                 let metadata = NodeMetadata {
                     parent: n.parent,
                     identity: n.identity.clone(),
-                    logical_size: n.logical_size,
                     allocated_size: n.allocated_size,
-                    own_logical_size: n.own_logical_size,
+                    length: n.length,
                     own_allocated_size: n.own_allocated_size,
                     is_directory: n.is_directory,
                     hard_link: n.hard_link,
@@ -1607,16 +1588,10 @@ mod tests {
                 assert_eq!(got.parent, expected.parent);
                 assert_eq!(got.children, expected.children);
                 assert_eq!(
+                    (got.allocated_size, got.length, got.own_allocated_size),
                     (
-                        got.logical_size,
-                        got.allocated_size,
-                        got.own_logical_size,
-                        got.own_allocated_size
-                    ),
-                    (
-                        expected.logical_size,
                         expected.allocated_size,
-                        expected.own_logical_size,
+                        expected.length,
                         expected.own_allocated_size
                     )
                 );
@@ -1642,9 +1617,8 @@ mod tests {
                 metadata: NodeMetadata {
                     parent: n.parent,
                     identity: n.identity.clone(),
-                    logical_size: n.logical_size,
                     allocated_size: n.allocated_size,
-                    own_logical_size: n.own_logical_size,
+                    length: n.length,
                     own_allocated_size: n.own_allocated_size,
                     is_directory: n.is_directory,
                     hard_link: n.hard_link,
@@ -1706,10 +1680,10 @@ mod tests {
             let expected = source.path.native_name_or_path().to_owned();
             s.append_scanned_node(&source).unwrap();
             source.path = "replacement".into();
-            source.metadata.own_logical_size = u64::MAX;
+            source.metadata.length = u64::MAX;
             drop(source);
             assert_eq!(s.native_name(id).unwrap(), expected);
-            assert_eq!(s.node(id).unwrap().own_logical_size, 9);
+            assert_eq!(s.node(id).unwrap().length, 9);
         }
     }
     #[test]
@@ -1792,9 +1766,8 @@ mod tests {
                 wire.is_directory = false;
                 wire.hard_link = id == 3;
                 wire.name = format!("independent legacy label {id}");
-                wire.logical_size = id as u64 + 1;
                 wire.allocated_size = id as u64 + 2;
-                wire.own_logical_size = id as u64 + 3;
+                wire.length = id as u64 + 3;
                 wire.own_allocated_size = id as u64 + 4;
             }
             oracle.push(wire.clone());
@@ -1805,7 +1778,6 @@ mod tests {
         wire.name.clear();
         wire.children.clear();
         wire.identity.inode = 0;
-        wire.logical_size = 0;
         let got = builder.finish();
         let expected = owned.finish();
         for n in oracle {
@@ -1818,17 +1790,11 @@ mod tests {
             assert_eq!(actual.parent, other.parent);
             assert_eq!(
                 (
-                    actual.logical_size,
                     actual.allocated_size,
-                    actual.own_logical_size,
+                    actual.length,
                     actual.own_allocated_size
                 ),
-                (
-                    other.logical_size,
-                    other.allocated_size,
-                    other.own_logical_size,
-                    other.own_allocated_size
-                )
+                (other.allocated_size, other.length, other.own_allocated_size)
             );
             assert_eq!(
                 (actual.is_directory, actual.hard_link, actual.excluded),

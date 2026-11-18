@@ -3,9 +3,8 @@
   import WorkerDiagnostics from "./WorkerDiagnostics.svelte";
   import { coverageLabel } from "./scanCoverage";
   import { dismissPopover } from "./dialogFocus";
-  import { bytes, type Metric, type ScanSummary } from "./types";
+  import { bytes, type ScanSummary } from "./types";
   import { compactBytes, scanTime } from "./uiFormat";
-  import { logicalSize } from "./logicalSize.svelte";
   import type { Snippet } from "svelte";
 
   // The status strip's one details popover. The totals cells open it on Summary and the
@@ -14,12 +13,10 @@
   type Opener = "totals" | "coverage";
   let {
     summary,
-    metric,
     description,
     lead,
   }: {
     summary: ScanSummary;
-    metric: Metric;
     description: string;
     /** The strip's Scanned and Time cells, which open Summary like the totals. */
     lead?: Snippet;
@@ -142,20 +139,12 @@
           {description}
         </p>{/if}
       <dl class="scan-facts">
-        <div class:active={metric === "allocated"}>
+        <div class="active">
           <dt>On disk{soFar}</dt>
           <dd title={`${summary.allocatedBytes.toLocaleString()} bytes`}>
             {bytes(summary.allocatedBytes)}
           </dd>
         </div>
-        {#if logicalSize.shown}
-          <div class:active={metric === "logical"}>
-            <dt>Logical size{soFar}</dt>
-            <dd title={`${summary.logicalBytes.toLocaleString()} bytes`}>
-              {bytes(summary.logicalBytes)}
-            </dd>
-          </div>
-        {/if}
         <div>
           <dt>Entries{soFar}</dt>
           <dd>{summary.entries.toLocaleString()}</dd>

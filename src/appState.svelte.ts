@@ -5,7 +5,6 @@ import type {
   ScanSummary,
   NodeView,
   Page,
-  Metric,
 } from "./types";
 export function createSessionState() {
   let targets = $state.raw<Target[]>([]);
@@ -83,12 +82,6 @@ export function createExplorerState() {
       | ((previous: typeof selection) => typeof selection),
   ) {
     selection = typeof value === "function" ? value(selection) : value;
-  }
-  let metric = $state.raw<Metric>("allocated");
-  function setMetric(
-    value: typeof metric | ((previous: typeof metric) => typeof metric),
-  ) {
-    metric = typeof value === "function" ? value(metric) : value;
   }
   let mode = $state.raw<"treemap" | "sunburst">("sunburst");
   function setMode(
@@ -182,10 +175,6 @@ export function createExplorerState() {
       return selection;
     },
     setSelection,
-    get metric() {
-      return metric;
-    },
-    setMetric,
     get mode() {
       return mode;
     },

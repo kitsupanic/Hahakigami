@@ -30,7 +30,6 @@ export function fakeQueuePort(
               name: node.name,
               path: node.path,
               rootPath: "/",
-              logicalBytes: node.logicalBytes,
               allocatedBytes: node.allocatedBytes,
               status: "ready" as const,
               reason: null,

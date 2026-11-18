@@ -1,5 +1,4 @@
 import type { ExplorerFilter, FilterCategory } from "./filterTypes";
-import type { Metric } from "./types";
 
 export const categoryLabels: Record<FilterCategory, string> = {
   all: "All entries",
@@ -44,10 +43,9 @@ function exactSize(bytes: number): string {
 
 export function sizeFilterLabel(
   filter: ExplorerFilter,
-  metric: Metric,
 ): string | null {
   const { minBytes: min, maxBytes: max } = filter;
-  const prefix = metric === "allocated" ? "On disk" : "Logical size";
+  const prefix = "On disk";
   if (min === null && max === null) return null;
   if (max === null) return `${prefix} ≥ ${exactSize(min!)}`;
   if (min === null) return `${prefix} ≤ ${exactSize(max)}`;
@@ -63,9 +61,8 @@ export function sizeFilterLabel(
 
 export function sizeFilterDescription(
   filter: ExplorerFilter,
-  metric: Metric,
 ): string {
-  const prefix = metric === "allocated" ? "On disk" : "Logical size";
+  const prefix = "On disk";
   const { minBytes: min, maxBytes: max } = filter;
   if (min !== null && max !== null)
     return `${prefix}: ${min}–${max} bytes, inclusive`;

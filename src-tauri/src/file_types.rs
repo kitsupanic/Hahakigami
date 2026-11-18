@@ -24,7 +24,6 @@ pub(crate) fn matches(node: &NodeRef<'_>, wanted: &str) -> bool {
 pub(crate) struct Item {
     extension: String,
     files: u64,
-    logical_bytes: u64,
     allocated_bytes: u64,
 }
 #[derive(Default, Serialize)]
@@ -32,7 +31,6 @@ pub(crate) struct Item {
 pub(crate) struct Summary {
     items: Vec<Item>,
     files: u64,
-    logical_bytes: u64,
     allocated_bytes: u64,
     pub(crate) incomplete: bool,
 }
@@ -71,10 +69,8 @@ pub(crate) fn summarize(snapshot: &Snapshot, scope: u32) -> Result<Summary, Stri
             ..Item::default()
         });
         item.files += 1;
-        item.logical_bytes = item.logical_bytes.saturating_add(node.logical_size);
         item.allocated_bytes = item.allocated_bytes.saturating_add(node.allocated_size);
         result.files += 1;
-        result.logical_bytes = result.logical_bytes.saturating_add(node.logical_size);
         result.allocated_bytes = result.allocated_bytes.saturating_add(node.allocated_size);
     })?;
     result.items = items.into_values().collect();
@@ -132,7 +128,7 @@ pub(crate) mod tests {
 
     pub(crate) fn fixture() -> Snapshot {
         let mut snapshot = Snapshot::empty(PathBuf::from("/fixture"));
-        for (id, parent, name, kind, logical, allocated, excluded) in [
+        for (id, parent, name, kind, length, allocated, excluded) in [
             (0, None, "fixture", NodeKind::Directory, 999, 999, false),
             (1, Some(0), "nested", NodeKind::Directory, 777, 777, false),
             (2, Some(1), "deep", NodeKind::Directory, 777, 777, false),
@@ -162,9 +158,8 @@ pub(crate) mod tests {
                         inode: u64::from(id),
                         kind,
                     },
-                    logical_size: logical,
                     allocated_size: allocated,
-                    own_logical_size: logical,
+                    length,
                     own_allocated_size: allocated,
                     is_directory: kind == NodeKind::Directory,
                     hard_link: id == 4,
@@ -198,38 +193,24 @@ pub(crate) mod tests {
     fn accounting_counts_regular_files_and_attributed_zero_values_in_scope() {
         let snapshot = fixture();
         let summary = summarize(&snapshot, 1).unwrap();
-        assert_eq!(
-            (
-                summary.files,
-                summary.logical_bytes,
-                summary.allocated_bytes
-            ),
-            (4, 110, 32)
-        );
+        assert_eq!((summary.files, summary.allocated_bytes), (4, 32));
         let jpg = summary
             .items
             .iter()
             .find(|item| item.extension == "jpg")
             .unwrap();
-        assert_eq!(
-            (jpg.files, jpg.logical_bytes, jpg.allocated_bytes),
-            (2, 100, 32)
-        );
+        assert_eq!((jpg.files, jpg.allocated_bytes), (2, 32));
         let extensionless = &summary.items[0];
         assert_eq!(
             (
                 extensionless.extension.as_str(),
                 extensionless.files,
-                extensionless.logical_bytes,
                 extensionless.allocated_bytes
             ),
-            ("", 2, 10, 0)
+            ("", 2, 0)
         );
         let whole = summarize(&snapshot, 0).unwrap();
-        assert_eq!(
-            (whole.files, whole.logical_bytes, whole.allocated_bytes),
-            (6, 390, 112)
-        );
+        assert_eq!((whole.files, whole.allocated_bytes), (6, 112));
         assert!(summarize(&snapshot, 100).is_err());
     }
     #[test]

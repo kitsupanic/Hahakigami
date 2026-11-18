@@ -65,7 +65,7 @@ impl Reuse {
         let root_own_sizes = seed
             .snapshot
             .node(0)
-            .map(|n| (n.own_logical_size, n.own_allocated_size))
+            .map(|n| (n.length, n.own_allocated_size))
             .unwrap_or_default();
         let root_stats = seed.snapshot.stats.clone();
         let root_listing = seed.snapshot.children(0).unwrap_or_default().to_vec();
@@ -280,7 +280,7 @@ impl Reuse {
                                 .is_some_and(|id| {
                                     let n = self.seed.node(*id).unwrap();
                                     n.identity == e.identity()
-                                        && n.own_logical_size == e.logical
+                                        && n.length == e.length
                                         && n.own_allocated_size == e.allocated
                                         && n.hard_link == e.hard_link
                                 })
@@ -550,13 +550,12 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
             && final_stats.incremental_accounting_eligible()
             && reuse.unchanged_possible
             && (
-                final_stats.node(0).unwrap().own_logical_size,
+                final_stats.node(0).unwrap().length,
                 final_stats.node(0).unwrap().own_allocated_size,
             ) == reuse.root_own_sizes
             && reuse.reused_directories + 1 == reuse.root_stats.directories
             && final_stats.stats.entries == reuse.root_stats.entries
             && final_stats.stats.directories == reuse.root_stats.directories
-            && final_stats.stats.logical_bytes == reuse.root_stats.logical_bytes
             && final_stats.stats.allocated_bytes == reuse.root_stats.allocated_bytes;
         drop(final_stats);
         reuse.stats.rescanned_directories = candidate
@@ -615,7 +614,7 @@ impl CachedListing {
                             device: n.identity.device,
                             inode: n.identity.inode,
                             kind: n.identity.kind,
-                            logical: n.own_logical_size,
+                            length: n.length,
                             allocated: n.own_allocated_size,
                             hard_link: n.hard_link,
                         }
@@ -737,9 +736,8 @@ mod tests {
                     (
                         n.path.clone(),
                         format!("{:?}", n.identity),
-                        n.own_logical_size,
+                        n.length,
                         n.own_allocated_size,
-                        n.logical_size,
                         n.allocated_size,
                         n.hard_link,
                         n.excluded,
@@ -752,7 +750,6 @@ mod tests {
         assert_eq!(normalize(a), normalize(b));
         assert_eq!(a.stats.entries, b.stats.entries);
         assert_eq!(a.stats.directories, b.stats.directories);
-        assert_eq!(a.stats.logical_bytes, b.stats.logical_bytes);
         assert_eq!(a.stats.allocated_bytes, b.stats.allocated_bytes);
         assert_eq!(a.stats.errors, b.stats.errors);
         assert_eq!(a.state, b.state);
@@ -920,9 +917,8 @@ mod tests {
                     inode: 1,
                     kind: NodeKind::Directory,
                 },
-                logical_size: 0,
                 allocated_size: 0,
-                own_logical_size: 0,
+                length: 0,
                 own_allocated_size: 0,
                 is_directory: true,
                 hard_link: false,
@@ -1309,7 +1305,7 @@ mod tests {
                     device: first.identity.clone().device,
                     inode: first.identity.clone().inode,
                     kind: first.identity.clone().kind,
-                    logical: first.own_logical_size,
+                    length: first.length,
                     allocated: first.own_allocated_size,
                     hard_link: first.hard_link,
                 })

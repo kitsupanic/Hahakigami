@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import type createApp from "./createApp.svelte";
 import type { NodeView, ScanSummary } from "./types";
 
@@ -49,7 +48,6 @@ const node = (scanId: string): NodeView => ({
   name: scanId,
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 0,
   incomplete: false,
@@ -63,7 +61,6 @@ const summary = (scanId: string): ScanSummary => ({
   workerStats: [],
   finalizationUs: 0,
   entries: 1,
-  logicalBytes: 100,
   allocatedBytes: 100,
   elapsedMs: 10,
   errors: 0,
@@ -106,7 +103,6 @@ function rendered() {
 }
 
 beforeEach(() => {
-  setShowLogicalSize(true);
   vi.stubEnv("VITE_PERFORMANCE_BENCHMARK", "1");
   mock.listeners.clear();
   mock.order.length = 0;
@@ -329,7 +325,7 @@ it("fences seed channel events before awaiting the second start notification", a
   expect(starts).toBe(2);
 });
 
-it("keeps map readiness false through pending metric queries, stale replies and old draws", async () => {
+it("keeps map readiness false through pending map queries, stale replies and old draws", async () => {
   await mount("full");
   await paint();
   const nativeRoot = container.querySelector<HTMLElement>(".app")!;
@@ -337,36 +333,35 @@ it("keeps map readiness false through pending metric queries, stale replies and 
   const paintOriginal = mock.lastPaint!;
   const original = mock.invoke.getMockImplementation()!;
   const pending: {
-    metric: string;
+    colorMode: string;
     resolve: (value: { nodes: NodeView[] }) => void;
   }[] = [];
   mock.invoke.mockImplementation((command, args) =>
     command === "get_map"
-      ? new Promise((resolve) => pending.push({ metric: args.metric, resolve }))
+      ? new Promise((resolve) => pending.push({ colorMode: args.colorMode ?? "folder", resolve }))
       : original(command, args),
   );
-  async function metric(label: string) {
-    const button = [...container.querySelectorAll("button")].find(
-      (item) => item.textContent?.trim() === label,
-    )!;
+  // Switching the list view recolours the map, which re-queries it.
+  async function view(tabId: string) {
+    const button = container.querySelector<HTMLElement>(`#${tabId}`)!;
     expect(button).toBeTruthy();
     await act(async () => button.click());
     await flush();
   }
 
-  await metric("Logical");
-  expect(pending.map((request) => request.metric)).toEqual(["logical"]);
+  await view("file-types-tab");
+  expect(pending.map((request) => request.colorMode)).toEqual(["fileType"]);
   expect(nativeRoot.dataset.nativeMapReady).toBe("false");
   await act(async () => paintOriginal());
   expect(nativeRoot.dataset.nativeMapReady).toBe("false");
 
   // A second request supersedes the first without allowing its reply to clear pending.
-  await metric("On disk");
-  expect(pending.map((request) => request.metric)).toEqual([
-    "logical",
-    "allocated",
+  await view("files-tab");
+  expect(pending.map((request) => request.colorMode)).toEqual([
+    "fileType",
+    "folder",
   ]);
-  await act(async () => pending[0].resolve({ nodes: [node("stale-logical")] }));
+  await act(async () => pending[0].resolve({ nodes: [node("stale-file-type")] }));
   await flush();
   await act(async () => paintOriginal());
   expect(nativeRoot.dataset.nativeMapReady).toBe("false");

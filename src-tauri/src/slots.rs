@@ -51,7 +51,7 @@ pub(crate) struct Session {
     /// Orders what changes a scan: cleanup, Quick Look and its own replacement. Taken by
     /// `hold`, or by `Slots::replace` for the scan it replaces.
     operation: Mutex<()>,
-    pub(crate) sorts: Mutex<HashMap<(u32, bool), Vec<u32>>>,
+    pub(crate) sorts: Mutex<HashMap<u32, Vec<u32>>>,
     pub(crate) filters: Mutex<filters::Cache>,
     pub(crate) list_folder: Mutex<sorting::Cache>,
     pub(crate) issues: Mutex<(u64, Vec<PathBuf>)>,

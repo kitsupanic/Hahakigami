@@ -216,13 +216,6 @@ main > .window-toolbar {
   color: var(--muted);
   font-size: var(--font-body);
 }
-.map-control-divider {
-  flex: 0 0 1px;
-  align-self: center;
-  height: 24px;
-  margin-inline: 2px;
-  background: var(--line);
-}
 .analysis-layout,
 .analysis-layout:not(.has-scan) {
   display: flex;

@@ -24,7 +24,7 @@ Hahakigami is a local disk-space analyzer for macOS. It scans a disk or folder, 
 ## Position
 
 - Fast: on a Home folder and on project folders, explorable results arrive ~30% sooner than OpenDisk, and it uses the least memory of the tools measured. It is still slower than OpenDisk on a full startup-disk (`/`) scan; claims must keep that caveat. Source: `docs/BENCHMARKS.md`.
-- Honest sizes: verified sizes deduct shared APFS clone blocks; on-disk vs logical sizes, partial coverage and warnings stay distinct. Sizes do not predict reclaimable space.
+- Honest sizes: verified sizes deduct shared APFS clone blocks; sizes are on disk only; partial coverage and warnings stay distinct. Sizes do not predict reclaimable space.
 - Private: no accounts, analytics, remote content or uploads.
 - Careful cleanup: nothing is deleted directly; files go to the Trash after the user reviews exact paths.
 - Scriptable: the same executable runs headless scans as a CLI and a local stdio MCP server (`scan`, `status`, `cancel`, `list`, `summary`, `node`, `children`, `search`, `issues`).
@@ -43,7 +43,7 @@ Hahakigami is a local disk-space analyzer for macOS. It scans a disk or folder, 
 
 ## Vocabulary
 
-Use GLOSSARY.md terms, e.g. Disk scan, Scan all disks, Scan target, On disk, Logical size, Scan warning, Scan budget, Full Disk Access status, Automation scan.
+Use GLOSSARY.md terms, e.g. Disk scan, Scan all disks, Scan target, On disk, Scan warning, Scan budget, Full Disk Access status, Automation scan.
 
 ## Open decisions
 

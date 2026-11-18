@@ -49,7 +49,6 @@ beforeEach(async () => {
       name: id,
       path: `/fixture/${id}`,
       rootPath: "/fixture",
-      logicalBytes: 100,
       allocatedBytes: 100,
       status: "needsScan",
       reason: null,

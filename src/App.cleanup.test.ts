@@ -28,7 +28,6 @@ const node = {
   name: "Home",
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 1,
   incomplete: false,
@@ -50,7 +49,6 @@ const summary = {
   workerStats: [],
   finalizationUs: 0,
   entries: 2,
-  logicalBytes: 100,
   allocatedBytes: 100,
   elapsedMs: 10,
   errors: 0,
@@ -86,7 +84,6 @@ beforeEach(async () => {
         name: "photo.jpg",
         path: file.path,
         rootPath: "/fixture",
-        logicalBytes: 100,
         allocatedBytes: 100,
         status: "ready",
         reason: null,
@@ -269,7 +266,6 @@ it("says a shared folder once and groups rows under the folder that differs", as
     name: "coverage.ndjson",
     path,
     allocatedBytes,
-    logicalBytes: allocatedBytes,
   });
   queue = {
     ...queue,
@@ -836,7 +832,6 @@ const sized = (id: string, allocatedBytes: number, extra = {}) => ({
   name: id,
   path: `/fixture/${id}`,
   allocatedBytes,
-  logicalBytes: allocatedBytes,
   ...extra,
 });
 const rowNames = (scope: Element) =>

@@ -4,7 +4,7 @@
   import { flushSync, onMount, untrack } from "svelte";
   import type { HoverTarget } from "./hoverContext";
   import type { QueueEntry } from "./cleanupTypes";
-  import { bytes, size, type NodeView, type Page, type Target } from "./types";
+  import { bytes, type NodeView, type Page, type Target } from "./types";
   import { compactBytes } from "./uiFormat";
   import type { FolderRow } from "./queueFolders";
   import createApp from "./createApp.svelte";
@@ -16,7 +16,6 @@
     type MenuState,
   } from "./appMenu";
   import { applyAppearance, applyGuardian, theme } from "./theme.svelte";
-  import { logicalSize, setShowLogicalSize } from "./logicalSize.svelte";
   import {
     dialogFocus,
     dismissPopover,
@@ -252,7 +251,6 @@
     blocked: "Blocked",
   };
 
-  const metric = $derived(app.metric);
   const mode = $derived(app.mode);
   const query = $derived(app.query);
   const offset = $derived(app.offset);
@@ -336,7 +334,7 @@
       ? ""
       : detailsSubject.excluded
         ? "Excluded"
-        : compactBytes(size(detailsSubject, metric)),
+        : compactBytes(detailsSubject.allocatedBytes),
   );
   const setMode = app.setMode;
   const setOffset = app.setOffset;
@@ -348,7 +346,6 @@
     // Hover belongs to one displayed result, never to a future scan or query.
     summary?.scanId;
     focus?.id;
-    metric;
     mode;
     query;
     offset;
@@ -364,7 +361,6 @@
   });
   const invalidateList = app.invalidateList;
   const changeFilters = app.changeFilters;
-  const changeMetric = app.changeMetric;
   const persistSort = app.persistSort;
   const changeSort = app.changeSort;
   // Clicking a column sorts by it in its natural direction; clicking again reverses.
@@ -445,8 +441,6 @@
     find: focusSearch,
     sunburst: () => setMode("sunburst"),
     treemap: () => setMode("treemap"),
-    onDisk: () => changeMetric("allocated"),
-    logical: () => changeMetric("logical"),
     viewFiles: () => showListViewFromMenu("files"),
     viewFileTypes: () => showListViewFromMenu("fileTypes"),
     toggleSidebar,
@@ -476,8 +470,6 @@
       find: app.can.find,
       sunburst: app.can.explore,
       treemap: app.can.explore,
-      onDisk: app.can.explore,
-      logical: app.can.logical,
       viewFiles: app.can.explore,
       viewFileTypes: app.can.explore,
       toggleSidebar: app.can.toggleSidebar,
@@ -496,8 +488,6 @@
     checked: {
       sunburst: mode === "sunburst",
       treemap: mode === "treemap",
-      onDisk: metric === "allocated",
-      logical: metric === "logical",
       viewFiles: listView === "files",
       viewFileTypes: listView === "fileTypes",
       guardianTheme: theme.guardian,
@@ -557,9 +547,7 @@
         class="cleanup-figure"
         title={bytes(entry.allocatedBytes)}
         >{compactBytes(entry.allocatedBytes)}</span
-      >{#if logicalSize.shown}<small
-          >{compactBytes(entry.logicalBytes)} logical</small
-        >{/if}</span
+      ></span
     >
     <button
       class="cleanup-remove"
@@ -674,7 +662,6 @@
       </div>
       <ActiveFilters
         value={filters}
-        {metric}
         disabled={blocked}
         onChange={changeFilters}
       />
@@ -708,12 +695,12 @@
             onclick={() => sortBy("size")}
             >{#if sort.startsWith("size")}<span aria-hidden="true"
                 >{sort === "sizeDescending" ? "↓ " : "↑ "}</span
-              >{/if}{metric === "allocated" ? "On disk" : "Logical size"}</button
+              >{/if}On disk</button
           >
         </span>
         <span class="contents-heading"> Contents </span>
       </div>
-      {#key `${summary.scanId}:${focus?.id}:${metric}:${offset}:${debouncedQuery}:${filterKey}:${sort}`}
+      {#key `${summary.scanId}:${focus?.id}:${offset}:${debouncedQuery}:${filterKey}:${sort}`}
         <FileRows
           revision={`${summary.state}:${Math.floor(summary.elapsedMs / 1000)}`}
           onLoadChildren={filtered || query.trim()
@@ -724,7 +711,6 @@
                   nodeId,
                   offset: 0,
                   limit: 150,
-                  metric,
                   sort,
                 })}
           items={page.items}
@@ -735,10 +721,7 @@
           onHover={(target) => updateHover("list", target)}
           selection={selection.map((n) => n.id)}
           selectionPath={selection.length === 1 ? selection[0].path : null}
-          {metric}
-          scanBytes={metric === "allocated"
-            ? summary.allocatedBytes
-            : summary.logicalBytes}
+          scanBytes={summary.allocatedBytes}
           running={!!running || listLoading || !sortReady}
           onSelect={select}
           onOpen={open}
@@ -803,7 +786,7 @@
       {#if detailsSize}
         <span class="details-size"
           >{detailsSize}
-          <small>{metric === "allocated" ? "on disk" : "logical"}</small></span
+          <small>on disk</small></span
         >
       {/if}
     </div>
@@ -974,7 +957,6 @@
         {#if fileTypesMounted}
           <FileTypes
             stats={fileTypes.stats}
-            {metric}
             scope={fileTypes.scope}
             selectedExtension={fileTypes.extension}
             loading={fileTypes.loading}
@@ -1315,34 +1297,11 @@
                 <Icon name="sunburst" size={16} /> Sunburst
               </button>
             </div>
-            {#if logicalSize.shown}
-              <span class="map-control-divider" aria-hidden="true"
-              ></span>
-              <div
-                class="segmented metric-switch"
-                role="group"
-                aria-label="Size metric"
-              >
-                <button
-                  class:chosen={metric === "allocated"}
-                  aria-pressed={metric === "allocated"}
-                  onclick={() => changeMetric("allocated")}
-                  >On disk</button
-                >
-                <button
-                  class:chosen={metric === "logical"}
-                  aria-pressed={metric === "logical"}
-                  onclick={() => changeMetric("logical")}
-                  >Logical</button
-                >
-              </div>
-            {/if}
           </div>
         {/snippet}
         {#if summary}
           <ScanStatusLine
             {summary}
-            {metric}
             {cancelling}
             controls={viewControls}
           />
@@ -1466,7 +1425,6 @@
                     nodes={map}
                     {queuedPaths}
                     rootId={focus?.id ?? summary.rootId}
-                    {metric}
                     {mode}
                     selected={selection.map((n) => n.id)}
                     hovered={hover?.target ?? null}
@@ -1564,17 +1522,6 @@
               {/each}
             </div>
           </div>
-          <label class="settings-row">
-            <span>Show logical size</span>
-            <input
-              type="checkbox"
-              role="switch"
-              aria-label="Show logical size"
-              checked={logicalSize.shown}
-              onchange={(event) =>
-                setShowLogicalSize(event.currentTarget.checked)}
-            />
-          </label>
           </div>
         </section>
       {/if}

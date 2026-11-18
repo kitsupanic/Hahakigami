@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { compactBytes, countLabel } from "./uiFormat";
-  import type { Metric } from "./types";
   import type { FileTypeScope } from "./createFileTypes.svelte";
   import {
     fileTypeColor,
@@ -11,7 +10,6 @@
   } from "./fileTypes";
   let {
     stats,
-    metric,
     scope,
     selectedExtension,
     loading = false,
@@ -27,7 +25,6 @@
     onRetry,
   }: {
     stats: FileTypeStats | null;
-    metric: Metric;
     scope: FileTypeScope;
     selectedExtension: string | null;
     loading?: boolean;
@@ -67,16 +64,13 @@
     observer.observe(element);
     return () => observer.disconnect();
   });
-  const field = $derived(
-    metric === "allocated" ? "allocatedBytes" : "logicalBytes",
-  );
-  const total = $derived(stats?.[field] ?? 0);
+  const total = $derived(stats?.allocatedBytes ?? 0);
   const sortedRows = $derived.by(() =>
     (stats?.items ?? [])
       .slice()
       .sort(
         (a, b) =>
-          b[field] - a[field] ||
+          b.allocatedBytes - a.allocatedBytes ||
           b.files - a.files ||
           a.extension.localeCompare(b.extension),
       ),
@@ -98,7 +92,7 @@
       : sortedRows;
   });
   const listContext = $derived(
-    `${scope}:${scopePath}:${metric}:${search.trim().toLowerCase()}`,
+    `${scope}:${scopePath}:${search.trim().toLowerCase()}`,
   );
   $effect(() => {
     listContext;
@@ -201,10 +195,7 @@
     >
   </div>
   <p class="file-type-total" title={scopePath}>
-    <strong>{stats ? compactBytes(total, 1) : "—"}</strong> · {metric ===
-    "allocated"
-      ? "On disk"
-      : "Logical size"}
+    <strong>{stats ? compactBytes(total, 1) : "—"}</strong> · On disk
     <span
       >{stats
         ? `${stats.files.toLocaleString()} ${stats.files === 1 ? "file" : "files"}`
@@ -219,9 +210,7 @@
     bind:value={search}
   />
   <div class="file-type-columns" aria-hidden="true">
-    <span>Type</span><span
-      >{metric === "allocated" ? "On disk" : "Logical size"}</span
-    >
+    <span>Type</span><span>On disk</span>
   </div>
   <div
     class="file-type-list"
@@ -262,7 +251,7 @@
               class:active={selectedExtension === item.extension}
               aria-pressed={selectedExtension === item.extension}
               data-type-index={start + i}
-              aria-label={`${fileTypeLabel(item.extension)}, ${compactBytes(item[field])}, ${countLabel(item.files, "file")}`}
+              aria-label={`${fileTypeLabel(item.extension)}, ${compactBytes(item.allocatedBytes)}, ${countLabel(item.files, "file")}`}
               title={fileTypeDescription(item.extension)}
               {disabled}
               onkeydown={(event) => void browse(event, start + i)}
@@ -287,8 +276,8 @@
                 ></span
               >
               <span class="file-type-size"
-                ><strong>{compactBytes(item[field], 1)}</strong><small
-                  >{share(item[field])}</small
+                ><strong>{compactBytes(item.allocatedBytes, 1)}</strong><small
+                  >{share(item.allocatedBytes)}</small
                 ></span
               >
             </button>
@@ -314,7 +303,7 @@
       </div>
       <p>
         {selected
-          ? `${selected.files.toLocaleString()} ${selected.files === 1 ? "file" : "files"} · ${compactBytes(selected[field], 1)}`
+          ? `${selected.files.toLocaleString()} ${selected.files === 1 ? "file" : "files"} · ${compactBytes(selected.allocatedBytes, 1)}`
           : loading
             ? "Loading type totals…"
             : "No matching files in this scope"}

@@ -11,7 +11,6 @@ const entry = (
   name: id,
   path: `/${id}`,
   rootPath: "/",
-  logicalBytes: allocatedBytes,
   allocatedBytes,
   status,
   reason: null,

@@ -8,13 +8,13 @@ from coverage_compare import compare
 
 class CoverageTests(unittest.TestCase):
     def write(self, path, rows, **header):
-        root = {'type':'node', 'path_base64':'', 'kind':'directory', 'logical_bytes':0, 'allocated_bytes':0, 'summary':False}
+        root = {'type':'node', 'path_base64':'', 'kind':'directory', 'allocated_bytes':0, 'summary':False}
         nodes = [root, *rows]
         path.write_text('\n'.join(json.dumps(r) for r in [{'type':'header','schema_version':1,'complete':True,'accounting_policy':'allocated','mount_policy':'same','size_scope':'own','node_count':len(nodes),**header}, *nodes, {'type':'footer','schema_version':1,'complete':True,'node_count':len(nodes)}]))
 
 
     def node(self, raw=b'bad-\xff', **extra):
-        return {'type': 'node', 'path_base64': base64.b64encode(raw).decode(), 'kind': 'file', 'logical_bytes': 1, 'allocated_bytes': 4096, 'summary': False, **extra}
+        return {'type': 'node', 'path_base64': base64.b64encode(raw).decode(), 'kind': 'file', 'allocated_bytes': 4096, 'summary': False, **extra}
 
     def test_native_paths_and_missing(self):
         with tempfile.TemporaryDirectory() as d:

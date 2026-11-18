@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, createTestRoot, type Root } from "./testUtils";
 import ActiveFilters from "./ActiveFilters.svelte";
 import { emptyFilter, type ExplorerFilter } from "./filterTypes";
-import type { Metric } from "./types";
 import { sizeFilterDescription, sizeFilterLabel } from "./activeFilters";
 
 let container: HTMLDivElement, root: Root;
@@ -19,13 +18,9 @@ afterEach(async () => {
   await act(() => root.unmount());
   container.remove();
 });
-async function render(
-  value: ExplorerFilter,
-  metric: Metric = "allocated",
-  disabled = false,
-) {
+async function render(value: ExplorerFilter, disabled = false) {
   await act(() =>
-    root.render(ActiveFilters, { value, metric, disabled, onChange: change }),
+    root.render(ActiveFilters, { value, disabled, onChange: change }),
   );
 }
 function button(name: string) {
@@ -60,7 +55,7 @@ it("removes each combined filter independently and clears both", async () => {
   expect(value).toEqual({ category: "videos", minBytes: gib, maxBytes: null });
 });
 
-it("updates the metric label and provides exact inclusive byte boundaries", async () => {
+it("labels the size filter On disk and provides exact inclusive byte boundaries", async () => {
   const value: ExplorerFilter = {
     ...emptyFilter,
     minBytes: gib,
@@ -70,15 +65,11 @@ it("updates the metric label and provides exact inclusive byte boundaries", asyn
   expect(button("Remove size filter: On disk 1–2 GiB").title).toBe(
     `On disk: ${gib}–${2 * gib} bytes, inclusive`,
   );
-  await render(value, "logical");
-  expect(button("Remove size filter: Logical size 1–2 GiB")).toBeDefined();
-  expect(container.textContent).not.toContain("On disk");
 });
 
 it("disables every removal action while unavailable", async () => {
   await render(
     { category: "other", minBytes: 0, maxBytes: 1025 },
-    "logical",
     true,
   );
   const buttons = [...container.querySelectorAll("button")];
@@ -104,16 +95,16 @@ it.each([
   "keeps byte boundaries exact for %s–%s",
   (minBytes, maxBytes, expected) => {
     const filter = { ...emptyFilter, minBytes, maxBytes };
-    expect(sizeFilterLabel(filter, "allocated")).toBe(expected);
+    expect(sizeFilterLabel(filter)).toBe(expected);
   },
 );
 
 it("describes lower and upper bounds as inclusive and has no inactive label", () => {
   expect(
-    sizeFilterDescription({ ...emptyFilter, minBytes: 1025 }, "logical"),
-  ).toBe("Logical size: at least 1025 bytes, inclusive");
+    sizeFilterDescription({ ...emptyFilter, minBytes: 1025 }),
+  ).toBe("On disk: at least 1025 bytes, inclusive");
   expect(
-    sizeFilterDescription({ ...emptyFilter, maxBytes: 0 }, "allocated"),
+    sizeFilterDescription({ ...emptyFilter, maxBytes: 0 }),
   ).toBe("On disk: at most 0 bytes, inclusive");
-  expect(sizeFilterLabel(emptyFilter, "allocated")).toBeNull();
+  expect(sizeFilterLabel(emptyFilter)).toBeNull();
 });

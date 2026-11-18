@@ -102,15 +102,13 @@ impl Mcp {
     }
 
     #[tool(
-        description = "Read the latest scan's totals, coverage and accounting warnings. Logical and allocated sizes do not represent reclaimable space."
+        description = "Read the latest scan's totals, coverage and accounting warnings. Allocated sizes do not represent reclaimable space."
     )]
     async fn summary(&self) -> CallToolResult {
         self.execute(Service::summary).await
     }
 
-    #[tool(
-        description = "Read a node's metadata, native path representation, logical and allocated sizes."
-    )]
+    #[tool(description = "Read a node's metadata, native path representation and allocated size.")]
     async fn node(&self, Parameters(input): Parameters<NodeInput>) -> CallToolResult {
         self.execute(move |service| service.node(input.node_id))
             .await
@@ -139,7 +137,7 @@ impl Mcp {
 
 #[tool_handler(
     name = "Hahakigami",
-    instructions = "Scan and query local filesystem metadata without reading file contents. Queries read this session's latest scan; results end with the session. Results are metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; logical and allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
+    instructions = "Scan and query local filesystem metadata without reading file contents. Queries read this session's latest scan; results end with the session. Results are metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
 )]
 impl ServerHandler for Mcp {}
 

@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import App from "./App.svelte";
 import { menuItem } from "./fakeMenu";
 import type createApp from "./createApp.svelte";
@@ -31,7 +30,6 @@ const rootNode: NodeView = {
   name: "Home",
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 2,
   incomplete: false,
@@ -61,7 +59,6 @@ const summary = (id = "live"): ScanSummary => ({
   finalizationUs: 0,
   state: "completed",
   entries: 3,
-  logicalBytes: 100,
   allocatedBytes: 100,
   elapsedMs: 1000,
   errors: 0,
@@ -103,7 +100,6 @@ async function click(name: string) {
   await flush();
 }
 beforeEach(async () => {
-  setShowLogicalSize(true);
   vi.useFakeTimers();
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(
@@ -172,7 +168,6 @@ async function resultPage() {
   await act(() => {
     app().changeQuery(" photo ");
     app().changeFilters({ category: "images", minBytes: 10, maxBytes: null });
-    app().changeMetric("logical");
     app().changeSort("nameAscending");
   });
   await advance();
@@ -192,7 +187,6 @@ it("returns to the original results page after deeper browsing, including select
   expect(app().resultsReturn).toMatchObject({ query: " photo ", total: 320 });
   await act(() => app().open(deeper));
   await act(() => {
-    app().changeMetric("allocated");
     app().changeSort("sizeAscending");
   });
   await flush();
@@ -202,7 +196,6 @@ it("returns to the original results page after deeper browsing, including select
     query: "photo",
     category: "images",
     minBytes: 10,
-    metric: "logical",
     sort: "nameAscending",
     offset: 150,
   });
@@ -443,7 +436,6 @@ it("restores paged search, filters, selection, sort and scroll across history wi
   await resultPage();
   await browse();
   await act(() => {
-    app().changeMetric("allocated");
     app().changeSort("sizeAscending");
     app().select(image);
   });
@@ -461,7 +453,6 @@ it("restores paged search, filters, selection, sort and scroll across history wi
   expect(app().query).toBe(" photo ");
   expect(app().debouncedQuery).toBe(" photo ");
   expect(app().filters).toMatchObject({ category: "images", minBytes: 10 });
-  expect(app().metric).toBe("logical");
   expect(app().sort).toBe("nameAscending");
   expect(app().selection.map((node) => node.id)).toEqual([2]);
   expect(app().listScrollRestore?.top).toBe(280);
@@ -469,14 +460,12 @@ it("restores paged search, filters, selection, sort and scroll across history wi
   expect(calls("filter_nodes").at(-1)?.[1]).toMatchObject({
     offset: 150,
     sort: "nameAscending",
-    metric: "logical",
   });
   await act(() => finish({ items: [image, folder], total: 320 }));
   mock.invoke.mockImplementation(previous);
   await act(() => app().goForward());
   expect(app().focus?.id).toBe(1);
   expect(app().query).toBe("");
-  expect(app().metric).toBe("allocated");
   expect(app().sort).toBe("sizeAscending");
   expect(app().selection.map((node) => node.id)).toEqual([2]);
   expect(app().resultsReturn?.query).toBe(" photo ");

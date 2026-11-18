@@ -10,7 +10,6 @@ const items: NodeView[] = Array.from({ length: 150 }, (_, id) => ({
   name: `file-${id}`,
   path: `/file-${id}`,
   kind: "file",
-  logicalBytes: 1,
   allocatedBytes: 1,
   childrenCount: 0,
   incomplete: false,
@@ -25,7 +24,6 @@ async function fixture(extra: Record<string, unknown> = {}) {
     root.render(FileRows, {
       items,
       selection: [],
-      metric: "allocated",
       running: false,
       onSelect: (node: NodeView, multi: boolean) => {
         selected = multi

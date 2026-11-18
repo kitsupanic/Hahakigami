@@ -97,7 +97,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert!(found.get("scanId").is_none());
         let node_id = found["items"][0]["id"].as_u64().unwrap();
         let node = value(&client, "node", json!({"node_id": node_id})).await;
-        assert_eq!(node["logicalBytes"], 7);
+        assert!(node.get("logicalBytes").is_none());
         assert!(node.get("allocatedBytes").is_some());
         assert!(node.get("scanId").is_none());
         let first = value(&client, "children", json!({"node_id": 0, "limit": 1})).await;
@@ -115,7 +115,8 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_eq!(issues["total"], 0);
         assert!(issues.get("scanId").is_none());
         let summary = value(&client, "summary", json!({})).await;
-        assert_eq!(summary["logicalBytes"], scanned["logicalBytes"]);
+        assert!(summary.get("logicalBytes").is_none());
+        assert_eq!(summary["allocatedBytes"], scanned["allocatedBytes"]);
         assert_eq!(summary["state"], "completed");
         for (name, args) in [
             ("node", json!({"node_id": u32::MAX})),
@@ -151,6 +152,17 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             .is_error,
             Some(true)
         );
+        // Logical size no longer exists: tools take no size metric or sort option.
+        for (name, args) in [
+            ("search", json!({"query": "needle", "metric": "logical"})),
+            ("children", json!({"node_id": 0, "sort": "logical"})),
+        ] {
+            assert_eq!(
+                call(&client, name, args).await.is_error,
+                Some(true),
+                "{name}"
+            );
+        }
         client.cancel().await.unwrap();
     })
     .await
@@ -180,7 +192,7 @@ async fn stdio_native_paths_round_trip_and_search_pages_can_exceed_five_hundred(
             .as_array()
             .unwrap()
             .iter()
-            .all(|row| row["logicalBytes"] == 1));
+            .all(|row| row.get("logicalBytes").is_none()));
         client.cancel().await.unwrap();
     })
     .await

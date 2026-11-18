@@ -37,11 +37,11 @@ The earlier completed scan of the same location that a new scan starts from, so 
 _Avoid_: Seed, cached scan, previous scan
 
 **On disk**:
-The space a file or folder occupies in allocated blocks, as recorded by the scan. Verified scans deduct shared APFS clone blocks. It does not predict space freed by moving items to the Trash.
+The space a file or folder occupies in allocated blocks, as recorded by the scan. It is the only size the app shows. Verified scans deduct shared APFS clone blocks. It does not predict space freed by moving items to the Trash.
 _Avoid_: Scanned on disk, on disk in scan, recorded allocation, allocated size
 
-**Logical size**:
-The byte length of the content, regardless of how it is stored. Compressed, sparse or cloned files can be larger logically than on disk.
+**Length**:
+A file's byte count. The scanner keeps it only to verify clones and to detect changed files on a rescan. It is never shown or summed per folder.
 _Avoid_: Real size, apparent size, content size
 
 **Scan warning**:

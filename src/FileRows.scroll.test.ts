@@ -12,7 +12,6 @@ const items: NodeView[] = Array.from({ length: 30 }, (_, id) => ({
   path: `/fixture/file-${id}`,
   kind: "file",
   allocatedBytes: 100,
-  logicalBytes: 100,
   childrenCount: 0,
   incomplete: false,
 }));
@@ -21,7 +20,6 @@ const onScrollChange = vi.fn(),
 const props = {
   items,
   selection: [],
-  metric: "allocated" as const,
   running: false,
   onSelect: vi.fn(),
   onOpen: vi.fn(),

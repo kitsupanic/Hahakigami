@@ -77,12 +77,7 @@ fn natural(a: &[u8], b: &[u8]) -> Ordering {
     }
     (a.len() - i).cmp(&(b.len() - j))
 }
-pub(crate) fn sort_ids(
-    snapshot: &Snapshot,
-    ids: &mut [u32],
-    order: Order,
-    allocated: bool,
-) -> Result<(), String> {
+pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Result<(), String> {
     let (mut left, mut right) = (PathBuf::new(), PathBuf::new());
     for &id in ids.iter() {
         snapshot.node(id).ok_or("Invalid sort node ID")?;
@@ -94,17 +89,10 @@ pub(crate) fn sort_ids(
                 snapshot.node(a).expect("checked sort id"),
                 snapshot.node(b).expect("checked sort id"),
             );
-            let size = |n: &NodeRef<'_>| {
-                if allocated {
-                    n.allocated_size
-                } else {
-                    n.logical_size
-                }
-            };
             let sizes = if order == Order::SizeDescending {
-                size(&b).cmp(&size(&a))
+                b.allocated_size.cmp(&a.allocated_size)
             } else {
-                size(&a).cmp(&size(&b))
+                a.allocated_size.cmp(&b.allocated_size)
             };
             group(&a, &b)
                 .then(sizes)
@@ -149,7 +137,6 @@ pub(crate) fn sort_ids(
 struct Entry {
     node_id: u32,
     order: Order,
-    allocated: bool,
     nodes_address: usize,
     count: usize,
     root: PathBuf,
@@ -181,7 +168,6 @@ impl Cache {
         snapshot: &Snapshot,
         node_id: u32,
         order: Order,
-        allocated: bool,
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<u32>, usize), String> {
@@ -195,7 +181,6 @@ impl Cache {
             && self.entry.as_ref().is_some_and(|e| {
                 e.node_id == node_id
                     && e.order == order
-                    && e.allocated == allocated
                     && e.nodes_address == address
                     && e.count == snapshot.node_count()
                     && e.root == snapshot.root
@@ -213,12 +198,11 @@ impl Cache {
             {
                 return Err("Invalid child node ID".into());
             }
-            sort_ids(snapshot, &mut ids, order, allocated)?;
+            sort_ids(snapshot, &mut ids, order)?;
             if completed {
                 self.entry = Some(Entry {
                     node_id,
                     order,
-                    allocated,
                     nodes_address: address,
                     count: snapshot.node_count(),
                     root: snapshot.root.clone(),
@@ -248,7 +232,7 @@ mod tests {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     fn fixture() -> Snapshot {
         let mut s = Snapshot::empty(PathBuf::from("/fixture"));
-        for (id, (name, kind, logical, allocated)) in [
+        for (id, (name, kind, length, allocated)) in [
             ("root", NodeKind::Directory, 99, 99),
             ("Folder10", NodeKind::Directory, 1, 100),
             ("Folder2", NodeKind::Directory, 2, 0),
@@ -282,9 +266,8 @@ mod tests {
                     inode: u64::from(id),
                     kind,
                 },
-                logical_size: logical,
                 allocated_size: allocated,
-                own_logical_size: logical,
+                length,
                 own_allocated_size: allocated,
                 is_directory: kind == NodeKind::Directory,
                 hard_link: false,
@@ -304,44 +287,33 @@ mod tests {
         let mut snapshot = fixture();
         let mut cache = Cache::default();
         assert_eq!(cache.retained_buffer_storage().capacity_bytes, 0);
-        cache
-            .page(&snapshot, 0, Order::default(), false, 0, 2)
-            .unwrap();
+        cache.page(&snapshot, 0, Order::default(), 0, 2).unwrap();
         let storage = cache.retained_buffer_storage();
         assert!(storage.length_bytes >= 10 * 4 + snapshot.root.as_os_str().len());
         assert!(storage.capacity_bytes >= storage.length_bytes);
-        cache
-            .page(&snapshot, 0, Order::default(), false, 2, 2)
-            .unwrap();
+        cache.page(&snapshot, 0, Order::default(), 2, 2).unwrap();
         assert_eq!(
             cache.retained_buffer_storage().capacity_bytes,
             storage.capacity_bytes
         );
         snapshot.state = ScanState::Running;
-        cache
-            .page(&snapshot, 0, Order::default(), false, 0, 2)
-            .unwrap();
+        cache.page(&snapshot, 0, Order::default(), 0, 2).unwrap();
         assert_eq!(cache.retained_buffer_storage().capacity_bytes, 0);
     }
     #[test]
     fn orders_group_folders_and_preserve_raw_ties() {
         let s = fixture();
         for (order, expected) in [
-            (Order::SizeDescending, vec![2, 1, 3, 4, 5, 10, 6, 7, 9, 8]),
-            (Order::SizeAscending, vec![1, 2, 10, 6, 7, 9, 8, 4, 5, 3]),
+            (Order::SizeDescending, vec![1, 2, 4, 3, 5, 10, 6, 7, 9, 8]),
+            (Order::SizeAscending, vec![2, 1, 5, 10, 6, 7, 9, 8, 3, 4]),
             (Order::NameAscending, vec![2, 1, 4, 5, 3, 10, 6, 7, 9, 8]),
             (Order::NameDescending, vec![1, 2, 9, 8, 6, 7, 10, 3, 5, 4]),
         ] {
             let mut ids = s.node(0).unwrap().children().to_vec();
             ids.reverse();
-            sort_ids(&s, &mut ids, order, false).unwrap();
+            sort_ids(&s, &mut ids, order).unwrap();
             assert_eq!(ids, expected, "{order:?}");
         }
-        let mut ids = s.node(0).unwrap().children().to_vec();
-        sort_ids(&s, &mut ids, Order::SizeAscending, true).unwrap();
-        assert_eq!(ids, vec![2, 1, 5, 10, 6, 7, 9, 8, 3, 4]);
-        sort_ids(&s, &mut ids, Order::SizeDescending, true).unwrap();
-        assert_eq!(ids, vec![1, 2, 4, 3, 5, 10, 6, 7, 9, 8]);
     }
     #[test]
     fn identical_native_paths_use_ascending_id_in_every_mode() {
@@ -356,7 +328,7 @@ mod tests {
             Order::NameDescending,
         ] {
             let mut ids = vec![11, 4];
-            sort_ids(&s, &mut ids, order, false).unwrap();
+            sort_ids(&s, &mut ids, order).unwrap();
             assert_eq!(ids, vec![4, 11]);
         }
     }
@@ -375,11 +347,11 @@ mod tests {
         }
         let mut cache = Cache::default();
         let first = cache
-            .page(&s, 0, Order::NameAscending, false, 0, usize::MAX)
+            .page(&s, 0, Order::NameAscending, 0, usize::MAX)
             .unwrap();
         assert_eq!((first.0.len(), first.1), (500, 610));
         let last = cache
-            .page(&s, 0, Order::NameAscending, false, 500, usize::MAX)
+            .page(&s, 0, Order::NameAscending, 500, usize::MAX)
             .unwrap();
         assert_eq!((last.0.len(), last.1), (110, 610));
         assert_eq!(cache.builds, 1);
@@ -389,7 +361,7 @@ mod tests {
     #[test]
     fn invalid_selected_paths_fail_before_reordering() {
         let mut s = fixture();
-        assert!(sort_ids(&s, &mut [1, 99], Order::NameAscending, false).is_err());
+        assert!(sort_ids(&s, &mut [1, 99], Order::NameAscending).is_err());
         let mut root = s.legacy_node(0).unwrap();
         root.path = s.root.clone();
         let mut child = s.legacy_node(1).unwrap();
@@ -401,11 +373,11 @@ mod tests {
         compact.append_legacy_node(child).unwrap();
         compact.update_node(1, |n| n.parent = Some(1)).unwrap();
         let mut ids = [1, 0];
-        assert!(sort_ids(&compact, &mut ids, Order::SizeAscending, false).is_err());
+        assert!(sort_ids(&compact, &mut ids, Order::SizeAscending).is_err());
         assert_eq!(ids, [1, 0]);
         s.set_children(0, &[99]).unwrap();
         assert!(Cache::default()
-            .page(&s, 0, Order::default(), false, 0, 1)
+            .page(&s, 0, Order::default(), 0, 1)
             .is_err());
     }
 
@@ -438,69 +410,48 @@ mod tests {
         let mut s = fixture();
         let mut cache = Cache::default();
         assert_eq!(
-            cache
-                .page(&s, 0, Order::NameAscending, false, 0, 2)
-                .unwrap(),
+            cache.page(&s, 0, Order::NameAscending, 0, 2).unwrap(),
             (vec![2, 1], 10)
         );
         assert_eq!(
-            cache
-                .page(&s, 0, Order::NameAscending, false, 2, 2)
-                .unwrap(),
+            cache.page(&s, 0, Order::NameAscending, 2, 2).unwrap(),
             (vec![4, 5], 10)
         );
         assert_eq!(cache.builds, 1);
         assert_eq!(
             cache
-                .page(&s, 0, Order::NameAscending, false, usize::MAX, 500)
+                .page(&s, 0, Order::NameAscending, usize::MAX, 500)
                 .unwrap(),
             (vec![], 10)
         );
         assert_eq!(
-            cache
-                .page(&s, 0, Order::NameAscending, false, 0, 0)
-                .unwrap(),
+            cache.page(&s, 0, Order::NameAscending, 0, 0).unwrap(),
             (vec![], 10)
         );
-        cache
-            .page(&s, 1, Order::NameAscending, false, 0, 500)
-            .unwrap();
+        cache.page(&s, 1, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 2);
         assert_eq!(cache.entry.as_ref().unwrap().node_id, 1);
-        cache
-            .page(&s, 0, Order::NameAscending, false, 0, 500)
-            .unwrap();
+        cache.page(&s, 0, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 3);
-        cache
-            .page(&s, 0, Order::SizeAscending, true, 0, 500)
-            .unwrap();
+        cache.page(&s, 0, Order::SizeAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 4);
-        assert!(cache.page(&s, 99, Order::default(), true, 0, 500).is_err());
+        assert!(cache.page(&s, 99, Order::default(), 0, 500).is_err());
         s.state = ScanState::Running;
-        cache
-            .page(&s, 0, Order::NameAscending, false, 0, 500)
-            .unwrap();
+        cache.page(&s, 0, Order::NameAscending, 0, 500).unwrap();
         let mut node = s.legacy_node(4).unwrap();
         node.name = "zzz".into();
         s.replace_node(4, node).unwrap();
         assert_eq!(
-            cache
-                .page(&s, 0, Order::NameAscending, false, 2, 1)
-                .unwrap()
-                .0,
+            cache.page(&s, 0, Order::NameAscending, 2, 1).unwrap().0,
             vec![5]
         );
         assert_eq!(cache.builds, 6);
         assert!(cache.entry.is_none());
         s.state = ScanState::Completed;
-        cache
-            .page(&s, 0, Order::NameAscending, false, 0, 500)
-            .unwrap();
+        cache.page(&s, 0, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 7);
         let other = fixture();
-        cache
-            .page(&other, 0, Order::NameAscending, false, 0, 500)
-            .unwrap();
+        cache.page(&other, 0, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 8);
     }
 }

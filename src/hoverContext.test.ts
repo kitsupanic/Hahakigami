@@ -9,7 +9,6 @@ const node = (id: number, parentId: number | null): NodeView => ({
   path: "/same/display/path",
   kind: "directory",
   allocatedBytes: 100,
-  logicalBytes: 100,
   childrenCount: 1,
   incomplete: false,
 });

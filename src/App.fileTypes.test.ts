@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import { act, createTestRoot, type Root } from "./testUtils";
 import App from "./App.svelte";
 import type createApp from "./createApp.svelte";
@@ -33,7 +32,6 @@ const folder: NodeView = {
   path: "/fixture/Photos",
   kind: "directory",
   allocatedBytes: 20,
-  logicalBytes: 200,
   childrenCount: 1,
   incomplete: false,
 };
@@ -61,7 +59,6 @@ const archive: NodeView = {
   name: "backup.zip",
   path: "/fixture/backup.zip",
   allocatedBytes: 10,
-  logicalBytes: 500,
 };
 const summary = (scanId = "live"): ScanSummary => ({
   scanId,
@@ -72,21 +69,19 @@ const summary = (scanId = "live"): ScanSummary => ({
   finalizationUs: 0,
   entries: 4,
   allocatedBytes: 30,
-  logicalBytes: 700,
   elapsedMs: 1000,
   errors: 1,
   incomplete: true,
 });
 const stats = (scope = 0): FileTypeStats => ({
   items: [
-    { extension: "jpg", files: 1, allocatedBytes: 20, logicalBytes: 200 },
+    { extension: "jpg", files: 1, allocatedBytes: 20 },
     ...(scope === 0
-      ? [{ extension: "zip", files: 1, allocatedBytes: 10, logicalBytes: 500 }]
+      ? [{ extension: "zip", files: 1, allocatedBytes: 10 }]
       : []),
   ],
   files: scope === 0 ? 2 : 1,
   allocatedBytes: scope === 0 ? 30 : 20,
-  logicalBytes: scope === 0 ? 700 : 200,
   incomplete: true,
 });
 const deferred = <T>() => {
@@ -131,7 +126,6 @@ async function selectType(extension: string) {
   await flush();
 }
 beforeEach(async () => {
-  setShowLogicalSize(true);
   vi.useFakeTimers();
   nextScan = "live";
   mock.invoke.mockReset();
@@ -251,13 +245,11 @@ it("loads real scoped statistics on demand, links highlighting, and keeps file s
   expect(app().selection.map((node) => node.id)).toEqual([3]);
 });
 
-it("sorts using the size metric, searches descriptions, and opens exact scoped matching-file results", async () => {
+it("sorts by on-disk size, searches descriptions, and opens exact scoped matching-file results", async () => {
   await openTypes();
   await selectType(".jpg");
-  await act(() => app().changeMetric("logical"));
-  await flush();
   expect(panel().querySelector(".file-type-name strong")?.textContent).toBe(
-    ".zip",
+    ".jpg",
   );
   const search = panel().querySelector<HTMLInputElement>("input")!;
   await act(() => {
@@ -277,7 +269,6 @@ it("sorts using the size metric, searches descriptions, and opens exact scoped m
     expect.objectContaining({
       extension: "jpg",
       scopeId: 0,
-      metric: "logical",
     }),
   );
   expect(element.querySelector(".active-filters")?.textContent).toContain(

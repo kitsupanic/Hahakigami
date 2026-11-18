@@ -67,7 +67,7 @@ def run(app, scope, path, phase, number, args):
             raw = json.loads(result.stdout.strip())
             record["raw"] = raw
             stats = raw["stats"] if app == "hahakigami" else raw
-            for key in ["entries", "allocated_bytes", "logical_bytes", "errors", "elapsed_ms"]:
+            for key in ["entries", "allocated_bytes", "errors", "elapsed_ms"]:
                 record[key] = stats.get(key)
             record["peak_rss_bytes"] = raw.get("peak_rss_native_units") if app == "hahakigami" else raw["peak_rss_bytes"]
             if app == "hahakigami" and str(raw.get("state", "")).lower() != "completed":

@@ -3,14 +3,12 @@ interface FileTypeEntry {
   /** Canonical lower-case suffix without a dot; empty means no extension. */
   extension: string;
   files: number;
-  logicalBytes: number;
   allocatedBytes: number;
 }
 
 export interface FileTypeStats {
   items: FileTypeEntry[];
   files: number;
-  logicalBytes: number;
   allocatedBytes: number;
   incomplete: boolean;
 }
@@ -123,7 +121,7 @@ const guardianPalette = [
   "#1f90af",
 ];
 
-/** Stable across scans, row ordering, folders, and supported map metrics. */
+/** Stable across scans, row ordering, folders, and map modes. */
 export function fileTypeColor(extension: string): string {
   const [table, inks] = theme.guardian
     ? [guardianColors, guardianPalette]

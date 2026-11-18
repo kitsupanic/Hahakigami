@@ -276,7 +276,7 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         let n = s.node(*id).ok_or("invalid clone node")?;
         if n.identity.kind != NodeKind::File
             || m.data_allocated_size > n.own_allocated_size
-            || m.data_logical_size > n.own_logical_size
+            || m.data_length > n.length
             || m.clone_id == 0
             || m.reference_count <= 1
         {
@@ -293,8 +293,8 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         if let Some(first) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
             let first_id = s.tree.clones[*first].0;
             let a = s.node(first_id).ok_or("invalid clone alias")?;
-            if (a.own_logical_size, a.own_allocated_size, claims.at(*first))
-                != (n.own_logical_size, n.own_allocated_size, current)
+            if (a.length, a.own_allocated_size, claims.at(*first))
+                != (n.length, n.own_allocated_size, current)
                 || (n.id != first_id && (!n.hard_link || !a.hard_link))
             {
                 return Err("inconsistent cloned inode aliases or link flags".into());
@@ -324,7 +324,7 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         let first_metadata = first.clone_metadata().ok_or("missing clone metadata")?;
         group.consistent &= m.verified
             && m.data_allocated_size == first_metadata.data_allocated_size
-            && m.data_logical_size == first_metadata.data_logical_size;
+            && m.data_length == first_metadata.data_length;
         let previous_owner = group.owner;
         let replaces_owner = earlier(*id, previous_owner, &mut paths)?;
         if replaces_owner {
@@ -381,7 +381,6 @@ mod tests {
         let mut cursor = AllocationCursor::new(&plan);
         for id in 0..s.node_count() {
             s.update_node(id as u32, |n| {
-                n.logical_size = n.own_logical_size;
                 n.allocated_size = cursor.value(id as u32, n.own_allocated_size);
             })
             .unwrap();
@@ -390,17 +389,15 @@ mod tests {
         for id in (0..s.node_count()).rev() {
             let n = s.node(id as u32).unwrap();
             if let Some(parent) = n.parent {
-                let (logical, allocated) = (n.logical_size, n.allocated_size);
+                let allocated = n.allocated_size;
                 s.update_node(parent, |n| {
-                    n.logical_size = n.logical_size.saturating_add(logical);
                     n.allocated_size = n.allocated_size.saturating_add(allocated);
                 })
                 .unwrap();
             }
         }
         if let Some(root) = s.node(0) {
-            (s.stats.logical_bytes, s.stats.allocated_bytes) =
-                (root.logical_size, root.allocated_size);
+            s.stats.allocated_bytes = root.allocated_size;
         }
     }
     fn hardlink_fixture() -> Snapshot {
@@ -695,7 +692,7 @@ mod tests {
             let n = s.node(*id).ok_or("invalid clone node")?;
             if n.identity.kind != NodeKind::File
                 || m.data_allocated_size > n.own_allocated_size
-                || m.data_logical_size > n.own_logical_size
+                || m.data_length > n.length
                 || m.clone_id == 0
                 || m.reference_count <= 1
             {
@@ -712,8 +709,8 @@ mod tests {
             if let Some(first) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
                 let first_id = s.tree.clones[*first].0;
                 let a = s.node(first_id).ok_or("invalid clone alias")?;
-                if (a.own_logical_size, a.own_allocated_size, claims.at(*first))
-                    != (n.own_logical_size, n.own_allocated_size, current)
+                if (a.length, a.own_allocated_size, claims.at(*first))
+                    != (n.length, n.own_allocated_size, current)
                     || (n.id != first_id && (!n.hard_link || !a.hard_link))
                 {
                     return Err("inconsistent cloned inode aliases or link flags".into());
@@ -743,7 +740,7 @@ mod tests {
             let first_metadata = first.clone_metadata().ok_or("missing clone metadata")?;
             group.consistent &= m.verified
                 && m.data_allocated_size == first_metadata.data_allocated_size
-                && m.data_logical_size == first_metadata.data_logical_size;
+                && m.data_length == first_metadata.data_length;
             let previous_owner = group.owner;
             let replaces_owner = earlier(*id, previous_owner, &mut paths)?;
             if replaces_owner {
@@ -879,7 +876,6 @@ mod tests {
         let mut cursor = AllocationCursor::new(&plan);
         for id in 0..s.node_count() {
             s.update_node(id as u32, |n| {
-                n.logical_size = n.own_logical_size;
                 n.allocated_size = cursor.value(id as u32, n.own_allocated_size);
             })
             .unwrap();
@@ -888,17 +884,15 @@ mod tests {
         for id in (0..s.node_count()).rev() {
             let n = s.node(id as u32).unwrap();
             if let Some(parent) = n.parent {
-                let (logical, allocated) = (n.logical_size, n.allocated_size);
+                let allocated = n.allocated_size;
                 s.update_node(parent, |n| {
-                    n.logical_size = n.logical_size.saturating_add(logical);
                     n.allocated_size = n.allocated_size.saturating_add(allocated);
                 })
                 .unwrap();
             }
         }
         if let Some(root) = s.node(0) {
-            (s.stats.logical_bytes, s.stats.allocated_bytes) =
-                (root.logical_size, root.allocated_size);
+            s.stats.allocated_bytes = root.allocated_size;
         }
     }
 
@@ -928,8 +922,8 @@ mod tests {
                 };
                 node.clone_metadata = None;
                 node.excluded = id % 7 == 0;
-                node.own_logical_size = if id == 8200 { u64::MAX } else { u64::from(id) };
-                node.own_allocated_size = node.own_logical_size;
+                node.length = if id == 8200 { u64::MAX } else { u64::from(id) };
+                node.own_allocated_size = node.length;
                 actual.append_legacy_node(node).unwrap();
             }
             actual
@@ -944,7 +938,7 @@ mod tests {
                     actual.tree.clones.clear();
                     actual.accounting.model = AccountingModel::HardLinksV1;
                 }
-                3 => actual.tree.clones[1].1.data_logical_size = 99,
+                3 => actual.tree.clones[1].1.data_length = 99,
                 _ => {}
             }
             let mut expected = actual.clone();
@@ -958,7 +952,6 @@ mod tests {
                     serde_json::to_value(&expected).unwrap(),
                     "accounting variant {variant}"
                 );
-                assert_eq!(actual.stats.logical_bytes, u64::MAX);
                 assert_eq!(actual.stats.allocated_bytes, u64::MAX);
             }
         }
@@ -987,21 +980,16 @@ mod tests {
                     s.tree.clones.clear();
                     s.accounting.model = AccountingModel::HardLinksV1;
                 }
-                4 => s.tree.clones[1].1.data_logical_size = 99,
+                4 => s.tree.clones[1].1.data_length = 99,
                 _ => {}
             }
             {
                 crate::aggregate(&mut s);
-                let values: Vec<_> = s
-                    .iter_nodes()
-                    .map(|n| (n.logical_size, n.allocated_size))
-                    .collect();
+                let values: Vec<_> = s.iter_nodes().map(|n| n.allocated_size).collect();
                 crate::aggregate(&mut s);
                 assert_eq!(
                     values,
-                    s.iter_nodes()
-                        .map(|n| (n.logical_size, n.allocated_size))
-                        .collect::<Vec<_>>()
+                    s.iter_nodes().map(|n| n.allocated_size).collect::<Vec<_>>()
                 );
             }
         }
@@ -1206,7 +1194,7 @@ mod tests {
             if unverified {
                 s.tree.clones[1].1.verified = false;
             } else {
-                s.tree.clones[1].1.data_logical_size = 99;
+                s.tree.clones[1].1.data_length = 99;
             }
             let p = allocation_plan(&s).unwrap();
             assert_eq!(p.values, vec![0, 0, 140, 120]);

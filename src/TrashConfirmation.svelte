@@ -3,7 +3,6 @@
   import { dialogFocus } from "./dialogFocus";
   import { bytes, type NodeView } from "./types";
   import { compactBytes } from "./uiFormat";
-  import { logicalSize } from "./logicalSize.svelte";
 
   let {
     items,
@@ -38,17 +37,16 @@
       .filter(Boolean)
       .join(" · ") || "No items",
   );
-  let allocated = $derived(total("allocatedBytes"));
-  let logical = $derived(total("logicalBytes"));
+  let allocated = $derived(total());
   let partial = $derived(items.some((item) => item.incomplete));
   function validSize(value: number) {
     return Number.isSafeInteger(value) && value >= 0;
   }
-  function total(key: "allocatedBytes" | "logicalBytes"): number | null {
+  function total(): number | null {
     let result = 0;
     for (const item of items) {
-      if (!validSize(item[key]) || !validSize(result + item[key])) return null;
-      result += item[key];
+      if (!validSize(item.allocatedBytes) || !validSize(result + item.allocatedBytes)) return null;
+      result += item.allocatedBytes;
     }
     return result;
   }
@@ -116,12 +114,6 @@
         <dt>On disk</dt>
         <dd title={sizeTitle(allocated)}>{sizeLabel(allocated)}</dd>
       </div>
-      {#if logicalSize.shown}
-        <div>
-          <dt>Logical size</dt>
-          <dd title={sizeTitle(logical)}>{sizeLabel(logical)}</dd>
-        </div>
-      {/if}
     </dl>
     <p class="trash-kind-counts">{kindCounts}</p>
     {#if folders > 0}

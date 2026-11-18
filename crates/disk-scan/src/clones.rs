@@ -268,7 +268,7 @@ mod native {
     fn parse(
         b: &[u8],
         identity: &crate::Identity,
-        own_logical: u64,
+        own_length: u64,
         own_allocated: u64,
         hard_link: bool,
     ) -> io::Result<CloneMetadata> {
@@ -301,14 +301,14 @@ mod native {
         }
         let total = size(b, &mut o)?;
         let allocation = size(b, &mut o)?;
-        let logical = size(b, &mut o)?;
+        let data_length = size(b, &mut o)?;
         let data = size(b, &mut o)?;
         let clone_id = u64at(b, &mut o)?;
         let flags = u64at(b, &mut o)?;
         let reference_count = u32at(b, &mut o)?;
-        if (total != own_logical && logical != own_logical)
+        if (total != own_length && data_length != own_length)
             || allocation != own_allocated
-            || logical > total
+            || data_length > total
             || data > allocation
         {
             return Err(error("clone file sizes changed"));
@@ -316,7 +316,7 @@ mod native {
         Ok(CloneMetadata {
             clone_id,
             data_allocated_size: data,
-            data_logical_size: logical,
+            data_length,
             reference_count,
             may_share_blocks: flags & 1 != 0,
             verified: false,
@@ -546,7 +546,7 @@ mod native {
         fd: &OwnedFd,
         name: &std::ffi::OsStr,
         identity: &crate::Identity,
-        logical: u64,
+        length: u64,
         allocated: u64,
         hard_link: bool,
     ) -> io::Result<CloneMetadata> {
@@ -574,7 +574,7 @@ mod native {
         {
             return Err(io::Error::last_os_error());
         }
-        parse(&b, identity, logical, allocated, hard_link)
+        parse(&b, identity, length, allocated, hard_link)
     }
     fn probe(s: &Snapshot, id: u32, fd: &OwnedFd) -> io::Result<CloneMetadata> {
         let n = s.node(id).unwrap();
@@ -582,7 +582,7 @@ mod native {
             fd,
             n.native_name(),
             &n.identity,
-            n.own_logical_size,
+            n.length,
             n.own_allocated_size,
             n.hard_link,
         )
@@ -604,7 +604,7 @@ mod native {
                 .file_name()
                 .ok_or_else(|| error("missing basename"))?,
             &e.identity(),
-            e.logical,
+            e.length,
             e.allocated,
             e.hard_link,
         );
@@ -674,10 +674,10 @@ mod native {
                 && r.inode == e.inode
                 && r.allocated == e.allocated
                 && (r.links > 1) == e.hard_link
-                && (r.logical == e.logical
+                && (r.length == e.length
                     || r.clone_metadata
                         .as_ref()
-                        .is_some_and(|m| m.data_logical_size == e.logical))
+                        .is_some_and(|m| m.data_length == e.length))
             {
                 if std::mem::replace(&mut matched[i], true) {
                     return Err(error("duplicate clone record in reused directory"));
@@ -705,7 +705,7 @@ mod native {
     fn same_observation(a: &CloneMetadata, b: &CloneMetadata) -> bool {
         a.clone_id == b.clone_id
             && a.data_allocated_size == b.data_allocated_size
-            && a.data_logical_size == b.data_logical_size
+            && a.data_length == b.data_length
             && a.reference_count == b.reference_count
             && a.may_share_blocks == b.may_share_blocks
     }
@@ -1026,8 +1026,8 @@ mod native {
                             }
                             if !r.clone_checked {
                                 fallback.push(i);
-                            } else if (r.logical == n.own_logical_size
-                                || r.clone_metadata.as_ref().is_some_and(|m| m.data_logical_size == n.own_logical_size)) && r
+                            } else if (r.length == n.length
+                                || r.clone_metadata.as_ref().is_some_and(|m| m.data_length == n.length)) && r
                                 .clone_metadata
                                 .as_ref()
                                 .is_some_and(|m| same_observation(m, &claims[i].1))
@@ -1155,7 +1155,7 @@ mod native {
             if let Some((first, m)) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
                 let prior = s.node(*first).unwrap();
                 if current != Some(*m)
-                    || n.own_logical_size != prior.own_logical_size
+                    || n.length != prior.length
                     || n.own_allocated_size != prior.own_allocated_size
                     || (n.id != *first && (!n.hard_link || !prior.hard_link))
                 {
@@ -1295,7 +1295,7 @@ mod native {
                 continue;
             }
             let device = s.node(*id).unwrap().identity.device;
-            let evidence = (m.data_logical_size, m.data_allocated_size);
+            let evidence = (m.data_length, m.data_allocated_size);
             if group_evidence
                 .insert((device, m.clone_id), evidence)
                 .is_some_and(|prior| prior != evidence)
@@ -1378,14 +1378,7 @@ mod native {
             }
             b.extend(n.identity.inode.to_ne_bytes());
             b.extend(if n.hard_link { 2u32 } else { 1u32 }.to_ne_bytes());
-            for value in [
-                n.own_logical_size,
-                n.own_allocated_size,
-                n.own_logical_size,
-                100,
-                42,
-                1,
-            ] {
+            for value in [n.length, n.own_allocated_size, n.length, 100, 42, 1] {
                 b.extend(value.to_ne_bytes());
             }
             b.extend(2u32.to_ne_bytes());
@@ -1396,19 +1389,12 @@ mod native {
             let s = super::super::tests::fixture();
             let n = s.node(2).unwrap();
             let b = bytes(&n);
-            assert!(parse(
-                &b,
-                &n.identity,
-                n.own_logical_size,
-                n.own_allocated_size,
-                n.hard_link
-            )
-            .is_ok());
+            assert!(parse(&b, &n.identity, n.length, n.own_allocated_size, n.hard_link).is_ok());
             for len in 0..b.len() {
                 assert!(parse(
                     &b[..len],
                     &n.identity,
-                    n.own_logical_size,
+                    n.length,
                     n.own_allocated_size,
                     n.hard_link
                 )
@@ -1419,7 +1405,7 @@ mod native {
             assert!(parse(
                 &link_changed,
                 &n.identity,
-                n.own_logical_size,
+                n.length,
                 n.own_allocated_size,
                 n.hard_link
             )
@@ -1431,7 +1417,7 @@ mod native {
                     parse(
                         &corrupt,
                         &n.identity,
-                        n.own_logical_size,
+                        n.length,
                         n.own_allocated_size,
                         n.hard_link
                     )
@@ -1445,7 +1431,7 @@ mod native {
                 assert!(parse(
                     &corrupt,
                     &n.identity,
-                    n.own_logical_size,
+                    n.length,
                     n.own_allocated_size,
                     n.hard_link
                 )
@@ -1461,14 +1447,7 @@ mod native {
                 b[20..24].copy_from_slice(&ext.to_ne_bytes());
                 // Unsupported volumes also return a shorter reply.
                 b[0..4].copy_from_slice(&80u32.to_ne_bytes());
-                parse(
-                    &b,
-                    &n.identity,
-                    n.own_logical_size,
-                    n.own_allocated_size,
-                    n.hard_link,
-                )
-                .unwrap_err()
+                parse(&b, &n.identity, n.length, n.own_allocated_size, n.hard_link).unwrap_err()
             };
             for ext in [0, 0x200] {
                 assert!(is_unsupported(&parse_ext(ext)), "ext {ext:#x}");
@@ -1491,7 +1470,7 @@ mod native {
                 parse(
                     &bytes(&n),
                     &n.identity,
-                    n.own_logical_size,
+                    n.length,
                     n.own_allocated_size,
                     n.hard_link,
                 )
@@ -1839,13 +1818,11 @@ mod native {
             assert!(!s.incremental_accounting_eligible());
             let raw = s.tree.clones.clone();
             let allocated = s.stats.allocated_bytes;
-            let logical = s.stats.logical_bytes;
             let fd = crate::descriptor::open(&s.root, &s.node(0).unwrap().identity).unwrap();
             validate(&s, &fd, &AtomicBool::new(false)).apply(&mut s);
             crate::aggregate(&mut s);
             assert_eq!(s.tree.clones, raw);
             assert_eq!(s.stats.allocated_bytes, allocated);
-            assert_eq!(s.stats.logical_bytes, logical);
             let cancelled = validate(&s, &fd, &AtomicBool::new(true));
             assert!(cancelled
                 .statuses
@@ -2324,7 +2301,7 @@ mod native {
                 device: s.node(0).unwrap().identity.clone().device,
                 inode: s.node(0).unwrap().identity.clone().inode,
                 kind: s.node(0).unwrap().identity.clone().kind,
-                logical: 0,
+                length: 0,
                 allocated: 0,
                 hard_link: false,
                 clone_checked: false,
@@ -3295,9 +3272,8 @@ mod tests {
                         NodeKind::File
                     },
                 },
-                logical_size: 100,
                 allocated_size: raw,
-                own_logical_size: if id == 0 { 0 } else { 100 },
+                length: if id == 0 { 0 } else { 100 },
                 own_allocated_size: raw,
                 is_directory: id == 0,
                 hard_link: id == 1 || id == 3,
@@ -3308,7 +3284,7 @@ mod tests {
                     Some(CloneMetadata {
                         clone_id: 42,
                         data_allocated_size: 100,
-                        data_logical_size: 100,
+                        data_length: 100,
                         reference_count: 2,
                         may_share_blocks: true,
                         verified: true,

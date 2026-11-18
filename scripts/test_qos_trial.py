@@ -7,7 +7,7 @@ from qos_trial import rotated_order, validate, summarize, run
 
 def fixture(mode='userInitiated'):
     return {'workers': 1, 'backend': 'Bulk', 'state': 'Completed', 'scan_qos': mode,
-            'stats': {'entries': 2, 'directories': 1, 'errors': 0, 'logical_bytes': 3, 'allocated_bytes': 4, 'elapsed_ms': 5},
+            'stats': {'entries': 2, 'directories': 1, 'errors': 0, 'allocated_bytes': 4, 'elapsed_ms': 5},
             'worker_stats': [{'id': 1, 'entries': 1, 'errors': 0, 'qos': mode, 'qosError': None, 'cpuUs': None}]}
 
 

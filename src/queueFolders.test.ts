@@ -7,7 +7,6 @@ const entry = (path: string, allocatedBytes: number): QueueEntry => ({
   name: path.split("/").at(-1)!,
   path,
   rootPath: "/",
-  logicalBytes: allocatedBytes,
   allocatedBytes,
   status: "ready",
   reason: null,

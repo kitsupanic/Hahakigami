@@ -1,18 +1,16 @@
 <script lang="ts">
   import { coverageLabel } from "./scanCoverage";
   import ScanDetails from "./ScanDetails.svelte";
-  import type { Metric, ScanSummary } from "./types";
+  import type { ScanSummary } from "./types";
   import { formatScanTimestamp, scanTime } from "./uiFormat";
   import type { Snippet } from "svelte";
 
   let {
     summary,
-    metric,
     cancelling,
     controls,
   }: {
     summary: ScanSummary;
-    metric: Metric;
     cancelling: boolean;
     /** The map's view controls, kept on this row so the strip is the one toolbar under the header. */
     controls?: Snippet;
@@ -101,7 +99,7 @@
     title={status}>{status}</span
   >
   {#key summary.scanId}
-    <ScanDetails {summary} {metric} {description}>
+    <ScanDetails {summary} {description}>
       {#snippet lead()}
       <span
         class="scan-timestamp status-cell"

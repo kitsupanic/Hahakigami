@@ -26,7 +26,7 @@ No accounts, analytics or uploads.
 ## Features
 
 - **Any scope.** Scan the startup disk, any attached volume or a folder, or all local disks at once.
-- **Honest sizes.** Switch between **On disk** and **Logical** sizes. Hard links and full APFS clones are counted once.
+- **Honest sizes.** Sizes are **On disk**. Hard links and full APFS clones are counted once.
 - **Find it fast.** Search names, filter by file category and size, and break usage down by file type.
 - **Native.** Quick Look previews and Reveal in Finder.
 - **Careful cleanup.** A cleanup queue that survives restarts. Nothing is deleted permanently: items go to the Trash after you review the exact paths.

@@ -50,7 +50,6 @@ struct NodeView {
     path: String,
     path_key: String,
     kind: String,
-    logical_bytes: u64,
     allocated_bytes: u64,
     raw_allocated_bytes: u64,
     verified_clone: bool,
@@ -99,7 +98,6 @@ fn view(node: &NodeRef<'_>, issues: &[PathBuf]) -> Result<NodeView, String> {
             NodeKind::Other => "other",
         }
         .into(),
-        logical_bytes: node.logical_size,
         allocated_bytes: node.allocated_size,
         raw_allocated_bytes: node.own_allocated_size,
         verified_clone: node.clone_metadata().is_some_and(|metadata| {
@@ -123,7 +121,6 @@ struct Summary {
     root_id: u32,
     state: String,
     entries: u64,
-    logical_bytes: u64,
     allocated_bytes: u64,
     accounting_model: disk_scan::AccountingModel,
     accounting_warnings: Vec<String>,
@@ -246,7 +243,6 @@ impl Session {
             }
             .into(),
             entries: s.stats.entries,
-            logical_bytes: s.stats.logical_bytes,
             allocated_bytes: s.stats.allocated_bytes,
             accounting_model: s.accounting.model,
             accounting_warnings: s.accounting.warnings.clone(),
@@ -968,22 +964,8 @@ struct Page {
     items: Vec<NodeView>,
     total: usize,
 }
-fn allocated(metric: &str) -> Result<bool, String> {
-    match metric {
-        "allocated" => Ok(true),
-        "logical" => Ok(false),
-        _ => Err("Unknown size metric".into()),
-    }
-}
-fn size(n: &NodeRef<'_>, allocated: bool) -> u64 {
-    if allocated {
-        n.allocated_size
-    } else {
-        n.logical_size
-    }
-}
 struct MapSortKey<'a> {
-    selected_size: u64,
+    size: u64,
     display_name: Cow<'a, str>,
 }
 #[cfg(any(test, feature = "performance-benchmark"))]
@@ -1023,18 +1005,14 @@ struct MapChildOrder {
     #[cfg(any(test, feature = "performance-benchmark"))]
     scratch: MapSortScratch,
 }
-fn sort_all_map_children(
-    snapshot: &Snapshot,
-    children: &[u32],
-    allocated: bool,
-) -> Result<MapChildOrder, String> {
+fn sort_all_map_children(snapshot: &Snapshot, children: &[u32]) -> Result<MapChildOrder, String> {
     let mut keys = Vec::with_capacity(children.len());
     let mut positions = Vec::with_capacity(children.len());
     for (position, &id) in children.iter().enumerate() {
         let node = snapshot.node(id).ok_or("Unknown map child")?;
         positions.push(u32::try_from(position).map_err(|_| "Too many map children")?);
         keys.push(MapSortKey {
-            selected_size: size(&node, allocated),
+            size: node.allocated_size,
             display_name: snapshot.display_name(id)?,
         });
     }
@@ -1045,8 +1023,8 @@ fn sort_all_map_children(
     // keys, including repeated IDs; no ID or directory-kind tie is added.
     positions.sort_unstable_by(|&a, &b| {
         keys[b as usize]
-            .selected_size
-            .cmp(&keys[a as usize].selected_size)
+            .size
+            .cmp(&keys[a as usize].size)
             .then_with(|| {
                 keys[a as usize]
                     .display_name
@@ -1067,28 +1045,24 @@ fn sort_all_map_children(
 // and usually out of sort scratch as well. Unstable sorting can permute equal
 // positive keys differently when zeros are removed, so ties use the original
 // full ordering before filtering. This preserves historical aggregate cutoffs.
-fn sort_map_children(
-    snapshot: &Snapshot,
-    children: &[u32],
-    allocated: bool,
-) -> Result<MapChildOrder, String> {
+fn sort_map_children(snapshot: &Snapshot, children: &[u32]) -> Result<MapChildOrder, String> {
     let mut positive_count = 0;
     for &id in children {
         let node = snapshot.node(id).ok_or("Unknown map child")?;
-        positive_count += usize::from(size(&node, allocated) > 0);
+        positive_count += usize::from(node.allocated_size > 0);
     }
     if positive_count == children.len() {
-        return sort_all_map_children(snapshot, children, allocated);
+        return sort_all_map_children(snapshot, children);
     }
     let mut keys = Vec::with_capacity(positive_count);
     let mut ids = Vec::with_capacity(positive_count);
     for &id in children {
         let node = snapshot.node(id).ok_or("Unknown map child")?;
-        let selected_size = size(&node, allocated);
-        if selected_size > 0 {
+        let size = node.allocated_size;
+        if size > 0 {
             ids.push(id);
             keys.push(MapSortKey {
-                selected_size,
+                size,
                 display_name: snapshot.display_name(id)?,
             });
         }
@@ -1100,8 +1074,8 @@ fn sort_map_children(
     let compare = |&a: &u32, &b: &u32| {
         let (a, b) = (a as usize, b as usize);
         keys[b]
-            .selected_size
-            .cmp(&keys[a].selected_size)
+            .size
+            .cmp(&keys[a].size)
             .then_with(|| keys[a].display_name.cmp(&keys[b].display_name))
     };
     positions.sort_unstable_by(compare);
@@ -1121,10 +1095,10 @@ fn sort_map_children(
         drop(positions);
         drop(keys);
         drop(ids);
-        let mut order = sort_all_map_children(snapshot, children, allocated)?;
+        let mut order = sort_all_map_children(snapshot, children)?;
         order
             .ids
-            .retain(|&id| size(&snapshot.node(id).unwrap(), allocated) > 0);
+            .retain(|&id| snapshot.node(id).unwrap().allocated_size > 0);
         // A filtered Vec otherwise retains the full directory's capacity.
         order.ids.shrink_to_fit();
         #[cfg(any(test, feature = "performance-benchmark"))]
@@ -1142,24 +1116,18 @@ fn sort_map_children(
         scratch,
     })
 }
-fn sorted_children(
-    s: &Session,
-    snapshot: &Snapshot,
-    id: u32,
-    allocated: bool,
-) -> Result<Vec<u32>, String> {
+fn sorted_children(s: &Session, snapshot: &Snapshot, id: u32) -> Result<Vec<u32>, String> {
     let n = snapshot.node(id).ok_or("Unknown node")?;
-    let key = (id, allocated);
     let mut cache = s.sorts.lock().unwrap();
     if snapshot.state != ScanState::Running {
-        if let Some(ids) = cache.get(&key) {
+        if let Some(ids) = cache.get(&id) {
             return Ok(ids.clone());
         }
     }
-    let order = sort_map_children(snapshot, n.children(), allocated)?;
+    let order = sort_map_children(snapshot, n.children())?;
     let ids = order.ids;
     if snapshot.state != ScanState::Running {
-        cache.insert(key, ids.clone());
+        cache.insert(id, ids.clone());
     }
     drop(cache);
     #[cfg(feature = "performance-benchmark")]
@@ -1206,17 +1174,15 @@ async fn get_children(
     node_id: u32,
     offset: usize,
     limit: usize,
-    metric: String,
     sort: Option<String>,
 ) -> Result<Page, String> {
     let s = state.scans.find(&scan_id)?;
-    let allocated = allocated(&metric)?;
     let order = sorting::Order::parse(sort.as_deref())?;
     list_page(s, move |s, snapshot| {
         s.list_folder
             .lock()
             .unwrap()
-            .page(snapshot, node_id, order, allocated, offset, limit)
+            .page(snapshot, node_id, order, offset, limit)
     })
     .await
 }
@@ -1231,7 +1197,6 @@ async fn get_map(
     state: State<'_, AppState>,
     scan_id: String,
     node_id: u32,
-    metric: String,
     limit: usize,
     color_mode: Option<String>,
 ) -> Result<MapData, String> {
@@ -1239,12 +1204,11 @@ async fn get_map(
     match color_mode.as_deref() {
         None | Some("folder") => {}
         Some("fileType") => {
-            let a = allocated(&metric)?;
             return tauri::async_runtime::spawn_blocking(move || {
                 let snapshot = s.store.read().unwrap();
                 s.check_valid()?;
                 let issues = issue_index(&s, &snapshot);
-                let result = file_type_map::build(&snapshot, node_id, a, limit, &issues.1)?;
+                let result = file_type_map::build(&snapshot, node_id, limit, &issues.1)?;
                 s.check_valid()?;
                 Ok(result)
             })
@@ -1255,7 +1219,6 @@ async fn get_map(
     }
     let snapshot = s.store.read().unwrap();
     let issues = issue_index(&s, &snapshot);
-    let a = allocated(&metric)?;
     let root = snapshot.node(node_id).ok_or("Unknown node")?;
     let budget = limit.clamp(2, 5000);
     let mut nodes = vec![view(&root, &issues.1)?];
@@ -1265,7 +1228,7 @@ async fn get_map(
         if nodes.len() >= budget {
             break;
         }
-        let positive = sorted_children(&s, &snapshot, id, a)?;
+        let positive = sorted_children(&s, &snapshot, id)?;
         let remaining = budget - nodes.len();
         let take = if positive.len() > remaining {
             remaining.saturating_sub(1)
@@ -1280,14 +1243,9 @@ async fn get_map(
             }
         }
         if take < positive.len() {
-            let (logical, allocated) =
-                positive.iter().skip(take).fold((0u64, 0u64), |(l, a), i| {
-                    let n = snapshot.node(*i).unwrap();
-                    (
-                        l.saturating_add(n.logical_size),
-                        a.saturating_add(n.allocated_size),
-                    )
-                });
+            let allocated = positive.iter().skip(take).fold(0u64, |a, i| {
+                a.saturating_add(snapshot.node(*i).unwrap().allocated_size)
+            });
             nodes.push(NodeView {
                 id: aggregate_id,
                 parent_id: Some(id),
@@ -1295,7 +1253,6 @@ async fn get_map(
                 path: String::new(),
                 path_key: String::new(),
                 kind: "aggregate".into(),
-                logical_bytes: logical,
                 allocated_bytes: allocated,
                 raw_allocated_bytes: 0,
                 verified_clone: false,
@@ -1322,12 +1279,11 @@ async fn search_nodes(
     query: String,
     offset: usize,
     limit: usize,
-    metric: String,
     sort: Option<String>,
 ) -> Result<Page, String> {
     let s = state.scans.find(&scan_id)?;
     let order = sorting::Order::parse(sort.as_deref())?;
-    let query = filters::Query::search(query, metric, order)?;
+    let query = filters::Query::search(query, order)?;
     list_page(s, move |s, snapshot| {
         s.filters
             .lock()
@@ -1345,7 +1301,6 @@ async fn filter_nodes(
     category: String,
     min_bytes: Option<u64>,
     max_bytes: Option<u64>,
-    metric: String,
     offset: usize,
     limit: usize,
     sort: Option<String>,
@@ -1354,7 +1309,7 @@ async fn filter_nodes(
 ) -> Result<Page, String> {
     let s = state.scans.find(&scan_id)?;
     let order = sorting::Order::parse(sort.as_deref())?;
-    let query = filters::Query::with_order(query, category, min_bytes, max_bytes, metric, order)?
+    let query = filters::Query::with_order(query, category, min_bytes, max_bytes, order)?
         .with_file_type(extension, scope_id);
     list_page(s, move |s, snapshot| {
         s.filters

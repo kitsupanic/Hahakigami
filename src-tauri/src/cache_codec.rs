@@ -10,10 +10,10 @@ use std::{
     io::{Read, Write},
     os::unix::ffi::{OsStrExt, OsStringExt},
 };
-const MAGIC: &[u8; 8] = b"HAHCAC03";
+const MAGIC: &[u8; 8] = b"HAHCAC04";
 const FIELD_LIMIT: usize = 64 * 1024;
 const HEADER_LIMIT: usize = 1024 * 1024;
-const RECORD_BYTES: usize = 69;
+const RECORD_BYTES: usize = 61;
 pub(crate) const WRITE_BATCH: usize = 128 * 1024;
 #[derive(Serialize, Deserialize)]
 struct Header {
@@ -85,9 +85,8 @@ pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Resu
         for (i, value) in [
             n.identity.device,
             n.identity.inode,
-            n.logical_size,
             n.allocated_size,
-            n.own_logical_size,
+            n.length,
             n.own_allocated_size,
         ]
         .iter()
@@ -95,7 +94,7 @@ pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Resu
         {
             fixed[8 + i * 8..16 + i * 8].copy_from_slice(&value.to_le_bytes());
         }
-        fixed[56] = kind(&n.identity.kind)
+        fixed[48] = kind(&n.identity.kind)
             | (u8::from(n.is_directory) << 2)
             | (u8::from(n.hard_link) << 3)
             | (u8::from(n.excluded) << 4);
@@ -103,7 +102,7 @@ pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Resu
             .iter()
             .enumerate()
         {
-            fixed[57 + i * 4..61 + i * 4].copy_from_slice(&(*value as u32).to_le_bytes());
+            fixed[49 + i * 4..53 + i * 4].copy_from_slice(&(*value as u32).to_le_bytes());
         }
         w.write_all(&fixed).map_err(err)?;
         w.write_all(path).map_err(err)?;
@@ -197,9 +196,8 @@ fn read_nodes(r: &mut impl Read, node_limit: usize) -> Result<Snapshot, String> 
             inode: 0,
             kind: NodeKind::Other,
         },
-        logical_size: 0,
         allocated_size: 0,
-        own_logical_size: 0,
+        length: 0,
         own_allocated_size: 0,
         is_directory: false,
         hard_link: false,
@@ -212,16 +210,16 @@ fn read_nodes(r: &mut impl Read, node_limit: usize) -> Result<Snapshot, String> 
         r.read_exact(&mut fixed).map_err(err)?;
         let u32_at = |offset| u32::from_le_bytes(fixed[offset..offset + 4].try_into().unwrap());
         let u64_at = |offset| u64::from_le_bytes(fixed[offset..offset + 8].try_into().unwrap());
-        let flags = fixed[56];
+        let flags = fixed[48];
         if flags & !31 != 0
             || (flags & 4 != 0) != (flags & 3 == 0)
             || (flags & 8 != 0 && flags & 3 != 1)
         {
             return Err("Invalid cache node flags".into());
         }
-        let path_count = u32_at(57) as usize;
-        let name_count = u32_at(61) as usize;
-        let child_count = u32_at(65) as usize;
+        let path_count = u32_at(49) as usize;
+        let name_count = u32_at(53) as usize;
+        let child_count = u32_at(57) as usize;
         if path_count > FIELD_LIMIT || name_count > FIELD_LIMIT {
             return Err("Cache field exceeds limit".into());
         }
@@ -257,10 +255,9 @@ fn read_nodes(r: &mut impl Read, node_limit: usize) -> Result<Snapshot, String> 
                 _ => NodeKind::Other,
             },
         };
-        node.logical_size = u64_at(24);
-        node.allocated_size = u64_at(32);
-        node.own_logical_size = u64_at(40);
-        node.own_allocated_size = u64_at(48);
+        node.allocated_size = u64_at(24);
+        node.length = u64_at(32);
+        node.own_allocated_size = u64_at(40);
         node.is_directory = flags & 4 != 0;
         node.hard_link = flags & 8 != 0;
         node.excluded = flags & 16 != 0;
@@ -312,9 +309,14 @@ mod tests {
         let (_directory, snapshot, metadata) = fixture();
         let mut encoded = Vec::new();
         encode(&mut encoded, &snapshot, &metadata).unwrap();
-        let mut old = encoded.clone();
-        old[..8].copy_from_slice(b"HAHCAC02");
-        assert!(decode(&mut old.as_slice(), 8_000_000).is_err());
+        for magic in [b"HAHCAC02", b"HAHCAC03"] {
+            let mut old = encoded.clone();
+            old[..8].copy_from_slice(magic);
+            assert_eq!(
+                decode(&mut old.as_slice(), 8_000_000).unwrap_err(),
+                "Unsupported cache codec"
+            );
+        }
         let length = u32::from_le_bytes(encoded[8..12].try_into().unwrap()) as usize;
         let mut header: serde_json::Value =
             serde_json::from_slice(&encoded[12..12 + length]).unwrap();
@@ -335,7 +337,7 @@ mod tests {
         let (decoded, metadata) = decode(&mut b.as_slice(), 8_000_000).unwrap();
         let mut roundtrip = Vec::new();
         encode(&mut roundtrip, &decoded, &metadata).unwrap();
-        assert_eq!(roundtrip, b); // Existing HAHCAC03 bytes and field ordering.
+        assert_eq!(roundtrip, b); // Existing HAHCAC04 bytes and field ordering.
                                   // Snapshot's generic JSON cannot represent invalid UTF-8 paths; compare
                                   // native bytes independently, then compare every other serialized field.
         let normalized = |s: Snapshot| {
@@ -428,7 +430,7 @@ mod tests {
         }
     }
 
-    // Frozen HAHCAC03 writer oracle uses owned legacy DTOs, never the compact
+    // Frozen HAHCAC04 writer oracle uses owned legacy DTOs, never the compact
     // encoder or its fixed-record offsets, so decoder/encoder changes cannot
     // manufacture matching expectations from each other.
     fn legacy_cache_bytes(snapshot: &Snapshot, metadata: &ScanMetadata, nodes: &[Node]) -> Vec<u8> {
@@ -452,7 +454,7 @@ mod tests {
             descriptor_peak: snapshot.descriptor_peak,
         })
         .unwrap();
-        let mut bytes = b"HAHCAC03".to_vec();
+        let mut bytes = b"HAHCAC04".to_vec();
         bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header);
         bytes.extend_from_slice(&(nodes.len() as u32).to_le_bytes());
@@ -462,9 +464,8 @@ mod tests {
             for value in [
                 node.identity.device,
                 node.identity.inode,
-                node.logical_size,
                 node.allocated_size,
-                node.own_logical_size,
+                node.length,
                 node.own_allocated_size,
             ] {
                 bytes.extend_from_slice(&value.to_le_bytes());
@@ -526,12 +527,6 @@ mod tests {
         }
         for id in (0..nodes.len()).rev() {
             if nodes[id].is_directory {
-                nodes[id].logical_size = nodes[id]
-                    .children
-                    .iter()
-                    .fold(nodes[id].own_logical_size, |sum, &child| {
-                        sum.saturating_add(nodes[child as usize].logical_size)
-                    });
                 nodes[id].allocated_size = nodes[id]
                     .children
                     .iter()
@@ -541,7 +536,6 @@ mod tests {
             }
         }
         snapshot.stats.entries = nodes.len() as u64;
-        snapshot.stats.logical_bytes = nodes[0].logical_size;
         snapshot.stats.allocated_bytes = nodes[0].allocated_size;
         let expected = legacy_cache_bytes(&snapshot, &metadata, &nodes);
         let (decoded, decoded_metadata) = decode(&mut expected.as_slice(), 8_000_000).unwrap();
@@ -726,9 +720,9 @@ mod tests {
         for (offset, value) in [
             (8, (HEADER_LIMIT + 1) as u32),
             (count_offset, 8_000_001),
-            (record + 57, (FIELD_LIMIT + 1) as u32),
-            (record + 61, (FIELD_LIMIT + 1) as u32),
-            (record + 65, s.node_count() as u32),
+            (record + 49, (FIELD_LIMIT + 1) as u32),
+            (record + 53, (FIELD_LIMIT + 1) as u32),
+            (record + 57, s.node_count() as u32),
         ] {
             let mut bad = valid.clone();
             bad[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -750,9 +744,9 @@ mod tests {
             }
         }
         for (offset, value) in [
-            (record + 57, (FIELD_LIMIT + 1) as u32),
-            (record + 61, (FIELD_LIMIT + 1) as u32),
-            (record + 65, s.node_count() as u32),
+            (record + 49, (FIELD_LIMIT + 1) as u32),
+            (record + 53, (FIELD_LIMIT + 1) as u32),
+            (record + 57, s.node_count() as u32),
         ] {
             let mut bad = valid.clone();
             bad[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -764,17 +758,17 @@ mod tests {
             assert_eq!(reader.consumed, record + RECORD_BYTES);
         }
         let path_len =
-            u32::from_le_bytes(valid[record + 57..record + 61].try_into().unwrap()) as usize;
+            u32::from_le_bytes(valid[record + 49..record + 53].try_into().unwrap()) as usize;
         let mut bad_name = valid.clone();
         bad_name[record + RECORD_BYTES + path_len] = 0xff;
         assert!(decode(&mut bad_name.as_slice(), 8_000_000).is_err());
         let mut bad = valid.clone();
-        bad[record + 56] = 255;
+        bad[record + 48] = 255;
         assert!(decode(&mut bad.as_slice(), 8_000_000).is_err());
         for flags in [0, 12] {
             // directory bit absent, or hard-link directory
             let mut bad = valid.clone();
-            bad[record + 56] = flags;
+            bad[record + 48] = flags;
             assert!(decode(&mut bad.as_slice(), 8_000_000).is_err());
         }
         for len in [0, 7, 12, record, valid.len() - 1] {

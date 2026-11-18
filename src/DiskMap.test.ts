@@ -36,35 +36,30 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
       id: 0,
       parentId: null,
       name: "Disk",
-      logicalBytes: 2 * gib,
       allocatedBytes: gib,
     },
     {
       id: 1,
       parentId: 0,
       name: "Users",
-      logicalBytes: 1.86 * gib,
       allocatedBytes: 0.93 * gib,
     },
     {
       id: 2,
       parentId: 0,
       name: "Tiny",
-      logicalBytes: 0.02 * gib,
       allocatedBytes: 0.01 * gib,
     },
     {
       id: 3,
       parentId: 1,
       name: "Nested",
-      logicalBytes: 1.86 * gib,
       allocatedBytes: 0.93 * gib,
     },
     {
       id: 4,
       parentId: 0,
       name: "Applications",
-      logicalBytes: 0.12 * gib,
       allocatedBytes: 0.06 * gib,
     },
   ].map((node) => ({
@@ -82,7 +77,6 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
         | null = null;
       postMessage(data: {
         requestId: number;
-        metric: "allocated" | "logical";
         width: number;
         height: number;
       }) {
@@ -92,7 +86,6 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
             shapes: layout(
               nodes,
               0,
-              data.metric,
               data.width,
               data.height,
               "sunburst",
@@ -139,14 +132,10 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
-  const render = (
-    metric: "allocated" | "logical",
-    queuedPaths: { path: string }[] = [],
-  ) =>
+  const render = (queuedPaths: { path: string }[] = []) =>
     root.render(DiskMap, {
       nodes,
       rootId: 0,
-      metric,
       mode: "sunburst",
       selected: [],
       onSelect: vi.fn(),
@@ -154,7 +143,7 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
       queuedPaths,
     });
   try {
-    await act(() => render("allocated"));
+    await act(() => render());
     expect(element.querySelector(".map-center")?.textContent).toContain(
       "1.0 GiB",
     );
@@ -179,7 +168,7 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
     const [, appX, appY] = context.fillText.mock.calls.find(
       ([text]) => text === "Applications",
     )!;
-    const shapes = layout(nodes, 0, "allocated", 800, 800, "sunburst");
+    const shapes = layout(nodes, 0, 800, 800, "sunburst");
     for (const dx of [-1, 1])
       for (const dy of [-1, 1])
         expect(
@@ -198,20 +187,7 @@ it("shows the focused total and labels only roomy sunburst branches", async () =
       ),
     ).toBe(false);
     context.fillText.mockClear();
-    await act(() => render("logical"));
-    expect(element.querySelector(".map-center")?.textContent).toContain(
-      "2.0 GiB",
-    );
-    expect(element.querySelector(".map-center")?.textContent).toContain(
-      "Logical size",
-    );
-    expect(context.fillText).toHaveBeenCalledWith(
-      "1.9 GiB",
-      expect.any(Number),
-      expect.any(Number),
-    );
-    context.fillText.mockClear();
-    await act(() => render("logical", [{ path: "/Users" }]));
+    await act(() => render([{ path: "/Users" }]));
     expect(context.fillText.mock.calls.some(([text]) => text === "Users")).toBe(
       false,
     );
@@ -234,7 +210,6 @@ it("keeps the first click target through canvas resizing and outside controls, i
       name: `item-${id}`,
       path: `/item-${id}`,
       kind: kind as NodeView["kind"],
-      logicalBytes: 1,
       allocatedBytes: 1,
       childrenCount: 0,
       incomplete: false,
@@ -329,14 +304,12 @@ it("keeps the first click target through canvas resizing and outside controls, i
   };
   let scanId = "scan-a",
     rootId = 0;
-  let metric: "allocated" | "logical" = "allocated";
   let mode: "treemap" | "sunburst" = "treemap";
   const render = () =>
     root.render(DiskMap, {
       nodes,
       rootId,
       scanId,
-      metric,
       mode,
       selected: [],
       onSelect,
@@ -443,9 +416,6 @@ it("keeps the first click target through canvas resizing and outside controls, i
         rootId = 9;
       },
       () => {
-        metric = "logical";
-      },
-      () => {
         mode = "sunburst";
       },
       () => {
@@ -465,7 +435,6 @@ it("keeps the first click target through canvas resizing and outside controls, i
     ];
     for (const change of changes) {
       rootId = 0;
-      metric = "allocated";
       mode = "treemap";
       nodes = nodes
         .filter((n) => n.id !== 1)
@@ -475,7 +444,6 @@ it("keeps the first click target through canvas resizing and outside controls, i
           name: "Folder",
           path: "/folder",
           kind: "directory",
-          logicalBytes: 1,
           allocatedBytes: 1,
           childrenCount: 0,
           incomplete: false,
@@ -523,7 +491,6 @@ it("hits once per pointer event on a full map, preserves actions, and refreshes 
     name: `item-${id}`,
     path: `/item-${id}`,
     kind: id === 4999 ? "directory" : id === 4998 ? "aggregate" : "file",
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 0,
     incomplete: false,
@@ -580,7 +547,6 @@ it("hits once per pointer event on a full map, preserves actions, and refreshes 
     root.render(DiskMap, {
       nodes: nodes,
       rootId: 0,
-      metric: "allocated",
       mode: "treemap",
       selected: [],
       onSelect: onSelect,
@@ -648,7 +614,7 @@ it("hits once per pointer event on a full map, preserves actions, and refreshes 
   }
 });
 
-it("uses contrasting dark labels for light root branches and descendants across metric repaints", async () => {
+it("uses contrasting dark labels for light root branches and descendants across repaints", async () => {
   const nodes: NodeView[] = [
     {
       id: 0,
@@ -656,7 +622,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Root",
       kind: "directory",
       allocatedBytes: 0,
-      logicalBytes: 0,
     },
     {
       id: 1,
@@ -664,7 +629,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Large folder",
       kind: "directory",
       allocatedBytes: 56 * 1024 ** 3,
-      logicalBytes: 80 * 1024 ** 3,
     },
     {
       id: 2,
@@ -672,7 +636,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Short block",
       kind: "file",
       allocatedBytes: 2 * 1024 ** 3,
-      logicalBytes: 3 * 1024 ** 3,
     },
     {
       id: 3,
@@ -680,7 +643,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Narrow block",
       kind: "file",
       allocatedBytes: 1023.9 * 1024 ** 4,
-      logicalBytes: 1023.9 * 1024 ** 4,
     },
     {
       id: 4,
@@ -688,7 +650,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Expanded parent",
       kind: "directory",
       allocatedBytes: 5 * 1024 ** 3,
-      logicalBytes: 6 * 1024 ** 3,
     },
     {
       id: 5,
@@ -696,7 +657,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Tiny child",
       kind: "file",
       allocatedBytes: 5 * 1024 ** 3,
-      logicalBytes: 6 * 1024 ** 3,
     },
     {
       id: 6,
@@ -704,7 +664,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Library",
       kind: "directory",
       allocatedBytes: 92.4 * 1024 ** 3,
-      logicalBytes: 98.1 * 1024 ** 3,
     },
     {
       id: 7,
@@ -712,7 +671,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Application Support",
       kind: "directory",
       allocatedBytes: 2 * 1024 ** 3,
-      logicalBytes: 3 * 1024 ** 3,
     },
     {
       id: 8,
@@ -720,7 +678,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Logs",
       kind: "file",
       allocatedBytes: 1024 ** 3,
-      logicalBytes: 2 * 1024 ** 3,
     },
     {
       id: 9,
@@ -728,7 +685,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Caches",
       kind: "directory",
       allocatedBytes: 4 * 1024 ** 3,
-      logicalBytes: 5 * 1024 ** 3,
     },
     {
       id: 10,
@@ -736,7 +692,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Roomy file",
       kind: "file",
       allocatedBytes: 3 * 1024 ** 3,
-      logicalBytes: 4 * 1024 ** 3,
     },
     {
       id: 11,
@@ -744,7 +699,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Crowded short file",
       kind: "file",
       allocatedBytes: 0.5 * 1024 ** 3,
-      logicalBytes: 0.75 * 1024 ** 3,
     },
     {
       id: 12,
@@ -752,7 +706,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Deep folder",
       kind: "directory",
       allocatedBytes: 7 * 1024 ** 3,
-      logicalBytes: 8 * 1024 ** 3,
     },
     {
       id: 14,
@@ -760,7 +713,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Other",
       kind: "file",
       allocatedBytes: 1024 ** 3,
-      logicalBytes: 1024 ** 3,
     },
     {
       id: 13,
@@ -768,7 +720,6 @@ it("uses contrasting dark labels for light root branches and descendants across 
       name: "Omitted child",
       kind: "file",
       allocatedBytes: 7 * 1024 ** 3,
-      logicalBytes: 8 * 1024 ** 3,
     },
   ].map((n) => ({
     ...n,
@@ -859,16 +810,12 @@ it("uses contrasting dark labels for light root branches and descendants across 
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
-  const render = async (
-    metric: "allocated" | "logical",
-    mode: "treemap" | "sunburst" = "treemap",
-  ) => {
+  const render = async (mode: "treemap" | "sunburst" = "treemap") => {
     drawn.length = 0;
     await act(async () =>
       root.render(DiskMap, {
         nodes: nodes,
         rootId: 0,
-        metric: metric,
         mode: mode,
         selected: [4],
         onSelect: vi.fn(),
@@ -877,7 +824,7 @@ it("uses contrasting dark labels for light root branches and descendants across 
     );
   };
   try {
-    await render("allocated");
+    await render();
     expect(drawn).toContainEqual({
       text: "Large folder",
       font: `16px ${mapFontFamily}`,
@@ -966,10 +913,7 @@ it("uses contrasting dark labels for light root branches and descendants across 
     expect(drawn.some((d) => /2\.0 GiB|1,?023\.9 TiB/.test(d.text))).toBe(
       false,
     );
-    await render("logical");
-    expect(drawn.some((d) => d.text === "80.0 GiB")).toBe(true);
-    expect(drawn.some((d) => d.text === "56.0 GiB")).toBe(false);
-    await render("logical", "sunburst");
+    await render("sunburst");
     expect(drawn).toEqual([]);
   } finally {
     await act(async () => root.unmount());
@@ -1041,7 +985,6 @@ it("reports drawing only for the current completed layout response", async () =>
       name: "root",
       path: "/root",
       kind: "directory",
-      logicalBytes: 0,
       allocatedBytes: 0,
       childrenCount: 0,
       incomplete: false,
@@ -1051,7 +994,6 @@ it("reports drawing only for the current completed layout response", async () =>
     root.render(DiskMap, {
       nodes: nodes,
       rootId: 0,
-      metric: "allocated",
       mode,
       selected,
       onSelect: () => {},
@@ -1174,7 +1116,6 @@ it("reuses the canvas backing store on redraws and resets the transform after pi
     root.render(DiskMap, {
       nodes,
       rootId: 0,
-      metric: "allocated",
       mode: "treemap",
       selected,
       onSelect: () => {},
@@ -1265,7 +1206,6 @@ it("repaints persistent queue markers independently of selection and layout in b
     { id: 3, parentId: null, name: "Other", path: "/other", kind: "file" },
   ].map((n) => ({
     ...n,
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 0,
     incomplete: false,
@@ -1343,7 +1283,6 @@ it("repaints persistent queue markers independently of selection and layout in b
     root.render(DiskMap, {
       nodes,
       rootId: 1,
-      metric: "allocated",
       mode,
       selected,
       queuedPaths: queuedPaths.map((path) => ({ path })),
@@ -1444,7 +1383,7 @@ it("repaints persistent queue markers independently of selection and layout in b
   }
 });
 
-it("keeps the compact legend aligned with focused children, their map colors, and the selected metric", async () => {
+it("keeps the compact legend aligned with focused children, their map colors, and on-disk sizes", async () => {
   vi.stubGlobal(
     "Worker",
     class {
@@ -1465,28 +1404,18 @@ it("keeps the compact legend aligned with focused children, their map colors, an
       parentId: null,
       name: "Root",
       allocatedBytes: 1000,
-      logicalBytes: 2000,
     },
     {
       id: 1,
       parentId: 0,
       name: "Users",
       allocatedBytes: 500,
-      logicalBytes: 700,
-    },
-    {
-      id: 2,
-      parentId: 0,
-      name: "Logical only",
-      allocatedBytes: 0,
-      logicalBytes: 800,
     },
     {
       id: 3,
       parentId: 0,
       name: "Small items",
       allocatedBytes: 100,
-      logicalBytes: 200,
       kind: "aggregate",
     },
     {
@@ -1494,9 +1423,8 @@ it("keeps the compact legend aligned with focused children, their map colors, an
       parentId: 1,
       name: "Documents",
       allocatedBytes: 300,
-      logicalBytes: 400,
     },
-    { id: 5, parentId: 0, name: "Empty", allocatedBytes: 0, logicalBytes: 0 },
+    { id: 5, parentId: 0, name: "Empty", allocatedBytes: 0 },
   ].map((node) => ({
     kind: "directory",
     path: `/${node.name}`,
@@ -1505,7 +1433,6 @@ it("keeps the compact legend aligned with focused children, their map colors, an
     ...node,
   })) as NodeView[];
   let rootId = 0;
-  let metric: "allocated" | "logical" = "allocated";
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
@@ -1513,7 +1440,6 @@ it("keeps the compact legend aligned with focused children, their map colors, an
     root.render(DiskMap, {
       nodes,
       rootId,
-      metric,
       mode: "treemap",
       selected: [],
       onSelect: vi.fn(),
@@ -1537,21 +1463,15 @@ it("keeps the compact legend aligned with focused children, their map colors, an
       "Treemap disk usage map",
     );
     expect(element.querySelector(".map-help")).toBeNull();
-    metric = "logical";
-    await act(async () => render());
-    expect(
-      entries().map(
-        (entry) => entry.querySelector(".legend-name")?.textContent,
-      ),
-    ).toEqual(["Logical only", "Users", "Small items"]);
-    expect(entries()[1].textContent).toContain("700 B");
     rootId = 1;
     await act(async () => render());
     expect(entries()).toHaveLength(1);
     expect(entries()[0].textContent).toContain("Documents");
-    expect(entries()[0].textContent).toContain("400 B");
+    expect(entries()[0].textContent).toContain("300 B");
     nodes = nodes.map((node) =>
-      node.id === 4 ? { ...node, name: "Updated", logicalBytes: 600 } : node,
+      node.id === 4
+        ? { ...node, name: "Updated", allocatedBytes: 600 }
+        : node,
     );
     await act(async () => render());
     expect(entries()[0].textContent).toContain("Updated");
@@ -1564,15 +1484,14 @@ it("keeps the compact legend aligned with focused children, their map colors, an
         id: 10 + i,
         name: `Extra ${i}`,
         allocatedBytes: 10,
-        logicalBytes: 10,
       })),
     ];
     await act(async () => render());
     expect(entries()).toHaveLength(6);
     const more = element.querySelector<HTMLButtonElement>(".legend-more")!;
-    expect(more.textContent).toContain("+4 more");
+    expect(more.textContent).toContain("+3 more");
     await act(async () => more.click());
-    expect(entries()).toHaveLength(10);
+    expect(entries()).toHaveLength(9);
     expect(more.getAttribute("aria-expanded")).toBe("true");
     const legend = element.querySelector(".map-legend")!;
     const folderSizes = legend.querySelector<HTMLUListElement>("ul")!;
@@ -1616,7 +1535,6 @@ async function linkedMapFixture(typedGroups = false) {
   ].map((node) => ({
     ...node,
     allocatedBytes: 1024,
-    logicalBytes: 2048,
     childrenCount: 0,
     incomplete: false,
   })) as NodeView[];
@@ -1731,7 +1649,6 @@ async function linkedMapFixture(typedGroups = false) {
   let hovered: HoverTarget | null = null;
   let hoverEpoch = 0;
   let mode: "treemap" | "sunburst" = "treemap";
-  let metric: "allocated" | "logical" = "allocated";
   let typeProps: {
     colorMode?: "folder" | "fileType";
     highlightedFileType?: string | null;
@@ -1744,7 +1661,6 @@ async function linkedMapFixture(typedGroups = false) {
       ...typeProps,
       nodes,
       rootId: 0,
-      metric,
       mode,
       selected: [3],
       queuedPaths: [nodes[3]],
@@ -1801,10 +1717,6 @@ async function linkedMapFixture(typedGroups = false) {
     },
     mode: async (value: typeof mode) => {
       mode = value;
-      await act(async () => render());
-    },
-    metric: async (value: typeof metric) => {
-      metric = value;
       await act(async () => render());
     },
     cleanup: async () => {
@@ -1903,10 +1815,6 @@ it("clears owned hover and suppresses hits and external outlines until the curre
     expect(f.element.textContent).toContain("report.txt · 1 KiB");
     expect(f.strokes).toContainEqual({ color: "#ffc66d", dash: [6, 3] });
     expect(f.context.arc).toHaveBeenCalled();
-    await f.metric("logical");
-    expect(f.element.querySelector(".map-help")).toBeNull();
-    await f.complete();
-    expect(f.element.textContent).toContain("report.txt · 2 KiB");
     await f.mode("treemap");
     await f.complete();
     await f.pointer("mousemove");
@@ -1990,7 +1898,6 @@ it.each(["treemap", "sunburst"] as const)(
     ].map((row) => ({
       name: row.path.split("/").pop() || "/",
       kind: "directory",
-      logicalBytes: row.allocatedBytes,
       childrenCount: 0,
       incomplete: false,
       ...row,
@@ -2036,7 +1943,6 @@ it.each(["treemap", "sunburst"] as const)(
           delivered = layout(
             nodes,
             100,
-            "allocated",
             data.width,
             data.height,
             data.mode,
@@ -2063,7 +1969,6 @@ it.each(["treemap", "sunburst"] as const)(
         root.render(DiskMap, {
           nodes,
           rootId: 100,
-          metric: "allocated",
           mode,
           selected: [],
           onSelect: vi.fn(),
@@ -2350,12 +2255,6 @@ it.each(["treemap", "sunburst"] as const)(
       const empty = f.shapes.find((s) => s.id === 7)!;
       await f.pointer("click", empty.x + 20, 30);
       expect(onFileTypeSelect).toHaveBeenLastCalledWith("");
-      await f.metric("logical");
-      await f.complete();
-      await f.pointer("mousemove", group.x + 20, 30);
-      expect(f.element.querySelector(".map-caption")?.textContent).toContain(
-        "2 KiB",
-      );
     } finally {
       await f.cleanup();
     }
@@ -2528,7 +2427,7 @@ it.each(["folder", "fileType"] as const)(
       expect(f.onOpen).toHaveBeenCalledTimes(4);
       // Context changes still invalidate a captured higher-count gesture.
       await dispatch(13);
-      await f.metric("logical");
+      await f.mode("sunburst");
       await dispatch(14);
       await dispatch(14, "dblclick");
       expect(f.onOpen).toHaveBeenCalledTimes(4);
@@ -2550,7 +2449,6 @@ it("exposes the map as an image with a live summary, a permanent queue key and a
   ].map(({ size, ...n }) => ({
     ...n,
     path: `/${n.name}`,
-    logicalBytes: size * gib,
     allocatedBytes: size * gib,
     childrenCount: 0,
     incomplete: false,
@@ -2620,7 +2518,6 @@ it("exposes the map as an image with a live summary, a permanent queue key and a
     root.render(DiskMap, {
       nodes,
       rootId,
-      metric: "allocated",
       mode: "treemap",
       selected,
       scanComplete,

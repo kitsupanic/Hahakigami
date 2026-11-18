@@ -126,7 +126,7 @@ pub(crate) fn open(path: &Path, expected: &Identity) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 #[cfg(target_os = "macos")]
-fn file_logical_size(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<u64> {
+fn file_length(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<u64> {
     let mut list: libc::attrlist = unsafe { std::mem::zeroed() };
     list.bitmapcount = 5;
     list.commonattr = libc::ATTR_CMN_RETURNED_ATTRS
@@ -142,7 +142,7 @@ fn file_logical_size(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Resu
         device: i32,
         kind: u32,
         inode: u64,
-        logical: i64,
+        file_length: i64,
     }
     let mut attrs: Attributes = unsafe { std::mem::zeroed() };
     syscall(|| unsafe {
@@ -164,13 +164,13 @@ fn file_logical_size(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Resu
         || attrs.device as u64 != expected.device
         || attrs.inode != expected.inode
         || attrs.kind != 1 // VREG
-        || attrs.logical < 0
+        || attrs.file_length < 0
     {
         return Err(io::Error::other(
             "file attributes changed since enumeration",
         ));
     }
-    Ok(attrs.logical as u64)
+    Ok(attrs.file_length as u64)
 }
 pub(crate) fn entry_at(fd: &OwnedFd, path: &Path, name: &std::ffi::OsStr) -> io::Result<Entry> {
     let name_c = cstr(name)?;
@@ -185,17 +185,17 @@ pub(crate) fn entry_at(fd: &OwnedFd, path: &Path, name: &std::ffi::OsStr) -> io:
     })?;
     let identity = stat_identity(&stat);
     let directory = identity.kind == NodeKind::Directory;
-    let logical = if directory {
+    let length = if directory {
         0
     } else {
         stat.st_size.max(0) as u64
     };
     #[cfg(target_os = "macos")]
-    let logical = if identity.kind == NodeKind::File {
+    let length = if identity.kind == NodeKind::File {
         // Match Bulk's total-fork sizes without opening file contents.
-        file_logical_size(fd, &name_c, &identity)?
+        file_length(fd, &name_c, &identity)?
     } else {
-        logical
+        length
     };
     Ok(Entry {
         clone_checked: false,
@@ -204,7 +204,7 @@ pub(crate) fn entry_at(fd: &OwnedFd, path: &Path, name: &std::ffi::OsStr) -> io:
         device: identity.device,
         inode: identity.inode,
         kind: identity.kind,
-        logical,
+        length,
         allocated: if directory {
             0
         } else {
@@ -536,12 +536,12 @@ mod tests {
         std::fs::rename(&p, &renamed).unwrap();
         std::fs::create_dir(&p).unwrap();
         std::fs::write(p.join("file"), b"replacement").unwrap();
-        assert_eq!(file_logical_size(&fd, c"file", &expected).unwrap(), 12);
+        assert_eq!(file_length(&fd, c"file", &expected).unwrap(), 12);
         let mut wrong = expected.clone();
         wrong.inode = wrong.inode.wrapping_add(1);
-        assert!(file_logical_size(&fd, c"file", &wrong).is_err());
-        assert!(file_logical_size(&fd, c"link", &expected).is_err());
-        assert!(file_logical_size(&fd, c"missing", &expected).is_err());
+        assert!(file_length(&fd, c"file", &wrong).is_err());
+        assert!(file_length(&fd, c"link", &expected).is_err());
+        assert!(file_length(&fd, c"missing", &expected).is_err());
         std::fs::remove_dir_all(p).unwrap();
         std::fs::remove_dir_all(renamed).unwrap();
     }

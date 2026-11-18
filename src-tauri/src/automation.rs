@@ -212,9 +212,7 @@ impl Service {
         self.with_caches(|snapshot, caches| {
             let (ids, total) = page_of(offset, limit, |offset, limit| {
                 let order = sorting::Order::SizeDescending;
-                caches
-                    .sorts
-                    .page(snapshot, node_id, order, true, offset, limit)
+                caches.sorts.page(snapshot, node_id, order, offset, limit)
             })?;
             node_page(snapshot, &ids, total, offset, limit)
         })
@@ -225,11 +223,7 @@ impl Service {
         if query.trim().is_empty() || query.len() > 1024 {
             return Err("Filename query must contain 1 to 1024 bytes.".into());
         }
-        let query = filters::Query::search(
-            query.into(),
-            "allocated".into(),
-            sorting::Order::SizeDescending,
-        )?;
+        let query = filters::Query::search(query.into(), sorting::Order::SizeDescending)?;
         self.with_caches(|snapshot, caches| {
             let (ids, total) = page_of(offset, limit, |offset, limit| {
                 caches.filters.page(snapshot, &query, offset, limit)
@@ -298,7 +292,7 @@ fn coverage(snapshot: &Snapshot) -> Value {
 
 fn summary(snapshot: &Snapshot) -> Value {
     json!({"state": state(snapshot), "rootPath": snapshot.root.to_string_lossy(), "pathKey": crate::path_key(&snapshot.root),
-        "rootId": snapshot.node(0).map(|node| node.id), "logicalBytes": snapshot.stats.logical_bytes, "allocatedBytes": snapshot.stats.allocated_bytes,
+        "rootId": snapshot.node(0).map(|node| node.id), "allocatedBytes": snapshot.stats.allocated_bytes,
         "entries": snapshot.stats.entries, "errors": snapshot.stats.errors, "excluded": snapshot.stats.excluded, "incomplete": snapshot.stats.incomplete,
         "stats": snapshot.stats, "accounting": snapshot.accounting, "coverage": coverage(snapshot)})
 }

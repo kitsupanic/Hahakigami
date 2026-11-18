@@ -19,7 +19,6 @@ const node = (
   path,
   name: path.split("/").pop() || "/",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 0,
   incomplete: false,
@@ -32,7 +31,7 @@ const tree = [
   node(8, 2, "/foo/nested"),
   node(9, 8, "/foo/nested/file", { kind: "file" }),
   node(10, 2, "/foo/other"),
-  node(11, 0, "/empty", { logicalBytes: 0, allocatedBytes: 0 }),
+  node(11, 0, "/empty", { allocatedBytes: 0 }),
   node(-1, 0, "/remaining", { kind: "aggregate" }),
 ];
 
@@ -40,8 +39,8 @@ describe("branch colors", () => {
   it("ranks arbitrary native IDs by allocated size and resolves ties independently of input order", () => {
     const rows = [
       node(800, null, "/"),
-      node(102, 800, "/largest", { allocatedBytes: 900, logicalBytes: 1 }),
-      node(4, 800, "/second", { allocatedBytes: 500, logicalBytes: 5000 }),
+      node(102, 800, "/largest", { allocatedBytes: 900 }),
+      node(4, 800, "/second", { allocatedBytes: 500 }),
       node(90, 800, "/third", { allocatedBytes: 300 }),
       node(8, 800, "/fourth", { allocatedBytes: 200 }),
       node(23, 800, "/rose", { allocatedBytes: 100 }),
@@ -57,12 +56,6 @@ describe("branch colors", () => {
     const color = createBranchColorResolver(rows, 800);
     expect(color(rows[8])).toBe(usageColors[0]);
     expect(color(rows[7])).toBe(neutralBranchColor);
-    expect(
-      createBranchPalette(
-        rows.map((row) => ({ ...row, logicalBytes: row.logicalBytes * 2 })),
-        800,
-      ),
-    ).toEqual(palette);
     expect([...createBranchPalette(rows, 102)]).toEqual([[7, usageColors[0]]]);
     // Missing direct branches cannot be safely ranked from lazy rows alone.
     expect(color(node(777, 800, "/omitted"))).toBe(neutralBranchColor);
@@ -76,7 +69,6 @@ describe("branch colors", () => {
         for (const shape of layout(
           tree,
           rootId,
-          "allocated",
           1000,
           800,
           mode,

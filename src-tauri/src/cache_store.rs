@@ -33,7 +33,6 @@ pub(crate) struct Row {
     // Last write or refresh: the recency order.
     pub used_at_ms: u64,
     pub entries: u64,
-    pub logical_bytes: u64,
     pub allocated_bytes: u64,
     pub incomplete: bool,
     pub errors: u64,
@@ -211,7 +210,6 @@ impl Store {
             completed_at_ms: m.completed_at_ms,
             used_at_ms: now_ms()?,
             entries: s.stats.entries,
-            logical_bytes: s.stats.logical_bytes,
             allocated_bytes: s.stats.allocated_bytes,
             incomplete: s.stats.incomplete,
             errors: s.stats.errors,
@@ -400,7 +398,6 @@ pub(crate) fn validate(s: &Snapshot, limit: usize) -> Result<(), String> {
     let mut seen = vec![false; s.node_count()];
     seen[0] = true;
     let mut directories = 0u64;
-    let mut logical = vec![0u64; s.node_count()];
     let ordinary_paths = cfg!(unix) && !s.has_path_overrides();
     if ordinary_paths && s.root.as_os_str().as_bytes().contains(&0) {
         return Err("Invalid cache node".into());
@@ -450,7 +447,6 @@ pub(crate) fn validate(s: &Snapshot, limit: usize) -> Result<(), String> {
             }
             seen[c] = true;
         }
-        logical[i] = n.own_logical_size;
     }
     if seen.iter().any(|s| !*s) {
         return Err("Unreachable cache node".into());
@@ -468,17 +464,15 @@ pub(crate) fn validate(s: &Snapshot, limit: usize) -> Result<(), String> {
 
     for i in (0..s.node_count()).rev() {
         let n = s.node(i as u32).ok_or("Invalid node")?;
-        if logical[i] != n.logical_size || allocated[i] != n.allocated_size {
+        if allocated[i] != n.allocated_size {
             return Err("Invalid cache size counters".into());
         }
         if let Some(p) = n.parent {
-            logical[p as usize] = logical[p as usize].saturating_add(logical[i]);
             allocated[p as usize] = allocated[p as usize].saturating_add(allocated[i]);
         }
     }
     if s.stats.entries != s.node_count() as u64
         || s.stats.directories != directories
-        || s.stats.logical_bytes != root.logical_size
         || s.stats.allocated_bytes != root.allocated_size
         || s.stats.errors < s.errors.len() as u64
         || s.stats.excluded < s.exclusions.len() as u64
@@ -746,7 +740,6 @@ mod tests {
         }
         let mut seen = vec![false; nodes.len()];
         seen[0] = true;
-        let mut logical = vec![0u64; nodes.len()];
         let mut allocated = vec![0u64; nodes.len()];
         let mut directories = 0u64;
         let mut owners = std::collections::HashMap::new();
@@ -789,7 +782,6 @@ mod tests {
                 }
                 seen[child] = true;
             }
-            logical[i] = node.own_logical_size;
             allocated[i] = if node.hard_link
                 && owners.get(&(node.identity.device, node.identity.inode)) != Some(&i)
             {
@@ -802,18 +794,16 @@ mod tests {
             return false;
         }
         for i in (0..nodes.len()).rev() {
-            if logical[i] != nodes[i].logical_size || allocated[i] != nodes[i].allocated_size {
+            if allocated[i] != nodes[i].allocated_size {
                 return false;
             }
             if let Some(parent) = nodes[i].parent {
-                logical[parent as usize] = logical[parent as usize].saturating_add(logical[i]);
                 allocated[parent as usize] =
                     allocated[parent as usize].saturating_add(allocated[i]);
             }
         }
         s.stats.entries == nodes.len() as u64
             && s.stats.directories == directories
-            && s.stats.logical_bytes == root.logical_size
             && s.stats.allocated_bytes == root.allocated_size
             && s.stats.errors >= s.errors.len() as u64
             && s.stats.excluded >= s.exclusions.len() as u64
@@ -854,9 +844,8 @@ mod tests {
                             disk_scan::NodeKind::File
                         },
                     },
-                    logical_size: size,
                     allocated_size: size,
-                    own_logical_size: if directory { 0 } else { 4 },
+                    length: if directory { 0 } else { 4 },
                     own_allocated_size: if directory { 0 } else { 4 },
                     is_directory: directory,
                     hard_link: false,
@@ -874,7 +863,6 @@ mod tests {
         snapshot.state = ScanState::Completed;
         snapshot.stats.entries = nodes.len() as u64;
         snapshot.stats.directories = 3;
-        snapshot.stats.logical_bytes = nodes[0].logical_size;
         snapshot.stats.allocated_bytes = nodes[0].allocated_size;
         snapshot
     }
@@ -956,9 +944,7 @@ mod tests {
         assert_original_validation_parity(&snapshot, &moved, false);
         moved[1].children = vec![3];
         moved[2].children = vec![4, 5];
-        moved[1].logical_size = 4;
         moved[1].allocated_size = 4;
-        moved[2].logical_size = 8;
         moved[2].allocated_size = 8;
         let snapshot = pack_oracle_nodes(root, &moved);
         assert_original_validation_parity(&snapshot, &moved, true);

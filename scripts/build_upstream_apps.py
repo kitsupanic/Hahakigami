@@ -123,7 +123,7 @@ nonisolated enum BenchmarkRun {
     @MainActor static func waitForCache() async -> (Bool, Double, String?) {
         return (true, 0, nil) // CACHE_WAIT_IMPLEMENTATION
     }
-    @MainActor static func complete(entries: Int, allocated: Int64, errors: Int, logical: Int64? = nil, contentID: UUID? = nil) {
+    @MainActor static func complete(entries: Int, allocated: Int64, errors: Int, contentID: UUID? = nil) {
         guard start != 0, !finished else { return }
         finished = true
         finalContentID = contentID
@@ -133,9 +133,8 @@ nonisolated enum BenchmarkRun {
             let (published, waitMS, cacheError) = await waitForCache()
             var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
             let elapsed = Double(drawTimestamp - start) / 1_000_000
-            let logicalBytes: Any = logical.map { $0 as Any } ?? NSNull()
             let report: [String: Any] = ["schema_version": 2, "mode": mode, "cache": "production_enabled_private_state", "elapsed_ms": elapsed, "draw_elapsed_ms": elapsed,
-                "launch_ms": launchMS, "launch_clock_origin": "app_initializer_entry_not_process_exec", "entries": entries, "allocated_bytes": allocated, "logical_bytes": logicalBytes,
+                "launch_ms": launchMS, "launch_clock_origin": "app_initializer_entry_not_process_exec", "entries": entries, "allocated_bytes": allocated,
                 "errors": errors, "peak_rss_bytes": usage.ru_maxrss, "complete": errors == 0 && published,
                 "cache_publication_complete": published, "cache_publication_wait_ms": waitMS, "cache_publication_error": cacheError.map { $0 as Any } ?? NSNull(),
                 "rendered": true, "render_barrier": "final_results_canvas_draw_cpu_only",
@@ -272,7 +271,7 @@ def stage(name, source, output, state):
                 }
                 .onReceive(appModel.scanState.$snapshot) { snapshot in
                     if let snapshot, snapshot.isComplete {
-                        BenchmarkRun.complete(entries: snapshot.treeStore.nodeCount, allocated: snapshot.root.allocatedSize, errors: snapshot.scanWarnings.count, logical: snapshot.root.logicalSize, contentID: snapshot.treeStore.contentID)
+                        BenchmarkRun.complete(entries: snapshot.treeStore.nodeCount, allocated: snapshot.root.allocatedSize, errors: snapshot.scanWarnings.count, contentID: snapshot.treeStore.contentID)
                     }
                 }
                 .frame""")

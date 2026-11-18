@@ -9,23 +9,20 @@
     filterActive,
     type ExplorerFilter,
   } from "./filterTypes";
-  import type { Metric } from "./types";
   import { fileTypeLabel } from "./fileTypes";
   import "./filter.css";
 
   interface ActiveFiltersProps {
     value: ExplorerFilter;
-    metric: Metric;
     disabled?: boolean;
     onChange: (value: ExplorerFilter) => void;
   }
   let {
     value,
-    metric,
     disabled = false,
     onChange,
   }: ActiveFiltersProps = $props();
-  let sizeLabel = $derived(sizeFilterLabel(value, metric));
+  let sizeLabel = $derived(sizeFilterLabel(value));
 </script>
 
 {#if filterActive(value)}
@@ -61,7 +58,7 @@
         class="active-filter-chip"
         {disabled}
         aria-label={`Remove size filter: ${sizeLabel}`}
-        title={sizeFilterDescription(value, metric)}
+        title={sizeFilterDescription(value)}
         onclick={() => onChange({ ...value, minBytes: null, maxBytes: null })}
         ><span>{sizeLabel}</span><span aria-hidden="true">×</span></button
       >

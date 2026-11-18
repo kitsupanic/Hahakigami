@@ -35,7 +35,7 @@ struct Benchmark {
             "comparator": "Radix", "mode": "engine", "cache": "none",
             "elapsed_ms": elapsed, "peak_rss_bytes": usage.ru_maxrss,
             "entries": snapshot.treeStore.nodeCount,
-            "allocated_bytes": snapshot.root.allocatedSize, "logical_bytes": snapshot.root.logicalSize,
+            "allocated_bytes": snapshot.root.allocatedSize,
             "errors": snapshot.scanWarnings.count, "complete": snapshot.isComplete,
             "workers_measurement": "configured_traversal_limit_not_observed_active_workers",
             "workers": ScanEngine.shallowRelistWorkerLimit(for: options),
@@ -74,7 +74,7 @@ struct Benchmark {
             }
             try write(["type": "node", "path_base64": Data(relative.utf8).base64EncodedString(),
                        "kind": node.isSynthetic ? "synthetic" : (node.isSymbolicLink ? "symlink" : (node.isDirectory ? "directory" : "file")),
-                       "logical_bytes": node.logicalSize, "allocated_bytes": node.allocatedSize,
+                       "allocated_bytes": node.allocatedSize,
                        "size_scope": node.isDirectory ? "aggregate" : "own", "identity": identity,
                        "summary": node.isAutoSummarized || (node.isPackage && snapshot.treeStore.children(of: id).isEmpty)])
         }

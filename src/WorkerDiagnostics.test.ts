@@ -30,7 +30,6 @@ const summary = (state: ScanSummary["state"] = "completed"): ScanSummary => ({
   entries: 11,
   errors: 0,
   elapsedMs: 10200,
-  logicalBytes: 1234,
   allocatedBytes: 1024,
   finalizationUs: 200_000,
   descriptorLimit: 192,
