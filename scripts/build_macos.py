@@ -124,7 +124,8 @@ def main():
             }
         command += ['--config', json.dumps(overrides)]
         subprocess.run(command, cwd=ROOT, env=environment, check=True)
-        bundle = (output / 'target' if output else ROOT / 'target') / 'release/bundle/macos' / f'{name}.app'
+        # Cargo honours CARGO_TARGET_DIR (relative to cwd=ROOT), so verify the bundle it just built.
+        bundle = ROOT / environment.get('CARGO_TARGET_DIR', 'target') / 'release/bundle/macos' / f'{name}.app'
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(bundle)], check=True)
         display = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', '--requirements', '-', str(bundle)],
                                  check=True, capture_output=True, text=True)

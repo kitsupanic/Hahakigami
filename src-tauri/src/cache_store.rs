@@ -106,7 +106,7 @@ impl Store {
         serde_json::from_reader(BufReader::new(open(path).map_err(err)?.take(1024 * 1024)))
             .map_err(err)
     }
-    fn atomic(
+    pub(crate) fn atomic(
         &self,
         path: &Path,
         write: impl FnOnce(File) -> Result<(), String>,

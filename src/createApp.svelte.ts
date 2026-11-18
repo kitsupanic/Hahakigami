@@ -1594,6 +1594,7 @@ export default function createApp() {
     liveTarget = null;
     setSelection([]);
     setSummary(null);
+    setTrash(null);
     if (wasShown) setTarget(startup);
     void refreshQueue();
   }
@@ -1733,7 +1734,7 @@ export default function createApp() {
       return can.chooseFolder && !scans.folderBusy();
     },
     get cleanupQueue() {
-      return !blocked && !trash;
+      return !blocked && !trash && !queueBusy;
     },
     get find() {
       return exploring;
@@ -1799,7 +1800,6 @@ export default function createApp() {
     },
     showHome,
     showResults,
-    showSlot,
     openDisk,
     get scanSlots() {
       return scans.slots;

@@ -1346,7 +1346,7 @@ mod tests {
                 let mut n = s.legacy_node(id).unwrap();
                 n.name = (*name).into();
                 n.path = format!("/fixture/{name}").into();
-                s.replace_legacy_node(id, n).unwrap();
+                s.replace_node(id, n).unwrap();
             }
             let p = allocation_plan(&s).unwrap();
             let inode_owner = if names[0] < names[2] { 1 } else { 3 };

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { bytes, size, type Metric, type NodeView, type Page } from "./types";
   import Icon from "./Icon.svelte";
+  import { normalizePath, parentPath } from "./branchColors";
   import { createQueueMarker, type QueuePath } from "./queueMarkers";
   import { compactBytes, usageColor } from "./uiFormat";
   import {
@@ -62,10 +63,11 @@
     onScrollRestored?: (id: number) => void;
   } = $props();
   const rowHeight = $derived(showParentPaths ? 60 : ROW_HEIGHT);
+  // The root has no parent to show.
   function parentDirectory(path: string) {
-    const normalized = path.replace(/\/+$/, "");
-    const separator = normalized.lastIndexOf("/");
-    return separator < 0 ? "" : normalized.slice(0, separator) || "/";
+    const normalized = normalizePath(path);
+    const parent = parentPath(normalized);
+    return parent === normalized ? "" : parent;
   }
   let queueMarker = $derived(createQueueMarker(queuedPaths));
   let scroll = $state.raw(0);
@@ -412,7 +414,7 @@
           queueMarker(n) === "contains" && n.kind !== "directory"
             ? null
             : queueMarker(n)}
-        {@const parentPath = showParentPaths ? parentDirectory(n.path) : ""}
+        {@const parentDir = showParentPaths ? parentDirectory(n.path) : ""}
         <div
           role="treeitem"
           data-kind={n.kind}
@@ -515,8 +517,8 @@
             /><span class="file-label"
               ><span class="file-name" title={showParentPaths ? n.path : n.name}
                 >{n.name}</span
-              >{#if parentPath}<span class="file-parent-path" title={parentPath}
-                  >{parentPath}</span
+              >{#if parentDir}<span class="file-parent-path" title={parentDir}
+                  >{parentDir}</span
                 >{/if}</span
             >{#if queueState}<span
                 class:queue-contains={queueState === "contains"}

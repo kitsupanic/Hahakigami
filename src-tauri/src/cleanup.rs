@@ -130,14 +130,22 @@ pub(crate) fn commit(
     trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<TrashResult, String> {
     let held = s.hold(Need::LiveCompleted)?;
-    let ticket = s
-        .ticket
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or("Review the selection before cleanup.")?;
-    if ticket.token != token || ticket.expired() {
-        return Err("Cleanup review expired. Review the selection again.".into());
+    const EXPIRED: &str = "Cleanup review expired. Review the selection again.";
+    let ticket = {
+        let mut slot = s.ticket.lock().unwrap();
+        // A wrong token must not spend or clear the ticket it does not match.
+        if slot
+            .as_ref()
+            .ok_or("Review the selection before cleanup.")?
+            .token
+            != token
+        {
+            return Err(EXPIRED.into());
+        }
+        slot.take().ok_or(EXPIRED)?
+    };
+    if ticket.expired() {
+        return Err(EXPIRED.into());
     }
     let mut queue = queue.lock().unwrap();
     if queued != ticket.queue_revision.is_some()

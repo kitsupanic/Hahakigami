@@ -219,15 +219,8 @@ fn restart_waits_for_a_running_scan_whatever_the_access_status() {
 #[test]
 fn retired_worker_preferences_cannot_override_new_scans_or_change_existing_sessions() {
     tauri::async_runtime::block_on(async {
-        let config = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        std::fs::write(
-            config.path().join("scan-settings.json"),
-            r#"{"workers":1,"workerMode":"manual","qos":"background"}"#,
-        )
-        .unwrap();
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         let mut old_snapshot = synthetic(1);
         old_snapshot.state = ScanState::Running;
         let old = install(&state, old_snapshot);
@@ -333,7 +326,7 @@ fn install_on(
             root_ancestors,
             workers: 8,
             cached_validation_workers: 8,
-            worker_mode: settings::WorkerMode::Manual,
+            worker_mode: settings::WorkerMode::Auto,
             worker_source: "manual".into(),
             qos: disk_scan::ScanQos::Automatic,
         },
@@ -1254,14 +1247,11 @@ fn cleanup_reviews_collapse_selection_and_reject_stale_or_expired_tickets() {
         )
         .await
         .is_err());
-        assert!(commit_trash(
-            app.state(),
-            "fixture".into(),
-            review.token,
-            app.handle().clone()
-        )
-        .await
-        .is_err());
+        // The wrong token did not spend the ticket the right token still owns.
+        assert_eq!(
+            s.ticket.lock().unwrap().as_ref().map(|t| &t.token),
+            Some(&review.token)
+        );
         assert!(dir.join("file").exists());
         s.store.write().unwrap().state = ScanState::Cancelled;
         assert!(prepare_trash(app.state(), "fixture".into(), vec![file_id])
@@ -1420,10 +1410,8 @@ fn automatic_info(state: &AppState, target_id: &str) -> settings::SettingsInfo {
 #[test]
 fn hardware_auto_ignores_legacy_preferences_and_is_captured_by_new_sessions() {
     tauri::async_runtime::block_on(async {
-        let config = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         let fixture = fixture();
         let root = std::fs::canonicalize(fixture.path()).unwrap();
         std::fs::write(root.join("file"), b"x").unwrap();
@@ -1439,12 +1427,6 @@ fn hardware_auto_ignores_legacy_preferences_and_is_captured_by_new_sessions() {
             assert_eq!(s.worker_source, "hardware");
             assert_eq!(info.auto_scope, settings::AutoScope::Folder);
         }
-        std::fs::write(
-            config.path().join("scan-settings.json"),
-            r#"{"workers":1,"workerMode":"manual"}"#,
-        )
-        .unwrap();
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         assert_eq!(s.workers, info.resolved_workers);
         assert_eq!(s.cached_validation_workers, captured_validation_workers);
         events.wait_end();
@@ -1458,10 +1440,8 @@ fn automatic_workers_probe() {
             std::env::var_os("HAHAKIGAMI_WORKERS_PATH").expect("set HAHAKIGAMI_WORKERS_PATH"),
         )
         .unwrap();
-        let config = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         let target = register(
             &state,
             platform::target(&path, "probe".into()),
@@ -1493,21 +1473,12 @@ fn automatic_workers_probe() {
             std::thread::sleep(Duration::from_millis(50));
         }
         let scanned = scan_summary(app.state(), id.clone()).await.unwrap();
-        std::fs::write(
-            config.path().join("scan-settings.json"),
-            r#"{"workers":1,"workerMode":"manual","qos":"background"}"#,
-        )
-        .unwrap();
         assert_eq!(held.workers, captured);
-        let manual = settings::ScanSettings::load(config.path()).info();
-        assert_eq!(manual.worker_mode, settings::WorkerMode::Manual);
-        assert_eq!(manual.resolved_workers, 1);
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         let automatic = automatic_info(&state, &target.id);
         assert_eq!(automatic.worker_mode, settings::WorkerMode::Auto);
         assert_eq!(automatic.qos, disk_scan::ScanQos::Automatic);
         assert_eq!(automatic.resolved_workers, automatic.default_workers);
-        let report = serde_json::json!({"settings":before,"scan":scanned,"manualReload":manual,"automaticAfterLegacyReload":automatic,"capturedWorkers":captured});
+        let report = serde_json::json!({"settings":before,"scan":scanned,"automaticAfterLegacyReload":automatic,"capturedWorkers":captured});
         if let Some(output) = std::env::var_os("HAHAKIGAMI_WORKERS_REPORT") {
             std::fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
         }
@@ -1947,7 +1918,15 @@ fn native_rescan_cache_parity() {
             assert_eq!(candidate.stats.entries, full.stats.entries);
             assert_eq!(candidate.stats.errors, 0);
         }
-        eprintln!("native cache fixture: first_ms={},second_ms={},mode={},reused={},rescanned={},fallback={:?}",first_summary.elapsed_ms,second.summary().elapsed_ms,second.summary().scan_mode,second.summary().reused_entries,second.summary().rescanned_directories,second.summary().fallback_reason);
+        eprintln!(
+            "native cache fixture: first_ms={},second_ms={},mode={},reused={},rescanned={},fallback={:?}",
+            first_summary.elapsed_ms,
+            second.summary().elapsed_ms,
+            second.summary().scan_mode,
+            second.summary().reused_entries,
+            second.summary().rescanned_directories,
+            second.summary().fallback_reason
+        );
         // A fresh backend process model reloads the persisted cache rather than transferring memory.
         let app2 = self::app(AppState::default());
         let state2 = app2.state::<AppState>();
@@ -2103,8 +2082,10 @@ fn native_existing_folder_cache_reuse() {
                     assert_eq!(signature(&candidate), signature(&fresh));
                     assert_eq!(candidate.stats.entries, fresh.stats.entries);
                     assert_eq!(candidate.stats.errors, fresh.stats.errors);
-                    eprintln!("existing-folder cache: process={process}, reused={}, rescanned={}, elapsed_ms={}",
-                        summary.reused_entries, summary.rescanned_directories, summary.elapsed_ms);
+                    eprintln!(
+                        "existing-folder cache: process={process}, reused={}, rescanned={}, elapsed_ms={}",
+                        summary.reused_entries, summary.rescanned_directories, summary.elapsed_ms
+                    );
                 }
             }
         }
@@ -2870,7 +2851,9 @@ fn native_validation_worker_sweep() {
                 "fresh_opens":opens,"worker_stats":candidate.worker_stats,"finalization_us":candidate.finalization_us,
                 "qualified":success,"matches_baseline_aggregates":matches_baseline}));
             checkpoint(&mut output, &report);
-            eprintln!("validation sweep: round={round}, workers={workers}, elapsed_ms={elapsed_ms:.3}, qualified={success}, baseline_parity={matches_baseline}");
+            eprintln!(
+                "validation sweep: round={round}, workers={workers}, elapsed_ms={elapsed_ms:.3}, qualified={success}, baseline_parity={matches_baseline}"
+            );
         }
     }
     let final_full = full(3);
@@ -3287,6 +3270,14 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
             );
         }
     }
+    // A commit with the wrong token leaves the valid ticket usable.
+    let (s, token) = reviewed();
+    let mut trash = Recording::ok();
+    assert!(cleanup::commit(&s, &state.cleanup_queue, "wrong", false, |i| trash.trash(i)).is_err());
+    assert!(trash.calls.is_empty());
+    let result = cleanup::commit(&s, &state.cleanup_queue, &token, false, |i| trash.trash(i));
+    assert_eq!(result.err(), None);
+    assert_eq!(trash.calls.len(), items.len());
     // One replaced item fails the whole batch before anything moves.
     let (s, token) = reviewed();
     std::fs::rename(&b, root.join("old-b")).unwrap();
@@ -3858,10 +3849,8 @@ fn a_discarded_scan_still_winding_down_keeps_its_budget_but_only_stops_the_globa
 #[test]
 fn setup_operations_refuse_while_any_scan_runs_on_any_disk() {
     tauri::async_runtime::block_on(async {
-        let config = tempfile::tempdir().unwrap();
         let app = app(AppState::default());
         let state = app.state::<AppState>();
-        *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(config.path());
         force_access(&state, access_setup::Status::On);
         let (_a_dir, a_root) = disk_root();
         let (_b_dir, b_root) = disk_root();

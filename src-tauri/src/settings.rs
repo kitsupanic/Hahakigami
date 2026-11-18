@@ -1,11 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::{fs, io::Read, path::Path};
+use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkerMode {
     Auto,
-    Manual,
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -74,15 +72,6 @@ pub struct SettingsInfo {
     pub performance_threads: Option<usize>,
     pub efficiency_threads: Option<usize>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedSettings {
-    workers: usize,
-    #[serde(default)]
-    qos: disk_scan::ScanQos,
-    #[serde(default)]
-    worker_mode: Option<WorkerMode>,
-}
 pub struct ScanSettings {
     info: SettingsInfo,
 }
@@ -129,57 +118,6 @@ impl ScanSettings {
             },
         }
     }
-    pub fn load(config: &Path) -> Self {
-        Self::load_for_cpu(
-            config,
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(8),
-        )
-    }
-    fn load_for_cpu(config: &Path, cpu_threads: usize) -> Self {
-        let mut settings = Self::with_cpu_threads(cpu_threads);
-        let record = config.join("scan-settings.json");
-        let saved = (|| -> Result<SavedSettings, String> {
-            let file = fs::File::open(&record).map_err(|e| e.to_string())?;
-            let mut bytes = Vec::new();
-            file.take(65537)
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 65536 {
-                return Err("Saved settings are too large.".into());
-            }
-            serde_json::from_slice(&bytes).map_err(|e| e.to_string())
-        })();
-        match saved {
-            Ok(saved) if (1..=disk_scan::MAX_WORKERS).contains(&saved.workers) => {
-                settings.info.workers = saved.workers.min(settings.info.max_workers);
-                settings.info.worker_mode = saved.worker_mode.unwrap_or(WorkerMode::Manual);
-                if settings.info.qos_supported {
-                    settings.info.qos = saved.qos;
-                } else if saved.qos != disk_scan::ScanQos::Automatic {
-                    settings.info.warning = Some("macOS scheduling preferences are unavailable on this platform. Using Automatic.".into());
-                }
-                if saved.workers > settings.info.max_workers {
-                    settings.info.warning =
-                        Some("The saved worker count was reduced to this Mac's CPU limit.".into());
-                }
-            }
-            _ if !record.exists() => {}
-            _ => {
-                settings.info.warning = Some(
-                    "Could not read valid saved settings. Using the recommended worker count."
-                        .into(),
-                )
-            }
-        }
-        settings.info.resolved_workers = if settings.info.worker_mode == WorkerMode::Auto {
-            settings.info.default_workers
-        } else {
-            settings.info.workers
-        };
-        settings
-    }
     #[cfg(test)]
     pub fn info(&self) -> SettingsInfo {
         self.info_for_conditions(AutoScope::Volume, crate::platform::scheduling_conditions())
@@ -203,10 +141,7 @@ impl ScanSettings {
         info.default_workers = automatic_worker_count(info.cpu_threads, scope, conditions);
         info.low_power_mode = conditions.low_power_mode;
         info.thermal_state = conditions.thermal_state;
-        info.resolved_workers = match info.worker_mode {
-            WorkerMode::Manual => info.workers,
-            WorkerMode::Auto => info.default_workers,
-        };
+        info.resolved_workers = info.default_workers;
         info
     }
     #[cfg(test)]
@@ -260,54 +195,6 @@ impl ScanSettings {
         info.qos = disk_scan::ScanQos::Automatic;
         info.warning = None;
         info
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn caps_saved_workers_to_cpu_and_rejects_invalid_files_without_rewriting_them() {
-        let config = tempfile::tempdir().unwrap();
-        let record = config.path().join("scan-settings.json");
-        fs::write(&record, r#"{"workers":12}"#).unwrap();
-        assert_eq!(
-            ScanSettings::load_for_cpu(config.path(), 32).info().workers,
-            12
-        );
-        let small = ScanSettings::load_for_cpu(config.path(), 4);
-        assert_eq!(small.info().workers, 4);
-        assert!(small.info().warning.is_some());
-        assert_eq!(ScanSettings::with_cpu_threads(0).info().max_workers, 1);
-        for bytes in [
-            b"bad json".to_vec(),
-            b"{\"workers\":0}".to_vec(),
-            vec![b' '; 70_000],
-        ] {
-            fs::write(&record, &bytes).unwrap();
-            let loaded = ScanSettings::load_for_cpu(config.path(), 4);
-            assert_eq!(loaded.info().workers, 4);
-            assert!(loaded.info().warning.is_some());
-            assert_eq!(fs::read(&record).unwrap(), bytes);
-        }
-    }
-}
-
-#[cfg(test)]
-mod qos_tests {
-    use super::*;
-    #[test]
-    fn legacy_settings_default_to_automatic_and_unknown_qos_is_rejected() {
-        let config = tempfile::tempdir().unwrap();
-        let record = config.path().join("scan-settings.json");
-        fs::write(&record, r#"{"workers":3}"#).unwrap();
-        let legacy = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(legacy.info().workers, 3);
-        assert_eq!(legacy.info().qos, disk_scan::ScanQos::Automatic);
-        fs::write(&record, r#"{"workers":3,"qos":"realtime"}"#).unwrap();
-        let invalid = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(invalid.info().qos, disk_scan::ScanQos::Automatic);
-        assert!(invalid.info().warning.is_some());
     }
 }
 
@@ -466,41 +353,16 @@ mod auto_tests {
         );
     }
     #[test]
-    fn legacy_manual_preferences_still_load_but_never_resolve_to_new_scans() {
-        let config = tempfile::tempdir().unwrap();
-        let record = config.path().join("scan-settings.json");
+    fn production_auto_resolves_from_hardware_and_scheduling_conditions() {
         let conditions = neutral_conditions();
-        let fresh = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(fresh.info().worker_mode, WorkerMode::Auto);
+        let s = ScanSettings::with_cpu_threads(14);
+        assert_eq!(s.info().worker_mode, WorkerMode::Auto);
         assert_eq!(
-            fresh
-                .info_for_conditions(AutoScope::Volume, conditions)
+            s.info_for_conditions(AutoScope::Volume, conditions)
                 .resolved_workers,
             7
         );
-        let old = r#"{"workers":2,"workerMode":"manual","calibrations":[{"volumeKey":"v","hardwareKey":"h","qos":"automatic","version":1,"workers":6,"calibratedAtUnixMs":1,"sampleDirectories":400,"sampleEntries":5000}]}"#;
-        fs::write(&record, old).unwrap();
-        let s = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(s.info().worker_mode, WorkerMode::Manual);
-        assert_eq!(s.info().workers, 2);
-        assert_eq!(
-            s.automatic_info_for_conditions(AutoScope::Volume, conditions)
-                .resolved_workers,
-            7
-        );
-        fs::write(&record, r#"{"workers":3}"#).unwrap();
-        let legacy = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(legacy.info().worker_mode, WorkerMode::Manual);
-        assert_eq!(legacy.info().resolved_workers, 3);
-    }
-    #[test]
-    fn production_auto_ignores_retired_manual_and_qos_without_rewriting_preferences() {
-        let config = tempfile::tempdir().unwrap();
-        let record = config.path().join("scan-settings.json");
-        let old = r#"{"workers":1,"workerMode":"manual","qos":"background"}"#;
-        fs::write(&record, old).unwrap();
-        let s = ScanSettings::load_for_cpu(config.path(), 14);
-        assert_eq!(s.info().worker_mode, WorkerMode::Manual);
+        assert_eq!(ScanSettings::with_cpu_threads(0).info().max_workers, 1);
         for scope in [AutoScope::Volume, AutoScope::Folder] {
             let info = s.automatic_info_for_scope(scope);
             assert_eq!(info.worker_mode, WorkerMode::Auto);
@@ -516,7 +378,6 @@ mod auto_tests {
             assert_eq!(base, automatic_worker_count(14, scope, conditions));
             assert!(cap >= base);
         }
-        assert_eq!(fs::read_to_string(record).unwrap(), old);
     }
     #[test]
     fn cached_validation_cap_uses_one_bounded_healthy_scheduling_snapshot() {

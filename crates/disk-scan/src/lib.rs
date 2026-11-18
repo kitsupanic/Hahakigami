@@ -244,15 +244,6 @@ impl Snapshot {
             .ok()
             .map(|i| self.tree.clone_attributions[i].1)
     }
-    /// Initialize derived inspector attribution without changing totals.
-    pub fn refresh_clone_attributions(&mut self) -> Result<(), String> {
-        if self.tree.clones.is_empty() {
-            self.tree.clone_attributions.clear();
-            return Ok(());
-        }
-        self.tree.clone_attributions = clones::internal_allocation_plan(self)?.clone_attributions;
-        Ok(())
-    }
     pub fn incremental_accounting_eligible(&self) -> bool {
         self.accounting.model == AccountingModel::FullClonesV1
             && self.accounting.checks_complete
@@ -685,6 +676,37 @@ impl WorkQueue {
             .or_else(|| self.neutral.pop_back())
     }
 }
+type SharedQueue = (Mutex<(WorkQueue, usize)>, Condvar);
+/// Blocks for the next directory; `None` once cancelled or nothing is queued or in flight.
+fn next_work(queue: &SharedQueue, cancel: &AtomicBool) -> Option<Work> {
+    let (lock, cv) = queue;
+    let mut q = lock.lock().unwrap();
+    loop {
+        if cancel.load(Ordering::Relaxed) || q.1 == 0 {
+            return None;
+        }
+        if let Some(work) = q.0.pop() {
+            return Some(work);
+        }
+        q = cv.wait(q).unwrap();
+    }
+}
+/// A panicking worker never settles its in-flight count, so idle peers would wait
+/// forever and the thread scope could not join to re-raise the panic.
+struct PanicWake<'a> {
+    queue: &'a SharedQueue,
+    cancel: &'a AtomicBool,
+}
+impl Drop for PanicWake<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.cancel.store(true, Ordering::Relaxed);
+            // Notifying under the lock cannot slip between a waiter's check and its wait.
+            let _q = self.queue.0.lock().unwrap_or_else(|e| e.into_inner());
+            self.queue.1.notify_all();
+        }
+    }
+}
 fn scheduling_cost(
     priorities: &HashMap<PathBuf, (Identity, u64)>,
     path: &Path,
@@ -973,6 +995,10 @@ fn scan_live_internal_reuse(
             #[cfg(unix)]
             let open_gate = &open_gate;
             scope.spawn(move || {
+                let _wake = PanicWake {
+                    queue: &queue,
+                    cancel: &cancel,
+                };
                 let qos_error = diagnostics::apply_qos(options.qos);
                 let mut telemetry = diagnostics::Tracker::new(worker_id);
                 telemetry.stats.qos_error = qos_error;
@@ -982,19 +1008,7 @@ fn scan_live_internal_reuse(
                 let mut last_wait_us;
                 loop {
                     let waiting = Instant::now();
-                    let work = {
-                        let (lock, cv) = &*queue;
-                        let mut q = lock.lock().unwrap();
-                        loop {
-                            if cancel.load(Ordering::Relaxed) || q.1 == 0 {
-                                break None;
-                            }
-                            if let Some(id) = q.0.pop() {
-                                break Some(id);
-                            }
-                            q = cv.wait(q).unwrap();
-                        }
-                    };
+                    let work = next_work(&queue, &cancel);
                     last_wait_us = diagnostics::micros(waiting.elapsed());
                     telemetry.stats.queue_wait_us =
                         telemetry.stats.queue_wait_us.saturating_add(last_wait_us);
@@ -1561,6 +1575,37 @@ mod tests {
             #[cfg(unix)]
             name: None,
         }
+    }
+    #[test]
+    fn panicking_worker_wakes_idle_workers_so_the_scope_reraises() {
+        let queue: Arc<SharedQueue> =
+            Arc::new((Mutex::new((WorkQueue::default(), 1)), Condvar::new()));
+        let cancel = AtomicBool::new(false);
+        let (done, finished) = std::sync::mpsc::channel();
+        // Detached, so a regression times out instead of hanging the suite.
+        std::thread::spawn(move || {
+            let outcome = std::panic::catch_unwind(|| {
+                std::thread::scope(|scope| {
+                    for _ in 0..3 {
+                        scope.spawn(|| assert!(next_work(&queue, &cancel).is_none()));
+                    }
+                    scope.spawn(|| {
+                        let _wake = PanicWake {
+                            queue: &queue,
+                            cancel: &cancel,
+                        };
+                        // Let the idle workers park first so the wakeup is what frees them.
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        panic!("worker failed mid-directory");
+                    });
+                });
+            });
+            done.send(outcome.is_err()).unwrap();
+        });
+        assert_eq!(
+            finished.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true)
+        );
     }
     #[test]
     fn full_queue_keeps_original_lifo_order() {
