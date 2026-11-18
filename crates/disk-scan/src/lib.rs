@@ -7,7 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Condvar, Mutex, RwLock,
     },
     time::Instant,
@@ -153,9 +153,9 @@ pub struct CloneMetadata {
     pub verified: bool,
 }
 mod clones;
-pub use clones::{
-    allocation_plan, attributed_own_allocations, hardlink_allocations, AllocationPlan,
-};
+#[cfg(test)]
+pub(crate) use clones::hardlink_allocations;
+pub use clones::{allocation_plan, AllocationPlan};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: u32,
@@ -845,6 +845,14 @@ fn io_issue(s: &mut Snapshot, path: PathBuf, error: std::io::Error) {
         last.raw_os_error = raw;
     }
 }
+/// An entry that vanished (or was replaced by a file) between listing and stat/open is simply
+/// gone, not a failure: its deletion is a journal event, and the next rescan re-reads its parent.
+fn vanished(error: &std::io::Error) -> bool {
+    matches!(
+        native_entry_error(error).raw_os_error(),
+        Some(libc::ENOENT | libc::ENOTDIR)
+    )
+}
 pub fn scan(
     root: PathBuf,
     options: ScanOptions,
@@ -968,7 +976,11 @@ fn scan_live_internal_reuse(
         0,
     );
     let queue = Arc::new((Mutex::new((ready, 1usize)), Condvar::new()));
-    let tick = Mutex::new(Instant::now());
+    // Milliseconds after `started` of the last progress report; the worker that swaps it reports.
+    let tick = AtomicU64::new(0);
+    // Highest `entries` delivered so far: a reporter that raced past the throttle with a staler
+    // snapshot must not deliver a lower count after a higher one.
+    let delivered = AtomicU64::new(0);
     let tail = Mutex::new(TailStats::default());
     #[cfg(unix)]
     let open_gate = descriptor::OpenGate::new(
@@ -982,6 +994,7 @@ fn scan_live_internal_reuse(
             let cancel = cancel.clone();
             let progress = &progress;
             let tick = &tick;
+            let delivered = &delivered;
             let tail = &tail;
             let root = &root;
             let visited = &visited;
@@ -1076,14 +1089,27 @@ fn scan_live_internal_reuse(
                     let mut clone_listing_warnings = Vec::new();
                     #[cfg(unix)]
                     let mut clone_observations = std::collections::VecDeque::new();
+                    // A cached listing means the journal reported nothing here, so a vanish on
+                    // open is a missed event (stale cache), not a benign race.
+                    #[cfg(unix)]
+                    let fresh = cached.is_none();
+                    #[cfg(not(unix))]
+                    let fresh = true;
                     #[cfg(unix)]
                     let listing = match &opened {
                         Ok(opened) => match cached {
                             Some(listing) if !cancel.load(Ordering::Relaxed) => {
-                                let (entries, capacity) = listing.materialize_with_storage();
+                                let (mut entries, capacity) = listing.materialize_with_storage();
                                 if let Some(reuse) = reuse {
                                     reuse.lock().unwrap().mark_reused(entries.len(), capacity);
                                 }
+                                clones::vouch_reused(
+                                    &mut entries,
+                                    opened.fd(),
+                                    clone_capabilities,
+                                    &cancel,
+                                    &mut clone_observations,
+                                );
                                 Ok(entries)
                             }
                             _ => enumerate_opened_limited_with_accounting(
@@ -1163,6 +1189,8 @@ fn scan_live_internal_reuse(
                         let mut added_logical = 0u64;
                         let mut added_allocated = 0u64;
                         match listing {
+                            // The root is held by descriptor; only a child directory can vanish.
+                            Err(e) if fresh && id != 0 && vanished(&e) => {}
                             Err(e) => io_issue(&mut s, path, e),
                             Ok(entries) => {
                                 let check_firmlinks = firmlinks.may_have_alias_children(&path);
@@ -1178,6 +1206,7 @@ fn scan_live_internal_reuse(
                                         break;
                                     }
                                     match item {
+                                        Err(e) if vanished(&e) => {}
                                         Err(e) => io_issue(&mut s, path.clone(), e),
                                         Ok(e) => {
                                             // Only verified alias parents need full paths for file
@@ -1331,9 +1360,13 @@ fn scan_live_internal_reuse(
                     }
                     let reporting = Instant::now();
                     let mut progress_store_wait_us = 0u64;
-                    let mut last = tick.lock().unwrap();
-                    if last.elapsed().as_millis() >= 100 {
-                        *last = Instant::now();
+                    let now = started.elapsed().as_millis() as u64;
+                    let last = tick.load(Ordering::Relaxed);
+                    if now.saturating_sub(last) >= 100
+                        && tick
+                            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                            .is_ok()
+                    {
                         let event = {
                             let store_wait = Instant::now();
                             let s = store.read().unwrap();
@@ -1350,9 +1383,10 @@ fn scan_live_internal_reuse(
                                 elapsed_ms: s.stats.elapsed_ms,
                             }
                         };
-                        progress(event);
+                        if delivered.fetch_max(event.entries, Ordering::Relaxed) <= event.entries {
+                            progress(event);
+                        }
                     }
-                    drop(last);
                     telemetry.stats.progress_us = telemetry.stats.progress_us.saturating_add(
                         diagnostics::micros(reporting.elapsed())
                             .saturating_sub(progress_store_wait_us),
@@ -2128,21 +2162,63 @@ mod tests {
         }
         fs::remove_dir_all(p).unwrap();
     }
+    #[cfg(unix)]
     #[test]
-    fn disappeared_directory_reports_error() {
+    fn disappeared_entries_are_gone_not_errors_but_a_vanished_root_is() {
         let p = fixture();
-        fs::remove_dir_all(&p).unwrap();
-        assert!(enumerate(
-            &p,
-            Backend::Portable,
-            &AtomicBool::new(false),
-            &Identity {
-                device: 0,
-                inode: 0,
-                kind: NodeKind::Directory
-            }
+        let identity = platform_identity(&p).unwrap();
+        // Child metadata, open and listing failures of a vanished entry all classify as gone.
+        let fd = descriptor::open(&p, &identity).unwrap();
+        let name = std::ffi::OsStr::new("missing");
+        let missing = entry_result(descriptor::entry_at(&fd, &p, name), || p.join(name));
+        assert!(vanished(&missing.unwrap_err()));
+        assert!(vanished(&std::io::Error::from_raw_os_error(libc::ENOTDIR)));
+        assert!(!vanished(&std::io::Error::from_raw_os_error(libc::EACCES)));
+        fs::create_dir_all(p.join("gone/inner")).unwrap();
+        fs::write(p.join("gone/inner/file"), b"x").unwrap();
+        fs::create_dir(p.join("keep")).unwrap();
+        fs::write(p.join("keep/file"), b"x").unwrap();
+        let seed = scan(
+            p.clone(),
+            ScanOptions::default(),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
         )
-        .is_err());
+        .unwrap();
+        fs::remove_dir_all(p.join("gone/inner")).unwrap();
+        let rescan = |seed: Snapshot, dirty_paths| {
+            let store = Arc::new(RwLock::new(Snapshot::empty(p.clone())));
+            let stats = scan_live_incremental_authorized(
+                ScanRoot::open(p.clone(), identity.clone()).unwrap(),
+                ScanOptions::default(),
+                Arc::new(AtomicBool::new(false)),
+                store.clone(),
+                |_| {},
+                IncrementalSeed {
+                    snapshot: seed,
+                    dirty_paths,
+                    dirty_directories: vec![],
+                },
+            )
+            .unwrap();
+            (Arc::try_unwrap(store).unwrap().into_inner().unwrap(), stats)
+        };
+        // A cached listing means the journal reported nothing there: finding that directory
+        // missing is a missed event (stale cache), so it stays an error.
+        let (stale, stats) = rescan(seed.clone(), vec![]);
+        assert_eq!(stats.fallback_reason, None);
+        assert!(stale.stats.errors > 0 && stale.stats.incomplete);
+        // Its deletion event dirties the parent, so the result is a valid seed that reuses the rest.
+        let (reseeded, stats) = rescan(seed, vec![p.join("gone/inner")]);
+        assert_eq!(stats.fallback_reason, None);
+        assert!(stats.reused_entries > 0);
+        assert_eq!(reseeded.stats.entries, 4);
+        assert_eq!(reseeded.stats.errors, 0);
+        // A vanished scan root is still a failure.
+        fs::remove_dir_all(&p).unwrap();
+        assert!(enumerate(&p, Backend::Portable, &AtomicBool::new(false), &identity).is_err());
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert!(scan(p, ScanOptions::default(), cancel, |_| {}).is_err());
     }
     #[test]
     fn mount_boundaries_and_startup_data_policy() {

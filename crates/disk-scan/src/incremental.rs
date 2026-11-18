@@ -1709,6 +1709,37 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
+    fn reused_folders_are_vouched_in_bulk_and_account_like_a_full_scan() {
+        let f = Fixture::new();
+        let deep = f.0.join("clean/deep");
+        for i in 0..6u8 {
+            fs::write(deep.join(format!("file{i}")), vec![i; 5000]).unwrap();
+        }
+        fs::hard_link(deep.join("file0"), deep.join("linked")).unwrap();
+        let seed = f.full();
+        assert!(seed.incremental_accounting_eligible());
+        let (actual, stats) = f.incremental(seed, vec![]);
+        let fresh = f.full();
+        compare(&actual, &fresh);
+        assert!(stats.fallback_reason.is_none());
+        assert!(stats.reused_entries >= 8);
+        // Each reused file used to cost one getattrlistat; the bulk listing answers all of them.
+        assert_eq!(actual.accounting.metadata_queries, 0);
+        let accounting = |s: &Snapshot| {
+            let a = &s.accounting;
+            (
+                a.checks_complete,
+                a.shared,
+                a.deduction_bytes,
+                a.warnings.clone(),
+                s.tree.clones.len(),
+            )
+        };
+        assert_eq!(accounting(&actual), accounting(&fresh));
+        assert!(actual.incremental_accounting_eligible());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
     fn unreported_clean_file_size_drift_forces_private_accounting_retry() {
         let f = Fixture::new();
         let seed = f.full();

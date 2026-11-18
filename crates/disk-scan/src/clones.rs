@@ -9,9 +9,9 @@ use std::collections::HashMap;
 
 mod accounting;
 pub(crate) use accounting::internal_allocation_plan;
-pub use accounting::{
-    allocation_plan, attributed_own_allocations, hardlink_allocations, AllocationPlan,
-};
+pub use accounting::{allocation_plan, AllocationPlan};
+#[cfg(test)]
+pub(crate) use accounting::{attributed_own_allocations, hardlink_allocations};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -115,6 +115,23 @@ pub(crate) fn prepare(
         cancel.load(std::sync::atomic::Ordering::Relaxed)
     })
 }
+/// A reused listing carries no clone evidence, so every cached file would be probed on its own.
+/// One rich bulk listing of the directory vouches for each file it still describes exactly
+/// (marking it `clone_checked`, with a sparse observation when it shares); anything else stays
+/// unchecked and is probed per file, with the same warnings as before. Call with empty `observations`.
+#[cfg(unix)]
+pub(crate) fn vouch_reused(
+    entries: &mut [std::io::Result<crate::Entry>],
+    fd: &std::os::fd::OwnedFd,
+    caps: &std::sync::Mutex<HashMap<u64, bool>>,
+    cancel: &std::sync::atomic::AtomicBool,
+    observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
+) {
+    #[cfg(target_os = "macos")]
+    native::vouch_reused(entries, fd, caps, cancel, observations);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (entries, fd, caps, cancel, observations);
+}
 #[cfg(unix)]
 fn prepare_core(
     entries: &[std::io::Result<crate::Entry>],
@@ -130,6 +147,17 @@ fn prepare_core(
         queries: 0,
         micros: 0,
     };
+    // A bulk reply with clone fields (fresh rich listing, or `vouch_reused`) means this device
+    // answered, so one file's reply without them is that file's warning, not a volume signal.
+    // shortcut: one device per listing (files of a directory share it), as `vouch_reused` assumes.
+    #[cfg(target_os = "macos")]
+    if let Some(e) = entries
+        .iter()
+        .flatten()
+        .find(|e| e.kind == NodeKind::File && e.clone_checked)
+    {
+        caps.lock().unwrap().insert(e.device, true);
+    }
     // Borrow the original queue; no second metadata queue is built. Only the
     // visited prefix can be published if preparation is cancelled midway.
     let mut observations = batch.observations.iter().peekable();
@@ -209,26 +237,6 @@ mod native {
     const COMMON: u32 = 0x80000000 | 0x2 | 0x8 | 0x02000000;
     const FILE: u32 = 0x1 | 0x2 | 0x4 | 0x200 | 0x400;
     const EXT: u32 = 0x100 | 0x200 | 0x1000;
-    #[repr(C)]
-    struct AttrList {
-        count: u16,
-        reserved: u16,
-        common: u32,
-        volume: u32,
-        directory: u32,
-        file: u32,
-        extended: u32,
-    }
-    unsafe extern "C" {
-        fn getattrlistat(
-            fd: i32,
-            path: *const libc::c_char,
-            list: *mut AttrList,
-            buf: *mut libc::c_void,
-            size: usize,
-            options: libc::c_ulong,
-        ) -> i32;
-    }
     fn error(message: &str) -> io::Error {
         io::Error::other(message)
     }
@@ -242,26 +250,19 @@ mod native {
                 Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL)
             )
     }
-    fn word<const N: usize>(b: &[u8], offset: &mut usize) -> io::Result<[u8; N]> {
-        let end = offset
-            .checked_add(N)
-            .ok_or_else(|| error("attribute overflow"))?;
-        let value = b
-            .get(*offset..end)
-            .ok_or_else(|| error("truncated clone attributes"))?
-            .try_into()
-            .unwrap();
-        *offset = end;
-        Ok(value)
-    }
+    // Cursor over the shared bounds-checked readers in bulk.rs.
     fn u32at(b: &[u8], o: &mut usize) -> io::Result<u32> {
-        Ok(u32::from_ne_bytes(word(b, o)?))
+        let v = crate::bulk::u32_at(b, *o).map_err(|_| error("truncated clone attributes"))?;
+        *o += 4;
+        Ok(v)
     }
     fn u64at(b: &[u8], o: &mut usize) -> io::Result<u64> {
-        Ok(u64::from_ne_bytes(word(b, o)?))
+        let v = crate::bulk::u64_at(b, *o).map_err(|_| error("truncated clone attributes"))?;
+        *o += 8;
+        Ok(v)
     }
     fn size(b: &[u8], o: &mut usize) -> io::Result<u64> {
-        let v = i64::from_ne_bytes(word(b, o)?);
+        let v = u64at(b, o)? as i64;
         u64::try_from(v).map_err(|_| error("negative clone size"))
     }
     fn parse(
@@ -550,21 +551,21 @@ mod native {
         hard_link: bool,
     ) -> io::Result<CloneMetadata> {
         let name = crate::descriptor::ChildName::new(name)?;
-        let mut list = AttrList {
-            count: 5,
+        let mut list = libc::attrlist {
+            bitmapcount: 5,
             reserved: 0,
-            common: COMMON,
-            volume: 0,
-            directory: 0,
-            file: FILE,
-            extended: EXT,
+            commonattr: COMMON,
+            volattr: 0,
+            dirattr: 0,
+            fileattr: FILE,
+            forkattr: EXT,
         };
         let mut b = [0u8; 96];
         if unsafe {
-            getattrlistat(
+            libc::getattrlistat(
                 fd.as_raw_fd(),
                 name.as_c_str().as_ptr(),
-                &mut list,
+                (&mut list as *mut libc::attrlist).cast(),
                 b.as_mut_ptr().cast(),
                 b.len(),
                 0x1 | 0x20,
@@ -607,16 +608,92 @@ mod native {
             e.allocated,
             e.hard_link,
         );
+        settle(e.device, result, caps)
+    }
+    /// Cache a device as unsupported only on a volume-level signal: the syscall's own
+    /// ENOTSUP/EINVAL, or a reply without clone fields from a device that never answered
+    /// with them. The same reply from a device that already did is that one file's fault.
+    fn settle(
+        device: u64,
+        result: io::Result<CloneMetadata>,
+        caps: &std::sync::Mutex<HashMap<u64, bool>>,
+    ) -> io::Result<Option<CloneMetadata>> {
+        let mut caps = caps.lock().unwrap();
         match result {
             Ok(m) => {
-                caps.lock().unwrap().insert(e.device, true);
+                caps.insert(device, true);
                 Ok(Some(m))
             }
-            Err(error) if is_unsupported(&error) => {
-                caps.lock().unwrap().insert(e.device, false);
+            Err(failure) if is_unsupported(&failure) => {
+                if failure.raw_os_error().is_none() && caps.get(&device) == Some(&true) {
+                    return Err(error("clone attributes missing from one file's reply"));
+                }
+                caps.insert(device, false);
                 Ok(None)
             }
-            Err(error) => Err(error),
+            Err(failure) => Err(failure),
+        }
+    }
+    pub(super) fn vouch_reused(
+        entries: &mut [io::Result<crate::Entry>],
+        fd: &OwnedFd,
+        caps: &std::sync::Mutex<HashMap<u64, bool>>,
+        cancel: &AtomicBool,
+        observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
+    ) {
+        let mut wanted = HashMap::new();
+        let mut device = None;
+        for (i, entry) in entries.iter().enumerate() {
+            let Ok(e) = entry else { continue };
+            if e.kind == NodeKind::File && !e.clone_checked {
+                let Some(name) = e.path.file_name() else {
+                    return;
+                };
+                if wanted.insert(name.as_bytes(), i).is_some() {
+                    return;
+                }
+                device = Some(e.device);
+            }
+        }
+        // No files to probe, or a volume that already answered "unsupported" (one cheap probe each).
+        let Some(device) = device else { return };
+        if caps.lock().unwrap().get(&device) == Some(&false) {
+            return;
+        }
+        let mut matched = vec![false; entries.len()];
+        let mut shared = Vec::new();
+        let result = crate::bulk::visit_clone_records(fd, cancel, &mut Default::default(), |r| {
+            let Some(&i) = wanted.get(r.name) else {
+                return Ok(());
+            };
+            let e = entries[i].as_ref().unwrap();
+            // The same facts the per-file probe and final validation insist on.
+            if r.kind == 1
+                && r.clone_checked
+                && r.device == e.device
+                && r.inode == e.inode
+                && r.allocated == e.allocated
+                && (r.links > 1) == e.hard_link
+                && (r.logical == e.logical
+                    || r.clone_metadata
+                        .as_ref()
+                        .is_some_and(|m| m.data_logical_size == e.logical))
+            {
+                if std::mem::replace(&mut matched[i], true) {
+                    return Err(error("duplicate clone record in reused directory"));
+                }
+                shared.extend(r.clone_metadata.clone().map(|m| (i, m)));
+            }
+            Ok(())
+        });
+        drop(wanted);
+        // A failed read vouches for nothing: every file keeps its per-file probe.
+        if result.is_ok() {
+            for (entry, _) in entries.iter_mut().zip(&matched).filter(|(_, m)| **m) {
+                entry.as_mut().unwrap().clone_checked = true;
+            }
+            shared.sort_unstable_by_key(|(i, _)| *i);
+            observations.extend(shared);
         }
     }
     fn warning(info: &mut crate::AccountingInfo, e: io::Error) {
@@ -1257,6 +1334,43 @@ mod native {
     mod tests {
         use super::*;
         use std::ffi::CString;
+        struct Mounted(std::path::PathBuf);
+        impl Drop for Mounted {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("hdiutil")
+                    .args(["detach", "-quiet", "-force"])
+                    .arg(&self.0)
+                    .status();
+            }
+        }
+        /// An attached HFS+ image, whose replies carry no clone fields: (scratch dir, mount).
+        /// `None` when hdiutil cannot make one. The mount detaches on drop.
+        fn hfs_volume(label: &str) -> Option<(std::path::PathBuf, Mounted)> {
+            let base = std::env::temp_dir().join(format!("clone-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            let image = base.join("volume.dmg");
+            let mount = base.join("mount");
+            let created = std::process::Command::new("hdiutil")
+                .args(["create", "-quiet", "-size", "8m", "-fs", "HFS+", "-volname"])
+                .arg("CloneHFS")
+                .arg(&image)
+                .status()
+                .is_ok_and(|s| s.success());
+            let attached = created
+                && std::process::Command::new("hdiutil")
+                    .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
+                    .arg(&mount)
+                    .arg(&image)
+                    .status()
+                    .is_ok_and(|s| s.success());
+            if !attached {
+                eprintln!("skipping: hdiutil could not create or attach an HFS+ image");
+                let _ = std::fs::remove_dir_all(&base);
+                return None;
+            }
+            Some((base, Mounted(mount)))
+        }
         fn bytes(n: &crate::NodeRef<'_>) -> Vec<u8> {
             let mut b = vec![];
             for value in [96, COMMON, 0, 0, FILE, EXT, n.identity.device as u32, 1] {
@@ -1370,40 +1484,96 @@ mod native {
             assert!(!is_unsupported(&error("missing clone attributes")));
         }
         #[test]
-        fn non_apfs_volume_scans_without_clone_warnings() {
-            struct Mounted(std::path::PathBuf);
-            impl Drop for Mounted {
-                fn drop(&mut self) {
-                    let _ = std::process::Command::new("hdiutil")
-                        .args(["detach", "-quiet", "-force"])
-                        .arg(&self.0)
-                        .status();
-                }
+        fn one_reply_without_clone_fields_does_not_disable_a_device_that_answered() {
+            let mut s = super::super::tests::fixture();
+            let n = s.node(2).unwrap();
+            let answer = || {
+                parse(
+                    &bytes(&n),
+                    &n.identity,
+                    n.own_logical_size,
+                    n.own_allocated_size,
+                    n.hard_link,
+                )
+                .unwrap()
+            };
+            let caps = std::sync::Mutex::new(HashMap::new());
+            let known = |device| caps.lock().unwrap().get(&device).copied();
+            // A device that never answered: the omission is a volume signal, cached once.
+            assert!(settle(1, Err(unsupported()), &caps).unwrap().is_none());
+            assert_eq!(known(1), Some(false));
+            // A device that did answer: one file's omission is that file's warning only.
+            assert!(settle(2, Ok(answer()), &caps).unwrap().is_some());
+            let failure = settle(2, Err(unsupported()), &caps).unwrap_err();
+            assert_eq!(known(2), Some(true));
+            assert!(settle(2, Ok(answer()), &caps).unwrap().is_some());
+            s.accounting.checks_complete = true;
+            super::super::commit(&mut s, 2, Err(failure));
+            assert!(!s.accounting.checks_complete);
+            assert_eq!(s.accounting.warnings.len(), 1);
+            // The syscall's own rejection is still volume-level, even after an answer.
+            for code in [libc::ENOTSUP, libc::EINVAL] {
+                caps.lock().unwrap().insert(2, true);
+                let rejected = io::Error::from_raw_os_error(code);
+                assert!(settle(2, Err(rejected), &caps).unwrap().is_none());
+                assert_eq!(known(2), Some(false));
             }
-            let base = std::env::temp_dir().join(format!("clone-hfs-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&base);
-            std::fs::create_dir_all(&base).unwrap();
-            let image = base.join("volume.dmg");
-            let mount = base.join("mount");
-            let created = std::process::Command::new("hdiutil")
-                .args(["create", "-quiet", "-size", "8m", "-fs", "HFS+", "-volname"])
-                .arg("CloneHFS")
-                .arg(&image)
-                .status()
-                .is_ok_and(|s| s.success());
-            let attached = created
-                && std::process::Command::new("hdiutil")
-                    .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
-                    .arg(&mount)
-                    .arg(&image)
-                    .status()
-                    .is_ok_and(|s| s.success());
-            if !attached {
-                eprintln!("skipping: hdiutil could not create or attach an HFS+ image");
-                let _ = std::fs::remove_dir_all(&base);
+        }
+        #[test]
+        fn a_file_without_clone_fields_beside_bulk_checked_files_warns_without_disabling_the_device(
+        ) {
+            let Some((base, guard)) = hfs_volume("hfs-answered") else {
                 return;
+            };
+            // Descriptor opens refuse symlinked components such as /var.
+            let mount = std::fs::canonicalize(&guard.0).unwrap();
+            for name in ["answered", "odd"] {
+                std::fs::write(mount.join(name), vec![1u8; 10_000]).unwrap();
             }
-            let guard = Mounted(mount.clone());
+            let identity = crate::platform_identity(&mount).unwrap();
+            let fd = crate::descriptor::open(&mount, &identity).unwrap();
+            let entry = |name: &str| {
+                crate::descriptor::entry_at(&fd, &mount, std::ffi::OsStr::new(name)).unwrap()
+            };
+            let run = |entries: Vec<io::Result<crate::Entry>>, caps: &_| {
+                super::super::prepare(
+                    &entries,
+                    &fd,
+                    caps,
+                    &AtomicBool::new(false),
+                    Default::default(),
+                )
+            };
+            // Control: an HFS+ reply without clone fields, from a device that never answered, is
+            // a volume signal and caches the device as unsupported without a warning.
+            let caps = std::sync::Mutex::new(HashMap::new());
+            let mut batch = run(vec![Ok(entry("odd"))], &caps);
+            assert!(batch.take_at(0).is_none());
+            assert_eq!(caps.lock().unwrap().get(&identity.device), Some(&false));
+            // The bulk listing returned a clone-checked file on this device, so the same reply
+            // for the other file is that file's warning and the device keeps answering.
+            let mut checked = entry("answered");
+            checked.clone_checked = true;
+            let caps = std::sync::Mutex::new(HashMap::new());
+            let mut batch = run(vec![Ok(checked), Ok(entry("odd"))], &caps);
+            assert_eq!(caps.lock().unwrap().get(&identity.device), Some(&true));
+            let failure = batch.take_at(1).unwrap();
+            assert!(failure.is_err());
+            let mut s = Snapshot::empty(mount.clone());
+            s.accounting.checks_complete = true;
+            super::super::commit(&mut s, 1, failure);
+            assert!(!s.accounting.checks_complete);
+            assert_eq!(s.accounting.warnings.len(), 1);
+            drop(fd);
+            drop(guard);
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        #[test]
+        fn non_apfs_volume_scans_without_clone_warnings() {
+            let Some((base, guard)) = hfs_volume("hfs") else {
+                return;
+            };
+            let mount = guard.0.clone();
             for i in 0..6 {
                 std::fs::write(mount.join(format!("f{i}")), vec![i as u8; 10_000]).unwrap();
             }
@@ -2255,6 +2425,82 @@ mod native {
             assert_eq!(cancelled.queries, 0);
             assert!(cancelled.results.is_empty());
             assert!(cancelled.observations.is_empty());
+            std::fs::remove_dir_all(p).unwrap();
+        }
+        #[test]
+        fn reused_files_are_vouched_by_one_bulk_listing_and_mismatches_stay_per_file() {
+            let (p, s, fd) = real_clone_fixture("vouch-reused");
+            let entry = |name: &str| {
+                crate::descriptor::entry_at(&fd, &s.root, std::ffi::OsStr::new(name)).unwrap()
+            };
+            let mut stale = entry("c");
+            stale.allocated += 4096;
+            let mut gone = entry("d");
+            gone.path = s.root.join("gone").into();
+            let mut entries = vec![Ok(entry("a")), Ok(entry("b")), Ok(stale), Ok(gone)];
+            let mut observations = std::collections::VecDeque::new();
+            let caps = std::sync::Mutex::new(HashMap::new());
+            vouch_reused(
+                &mut entries,
+                &fd,
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+            );
+            let checked = |entries: &[io::Result<crate::Entry>]| -> Vec<bool> {
+                entries
+                    .iter()
+                    .map(|e| e.as_ref().unwrap().clone_checked)
+                    .collect()
+            };
+            assert_eq!(checked(&entries), [true, true, false, false]);
+            // The sparse observations equal what a per-file probe of the same files reports.
+            assert_eq!(
+                observations.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+                [0, 1]
+            );
+            for (i, bulk) in &observations {
+                let mut queries = 0;
+                let probed =
+                    prepare_entry(&entry(["a", "b"][*i]), &fd, &caps, &mut queries).unwrap();
+                assert!(same_observation(bulk, &probed.unwrap()));
+            }
+            // Only the two files the listing could not vouch for are probed one by one.
+            let mut batch = super::super::prepare(
+                &entries,
+                &fd,
+                &std::sync::Mutex::new(HashMap::new()),
+                &AtomicBool::new(false),
+                observations,
+            );
+            assert_eq!(batch.queries, 2);
+            let published: Vec<_> = (0..entries.len()).map(|i| batch.take_at(i)).collect();
+            assert!(published[0].as_ref().unwrap().as_ref().unwrap().is_some());
+            assert!(published[1].as_ref().unwrap().as_ref().unwrap().is_some());
+            assert!(published[2].as_ref().unwrap().is_err());
+            assert!(published[3].as_ref().unwrap().is_err());
+            // A read that fails or is cancelled vouches for nothing.
+            let mut fresh = vec![Ok(entry("a")), Ok(entry("b"))];
+            let mut observations = std::collections::VecDeque::new();
+            vouch_reused(
+                &mut fresh,
+                &fd,
+                &caps,
+                &AtomicBool::new(true),
+                &mut observations,
+            );
+            assert_eq!(checked(&fresh), [false, false]);
+            assert!(observations.is_empty());
+            // So does a device already known to lack clone fields.
+            caps.lock().unwrap().insert(entry("a").device, false);
+            vouch_reused(
+                &mut fresh,
+                &fd,
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+            );
+            assert_eq!(checked(&fresh), [false, false]);
             std::fs::remove_dir_all(p).unwrap();
         }
         #[test]

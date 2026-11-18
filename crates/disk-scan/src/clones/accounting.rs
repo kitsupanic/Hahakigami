@@ -18,11 +18,13 @@ pub struct AllocationPlan {
     pub scratch_bytes: usize,
 }
 
-pub fn attributed_own_allocations(s: &Snapshot) -> Result<Vec<u64>, String> {
+#[cfg(test)]
+pub(crate) fn attributed_own_allocations(s: &Snapshot) -> Result<Vec<u64>, String> {
     allocation_plan(s).map(|p| p.values)
 }
-pub fn hardlink_allocations(s: &Snapshot) -> Result<Vec<u64>, String> {
-    allocations(s, false, false).map(|p| p.materialize(s).values)
+#[cfg(test)]
+pub(crate) fn hardlink_allocations(s: &Snapshot) -> Result<Vec<u64>, String> {
+    allocations(s, false).map(|p| p.materialize(s).values)
 }
 /// Validate metadata and derive hard-link and full-clone attribution without
 /// modifying the snapshot or querying the filesystem.
@@ -47,7 +49,6 @@ pub(crate) struct InternalAllocationPlan {
     pub clone_attributions: Vec<(u32, (bool, u64))>,
     pub scratch_bytes: usize,
     aliases: Vec<u32>,
-    compatibility_values: Option<Vec<u64>>,
 }
 struct AllocationCursor<'a> {
     aliases: &'a [u32],
@@ -81,28 +82,19 @@ impl<'a> AllocationCursor<'a> {
 impl InternalAllocationPlan {
     pub(crate) fn apply_to(&self, s: &mut Snapshot) {
         let mut cursor = AllocationCursor::new(self);
-        s.reset_aggregate_sizes(|id, raw| {
-            self.compatibility_values
-                .as_ref()
-                .map_or_else(|| cursor.value(id, raw), |values| values[id as usize])
-        });
+        s.reset_aggregate_sizes(|id, raw| cursor.value(id, raw));
     }
     fn materialize(mut self, s: &Snapshot) -> AllocationPlan {
-        let values = if let Some(values) = self.compatibility_values.take() {
-            values
-        } else {
-            let mut values: Vec<_> = s.iter_nodes().map(|n| n.own_allocated_size).collect();
-            self.scratch_bytes = self.scratch_bytes.max(
-                values.capacity() * size_of::<u64>()
-                    + self.aliases.capacity() * size_of::<u32>()
-                    + self.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>(),
-            );
-            let mut cursor = AllocationCursor::new(&self);
-            for (id, value) in values.iter_mut().enumerate() {
-                *value = cursor.value(id as u32, *value);
-            }
-            values
-        };
+        let mut values: Vec<_> = s.iter_nodes().map(|n| n.own_allocated_size).collect();
+        self.scratch_bytes = self.scratch_bytes.max(
+            values.capacity() * size_of::<u64>()
+                + self.aliases.capacity() * size_of::<u32>()
+                + self.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>(),
+        );
+        let mut cursor = AllocationCursor::new(&self);
+        for (id, value) in values.iter_mut().enumerate() {
+            *value = cursor.value(id as u32, *value);
+        }
         AllocationPlan {
             values,
             clone_deduction_bytes: self.clone_deduction_bytes,
@@ -112,7 +104,7 @@ impl InternalAllocationPlan {
     }
 }
 pub(crate) fn internal_allocation_plan(s: &Snapshot) -> Result<InternalAllocationPlan, String> {
-    allocations(s, true, false)
+    allocations(s, true)
 }
 
 #[derive(Clone, Copy)]
@@ -168,31 +160,18 @@ fn earlier(
     Ok(candidate_path.path(candidate)? < owner_path.path(owner)?)
 }
 
-/// Dense node iteration can advance through validated sparse IDs. Historical
-/// malformed ordering retains the original binary-search lookup semantics.
+/// Dense node iteration can advance through validated sparse IDs. Claims are
+/// strictly ascending: appended in node order, and `replace_node` re-sorts.
 pub(super) struct ClaimCursor<'a> {
     claims: &'a [(u32, crate::CloneMetadata)],
     index: usize,
-    sorted: bool,
 }
 impl<'a> ClaimCursor<'a> {
     pub(super) fn new(claims: &'a [(u32, crate::CloneMetadata)]) -> Self {
-        Self {
-            claims,
-            index: 0,
-            sorted: claims.windows(2).all(|w| w[0].0 < w[1].0),
-        }
-    }
-    fn original(&self, id: u32) -> Option<&'a crate::CloneMetadata> {
-        self.claims
-            .binary_search_by_key(&id, |(id, _)| *id)
-            .ok()
-            .map(|i| &self.claims[i].1)
+        debug_assert!(claims.windows(2).all(|w| w[0].0 < w[1].0));
+        Self { claims, index: 0 }
     }
     pub(super) fn get(&mut self, id: u32) -> Option<&'a crate::CloneMetadata> {
-        if !self.sorted {
-            return self.original(id);
-        }
         while self.index < self.claims.len() && self.claims[self.index].0 < id {
             self.index += 1;
         }
@@ -202,11 +181,7 @@ impl<'a> ClaimCursor<'a> {
             .map(|(_, metadata)| metadata)
     }
     fn at(&self, index: usize) -> Option<&'a crate::CloneMetadata> {
-        if self.sorted {
-            Some(&self.claims[index].1)
-        } else {
-            self.original(self.claims[index].0)
-        }
+        Some(&self.claims[index].1)
     }
 }
 
@@ -263,31 +238,16 @@ fn collect_hardlinks(
                 }
             }
         };
-        if let Some(values) = &mut plan.compatibility_values {
-            values[loser as usize] = AllocationChange::Zero.apply(values[loser as usize]);
-        } else {
-            plan.aliases.push(loser);
-        }
+        plan.aliases.push(loser);
     }
     // Replaced owners can precede aliases already recorded for other inodes.
     plan.aliases.sort_unstable();
     Ok(())
 }
 
-fn allocations(
-    s: &Snapshot,
-    clones: bool,
-    force_dense: bool,
-) -> Result<InternalAllocationPlan, String> {
-    let compatibility_values = if force_dense || !s.tree.clones.windows(2).all(|w| w[0].0 < w[1].0)
-    {
-        Some(s.iter_nodes().map(|n| n.own_allocated_size).collect())
-    } else {
-        None
-    };
+fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, String> {
     let mut plan = InternalAllocationPlan {
         aliases: Vec::new(),
-        compatibility_values,
         clone_deduction_bytes: 0,
         clone_attributions: Vec::new(),
         scratch_bytes: 0,
@@ -295,11 +255,7 @@ fn allocations(
     let mut paths = [OwnerPathScratch::new(s), OwnerPathScratch::new(s)];
     let mut inodes = HashMap::new();
     collect_hardlinks(s, &mut plan, &mut inodes, &mut paths)?;
-    plan.scratch_bytes = plan
-        .compatibility_values
-        .as_ref()
-        .map_or(0, |v| v.capacity() * size_of::<u64>())
-        + plan.aliases.capacity() * size_of::<u32>()
+    plan.scratch_bytes = plan.aliases.capacity() * size_of::<u32>()
         + inodes.capacity() * size_of::<((u64, u64), u32)>();
     if !clones {
         return Ok(plan);
@@ -389,10 +345,6 @@ fn allocations(
         let alias = n.hard_link && inodes.get(&(n.identity.device, n.identity.inode)) != Some(id);
         let group = groups.get(&(n.identity.device, m.clone_id));
         let deduction = if !alias && group.is_some_and(|g| g.consistent && g.owner != *id) {
-            if let Some(values) = &mut plan.compatibility_values {
-                values[*id as usize] =
-                    AllocationChange::Subtract(m.data_allocated_size).apply(values[*id as usize]);
-            }
             m.data_allocated_size
         } else {
             0
@@ -423,17 +375,14 @@ fn allocations(
 mod tests {
     use super::*;
     fn reference_aggregate_two_pass(s: &mut Snapshot) {
-        let plan = allocations_two_pass_original(s, true, false).unwrap();
+        let plan = allocations_two_pass_original(s, true).unwrap();
         s.accounting.grouping_peak_bytes = s.accounting.grouping_peak_bytes.max(plan.scratch_bytes);
         s.accounting.deduction_bytes = plan.clone_deduction_bytes;
         let mut cursor = AllocationCursor::new(&plan);
         for id in 0..s.node_count() {
             s.update_node(id as u32, |n| {
                 n.logical_size = n.own_logical_size;
-                n.allocated_size = plan.compatibility_values.as_ref().map_or_else(
-                    || cursor.value(id as u32, n.own_allocated_size),
-                    |values| values[id],
-                );
+                n.allocated_size = cursor.value(id as u32, n.own_allocated_size);
             })
             .unwrap();
         }
@@ -493,21 +442,18 @@ mod tests {
         s
     }
 
-    fn empty_hardlink_plan(s: &Snapshot, force_dense: bool) -> InternalAllocationPlan {
+    fn empty_hardlink_plan() -> InternalAllocationPlan {
         InternalAllocationPlan {
             aliases: Vec::new(),
-            compatibility_values: (force_dense
-                || !s.tree.clones.windows(2).all(|w| w[0].0 < w[1].0))
-            .then(|| s.iter_nodes().map(|n| n.own_allocated_size).collect()),
             clone_deduction_bytes: 0,
             clone_attributions: Vec::new(),
             scratch_bytes: 0,
         }
     }
 
-    fn assert_hardlink_substep_matches_original(s: &Snapshot, force_dense: bool) {
-        let mut actual = empty_hardlink_plan(s, force_dense);
-        let mut expected = empty_hardlink_plan(s, force_dense);
+    fn assert_hardlink_substep_matches_original(s: &Snapshot) {
+        let mut actual = empty_hardlink_plan();
+        let mut expected = empty_hardlink_plan();
         let (mut actual_owners, mut expected_owners) = (HashMap::new(), HashMap::new());
         let before: Vec<_> = (0..s.node_count())
             .map(|id| format!("{:?}", s.tree.records[id]))
@@ -531,12 +477,8 @@ mod tests {
         if got.is_ok() {
             assert_eq!(actual.aliases, expected.aliases);
             assert_eq!(actual.aliases.capacity(), expected.aliases.capacity());
-            assert_eq!(actual.compatibility_values, expected.compatibility_values);
             let scratch = |p: &InternalAllocationPlan, owners: &HashMap<(u64, u64), u32>| {
-                p.compatibility_values
-                    .as_ref()
-                    .map_or(0, |v| v.capacity() * size_of::<u64>())
-                    + p.aliases.capacity() * size_of::<u32>()
+                p.aliases.capacity() * size_of::<u32>()
                     + owners.capacity() * size_of::<((u64, u64), u32)>()
             };
             assert_eq!(
@@ -551,14 +493,6 @@ mod tests {
             // The original second pass has not begun. The new private plan can
             // contain earlier loser commands, but Err drops it before publication.
             assert!(expected.aliases.is_empty());
-            if let Some(values) = expected.compatibility_values {
-                assert_eq!(
-                    values,
-                    s.iter_nodes()
-                        .map(|n| n.own_allocated_size)
-                        .collect::<Vec<_>>()
-                );
-            }
         }
         assert_eq!(
             before,
@@ -604,12 +538,10 @@ mod tests {
                 }
                 _ => {}
             }
-            for dense in [false, true] {
-                assert_hardlink_substep_matches_original(&s, dense);
-            }
+            assert_hardlink_substep_matches_original(&s);
         }
         let s = hardlink_fixture();
-        let mut plan = empty_hardlink_plan(&s, false);
+        let mut plan = empty_hardlink_plan();
         let mut owners = HashMap::new();
         collect_hardlinks(
             &s,
@@ -626,19 +558,18 @@ mod tests {
     }
 
     #[test]
-    fn onepass_complete_plans_match_frozen_original_with_dense_and_hostile_claims() {
+    fn onepass_complete_plans_match_frozen_original_with_sparse_claims() {
         type MaterializedPlan = (Vec<u64>, Vec<(u32, (bool, u64))>, u64, usize);
         fn observed(
             s: &Snapshot,
-            dense: bool,
             original: bool,
             clones: bool,
         ) -> Option<Result<MaterializedPlan, String>> {
             std::panic::catch_unwind(|| {
                 let plan = if original {
-                    allocations_two_pass_original(s, clones, dense)
+                    allocations_two_pass_original(s, clones)
                 } else {
-                    allocations(s, clones, dense)
+                    allocations(s, clones)
                 };
                 plan.map(|p| {
                     let p = p.materialize(s);
@@ -654,37 +585,32 @@ mod tests {
         }
         let template = super::super::tests::fixture();
         let metadata = template.tree.clones[0].1.clone();
-        for variant in 0..7 {
+        for variant in 0..4 {
             let mut s = hardlink_fixture();
             for id in [1, 2, 3, 4, 5, 7, 8] {
                 s.tree.clones.push((id, metadata.clone()));
             }
             match variant {
-                1 => s.tree.clones.reverse(),
-                2 => s.tree.clones.push(s.tree.clones[0].clone()),
-                3 => s.tree.clones.rotate_left(3),
-                4 => s.tree.clones.clear(),
-                5 => {
+                1 => s.tree.clones.clear(),
+                2 => {
                     for (_, m) in &mut s.tree.clones {
                         m.verified = false;
                     }
                 }
-                6 => {
+                3 => {
                     s.tree.clones.clear();
                     s.tree.records[7].parent = 7;
                 }
                 _ => {}
             }
-            for dense in [false, true] {
-                for clones in [false, true] {
-                    assert_eq!(
-                        observed(&s, dense, false, clones),
-                        observed(&s, dense, true, clones),
-                        "variant={variant}, dense={dense}, clones={clones}"
-                    );
-                }
+            for clones in [false, true] {
+                assert_eq!(
+                    observed(&s, false, clones),
+                    observed(&s, true, clones),
+                    "variant={variant}, clones={clones}"
+                );
             }
-            if variant == 0 || variant == 4 || variant == 5 {
+            if variant < 3 {
                 let mut actual = s.clone();
                 let mut expected = s;
                 for _ in 0..2 {
@@ -715,11 +641,7 @@ mod tests {
         }
         for n in s.iter_nodes().filter(|n| n.hard_link) {
             if inodes[&(n.identity.device, n.identity.inode)] != n.id {
-                if let Some(values) = &mut plan.compatibility_values {
-                    values[n.id as usize] = AllocationChange::Zero.apply(values[n.id as usize]);
-                } else {
-                    plan.aliases.push(n.id);
-                }
+                plan.aliases.push(n.id);
             }
         }
 
@@ -730,17 +652,9 @@ mod tests {
     fn allocations_two_pass_original(
         s: &Snapshot,
         clones: bool,
-        force_dense: bool,
     ) -> Result<InternalAllocationPlan, String> {
-        let compatibility_values =
-            if force_dense || !s.tree.clones.windows(2).all(|w| w[0].0 < w[1].0) {
-                Some(s.iter_nodes().map(|n| n.own_allocated_size).collect())
-            } else {
-                None
-            };
         let mut plan = InternalAllocationPlan {
             aliases: Vec::new(),
-            compatibility_values,
             clone_deduction_bytes: 0,
             clone_attributions: Vec::new(),
             scratch_bytes: 0,
@@ -757,18 +671,10 @@ mod tests {
         }
         for n in s.iter_nodes().filter(|n| n.hard_link) {
             if inodes[&(n.identity.device, n.identity.inode)] != n.id {
-                if let Some(values) = &mut plan.compatibility_values {
-                    values[n.id as usize] = AllocationChange::Zero.apply(values[n.id as usize]);
-                } else {
-                    plan.aliases.push(n.id);
-                }
+                plan.aliases.push(n.id);
             }
         }
-        plan.scratch_bytes = plan
-            .compatibility_values
-            .as_ref()
-            .map_or(0, |v| v.capacity() * size_of::<u64>())
-            + plan.aliases.capacity() * size_of::<u32>()
+        plan.scratch_bytes = plan.aliases.capacity() * size_of::<u32>()
             + inodes.capacity() * size_of::<((u64, u64), u32)>();
         if !clones {
             return Ok(plan);
@@ -859,10 +765,6 @@ mod tests {
                 n.hard_link && inodes.get(&(n.identity.device, n.identity.inode)) != Some(id);
             let group = groups.get(&(n.identity.device, m.clone_id));
             let deduction = if !alias && group.is_some_and(|g| g.consistent && g.owner != *id) {
-                if let Some(values) = &mut plan.compatibility_values {
-                    values[*id as usize] = AllocationChange::Subtract(m.data_allocated_size)
-                        .apply(values[*id as usize]);
-                }
                 m.data_allocated_size
             } else {
                 0
@@ -949,7 +851,6 @@ mod tests {
                 clone_attributions: attributions,
                 clone_deduction_bytes: 9,
                 scratch_bytes: 0,
-                compatibility_values: None,
             };
             let mut expected = vec![20; 10];
             for id in &plan.aliases {
@@ -969,20 +870,6 @@ mod tests {
         }
     }
 
-    fn assert_sparse_dense_equivalent(s: &Snapshot) {
-        let sparse = allocations(s, true, false).map(|p| p.materialize(s));
-        let dense = allocations(s, true, true).map(|p| p.materialize(s));
-        match (sparse, dense) {
-            (Ok(sparse), Ok(dense)) => {
-                assert_eq!(sparse.values, dense.values);
-                assert_eq!(sparse.clone_attributions, dense.clone_attributions);
-                assert_eq!(sparse.clone_deduction_bytes, dense.clone_deduction_bytes);
-            }
-            (Err(sparse), Err(dense)) => assert_eq!(sparse, dense),
-            _ => panic!("sparse/dense acceptance differs"),
-        }
-    }
-
     // Keep the former general-metadata update path as an independent oracle for
     // the size-only writes, including the compatibility allocation strategy.
     fn reference_aggregate(s: &mut Snapshot) {
@@ -993,10 +880,7 @@ mod tests {
         for id in 0..s.node_count() {
             s.update_node(id as u32, |n| {
                 n.logical_size = n.own_logical_size;
-                n.allocated_size = plan.compatibility_values.as_ref().map_or_else(
-                    || cursor.value(id as u32, n.own_allocated_size),
-                    |values| values[id],
-                );
+                n.allocated_size = cursor.value(id as u32, n.own_allocated_size);
             })
             .unwrap();
         }
@@ -1063,25 +947,6 @@ mod tests {
                 3 => actual.tree.clones[1].1.data_logical_size = 99,
                 _ => {}
             }
-            // Exercise the dense compatibility application separately: malformed
-            // claim ordering can itself be rejected before aggregation begins.
-            let dense = allocations(&actual, true, true).unwrap();
-            let values = dense.compatibility_values.as_ref().unwrap();
-            let mut dense_actual = actual.clone();
-            let mut dense_expected = actual.clone();
-            dense.apply_to(&mut dense_actual);
-            for (id, &allocated) in values.iter().enumerate() {
-                dense_expected
-                    .update_node(id as u32, |n| {
-                        n.logical_size = n.own_logical_size;
-                        n.allocated_size = allocated;
-                    })
-                    .unwrap();
-            }
-            assert_eq!(
-                serde_json::to_value(dense_actual).unwrap(),
-                serde_json::to_value(dense_expected).unwrap()
-            );
             let mut expected = actual.clone();
             for _ in 0..2 {
                 reference_aggregate(&mut expected);
@@ -1108,8 +973,8 @@ mod tests {
     }
 
     #[test]
-    fn sparse_commands_match_dense_strategy_and_repeated_aggregation() {
-        for variant in 0..7 {
+    fn repeated_aggregation_is_stable() {
+        for variant in 0..5 {
             let mut s = super::super::tests::fixture();
             match variant {
                 1 => s.tree.clones[1].1.verified = false,
@@ -1122,13 +987,10 @@ mod tests {
                     s.tree.clones.clear();
                     s.accounting.model = AccountingModel::HardLinksV1;
                 }
-                4 => s.tree.clones.reverse(),
-                5 => s.tree.clones.push(s.tree.clones[0].clone()),
-                6 => s.tree.clones[1].1.data_logical_size = 99,
+                4 => s.tree.clones[1].1.data_logical_size = 99,
                 _ => {}
             }
-            assert_sparse_dense_equivalent(&s);
-            if variant < 4 || variant == 6 {
+            {
                 crate::aggregate(&mut s);
                 let values: Vec<_> = s
                     .iter_nodes()
@@ -1141,9 +1003,6 @@ mod tests {
                         .map(|n| (n.logical_size, n.allocated_size))
                         .collect::<Vec<_>>()
                 );
-                assert_sparse_dense_equivalent(&s);
-            } else if let Ok(plan) = internal_allocation_plan(&s) {
-                assert!(plan.compatibility_values.is_some());
             }
         }
     }
@@ -1168,45 +1027,14 @@ mod tests {
             s.append_legacy_node(node).unwrap();
         }
         let sparse = internal_allocation_plan(&s).unwrap();
-        assert!(sparse.compatibility_values.is_none());
         assert!(sparse.aliases.is_empty());
         assert_eq!(sparse.scratch_bytes, 0);
-        let dense = allocations(&s, true, true).unwrap();
-        assert!(dense.scratch_bytes >= 100_001 * size_of::<u64>());
-        assert_eq!(sparse.materialize(&s).values, dense.materialize(&s).values);
     }
 
     #[test]
-    fn duplicate_claim_arithmetic_keeps_dense_failure_before_mutation() {
-        let mut s = super::super::tests::fixture();
-        s.tree.clones.push(s.tree.clones.last().unwrap().clone());
-        let before: Vec<_> = s.iter_nodes().map(|n| n.allocated_size).collect();
-        let observed = |force_dense| {
-            std::panic::catch_unwind(|| {
-                allocations(&s, true, force_dense).map(|p| p.materialize(&s).values)
-            })
-        };
-        match (observed(false), observed(true)) {
-            (Ok(left), Ok(right)) => assert_eq!(left, right),
-            (Err(_), Err(_)) => {}
-            _ => panic!("compatibility arithmetic failure differs"),
-        }
-        assert_eq!(
-            before,
-            s.iter_nodes().map(|n| n.allocated_size).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn claim_cursor_matches_original_lookup_for_sparse_and_hostile_ordering() {
+    fn claim_cursor_matches_binary_search_for_sparse_claims() {
         let metadata = super::super::tests::fixture().tree.clones[0].1.clone();
-        for ids in [
-            vec![],
-            vec![1, 4, 9],
-            vec![9, 1, 4],
-            vec![1, 1, 4],
-            vec![4, 1, 4, 9],
-        ] {
+        for ids in [vec![], vec![1, 4, 9]] {
             let claims: Vec<_> = ids
                 .iter()
                 .enumerate()
