@@ -728,6 +728,13 @@ export default function createApp() {
       if (request === folderRequest) choosingFolder = false;
     }
   }
+  // The sidebar's Scan folder: pick a folder, then scan it in view (the queue page would hide it).
+  async function scanFolder() {
+    const chosen = await chooseFolder();
+    if (!chosen) return;
+    queueOpen = false;
+    await start(chosen);
+  }
   function fail(e: unknown, context?: { title: string; reason: string }) {
     setError(String(e), context);
   }
@@ -1721,6 +1728,10 @@ export default function createApp() {
     get chooseFolder() {
       return isTauri() && !sessionBlocked && !targetsLoading && !!access;
     },
+    // A new pick replaces the one folder slot, so a running folder scan is never cancelled by it.
+    get scanFolder() {
+      return can.chooseFolder && !scans.folderBusy();
+    },
     get cleanupQueue() {
       return !blocked && !trash;
     },
@@ -2109,6 +2120,9 @@ export default function createApp() {
     },
     get chooseFolder() {
       return chooseFolder;
+    },
+    get scanFolder() {
+      return scanFolder;
     },
     get choosingFolder() {
       return choosingFolder;

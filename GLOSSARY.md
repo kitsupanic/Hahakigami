@@ -49,7 +49,7 @@ A note that some sizes in a scan may be slightly off because files changed while
 _Avoid_: Accounting warning, validation error
 
 **Scan target**:
-The disk or folder the next scan will measure. It is chosen from the Disks list in the sidebar (or the welcome page's folder picker) and may differ from the location of the scan on screen.
+The disk or folder the next scan will measure. It is chosen from the Disks list in the sidebar, the sidebar's Scan folder button, or the welcome page's folder picker, and may differ from the location of the scan on screen.
 _Avoid_: Next scan, scan picker
 
 **Cleanup queue**:

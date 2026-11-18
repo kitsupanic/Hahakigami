@@ -44,7 +44,9 @@ function app(overrides = {}) {
     ...fake,
     can: {
       chooseFolder: idle,
+      scanFolder: idle,
       cleanupQueue: !fake.blocked && !fake.trash,
+      ...(overrides as { can?: object }).can,
     },
   } as unknown as ReturnType<typeof createApp>;
 }
@@ -333,4 +335,26 @@ it("lists the folder scan after the disks, with its own tag, and opens it", asyn
   expect(
     container.querySelector<HTMLButtonElement>(".folder-nav")!.disabled,
   ).toBe(true);
+});
+
+const scanFolderButton = () =>
+  container.querySelector<HTMLButtonElement>("button.scan-folder-nav")!;
+
+it("scans a folder from the sidebar", async () => {
+  const scanFolder = vi.fn();
+  await render({ scanFolder });
+  await click(scanFolderButton());
+  expect(scanFolder).toHaveBeenCalledOnce();
+});
+
+it("disables Scan folder and says why while a folder scan is running", async () => {
+  await render({ can: { scanFolder: false } });
+  expect(scanFolderButton().disabled).toBe(true);
+  expect(scanFolderButton().title).toBe("A folder scan is running");
+});
+
+it("disables Scan folder when a folder can't be chosen", async () => {
+  await render({ can: { chooseFolder: false, scanFolder: false } });
+  expect(scanFolderButton().disabled).toBe(true);
+  expect(scanFolderButton().title).toBe("Choose a folder and scan it");
 });
