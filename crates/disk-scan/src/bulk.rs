@@ -6,14 +6,16 @@ use std::{io, ops::Range};
 pub(crate) const BULK_BUFFER_BYTES: usize = 64 * 1024;
 #[cfg(target_os = "macos")]
 const LARGE_BULK_BUFFER_BYTES: usize = 256 * 1024;
-fn u32_at(b: &[u8], at: usize) -> io::Result<u32> {
+pub(crate) fn u32_at(b: &[u8], at: usize) -> io::Result<u32> {
+    let bytes = at.checked_add(4).and_then(|end| b.get(at..end));
     Ok(u32::from_ne_bytes(
-        b.get(at..at + 4).ok_or_else(invalid)?.try_into().unwrap(),
+        bytes.ok_or_else(invalid)?.try_into().unwrap(),
     ))
 }
-fn u64_at(b: &[u8], at: usize) -> io::Result<u64> {
+pub(crate) fn u64_at(b: &[u8], at: usize) -> io::Result<u64> {
+    let bytes = at.checked_add(8).and_then(|end| b.get(at..end));
     Ok(u64::from_ne_bytes(
-        b.get(at..at + 8).ok_or_else(invalid)?.try_into().unwrap(),
+        bytes.ok_or_else(invalid)?.try_into().unwrap(),
     ))
 }
 fn invalid() -> io::Error {
@@ -264,38 +266,19 @@ pub(crate) fn enumerate_limited_with_accounting(
 #[cfg(target_os = "macos")]
 fn read_batch(fd: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool) -> io::Result<usize> {
     use std::os::fd::AsRawFd;
-    #[repr(C)]
-    struct AttrList {
-        count: u16,
-        reserved: u16,
-        common: u32,
-        volume: u32,
-        directory: u32,
-        file: u32,
-        fork: u32,
-    }
-    unsafe extern "C" {
-        fn getattrlistbulk(
-            fd: libc::c_int,
-            list: *mut AttrList,
-            buffer: *mut libc::c_void,
-            size: usize,
-            options: u64,
-        ) -> libc::c_int;
-    }
-    let mut attrs = AttrList {
-        count: 5,
+    let mut attrs = libc::attrlist {
+        bitmapcount: 5,
         reserved: 0,
-        common: 0x8200000b,
-        volume: 0,
-        directory: 0,
-        file: if rich { 0x607 } else { 7 },
-        fork: if rich { 0x1300 } else { 0 },
+        commonattr: 0x8200000b,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: if rich { 0x607 } else { 7 },
+        forkattr: if rich { 0x1300 } else { 0 },
     };
     let count = unsafe {
-        getattrlistbulk(
+        libc::getattrlistbulk(
             fd.as_raw_fd(),
-            &mut attrs,
+            (&mut attrs as *mut libc::attrlist).cast(),
             buffer.as_mut_ptr().cast(),
             buffer.len(),
             if rich { 0x21 } else { 1 },

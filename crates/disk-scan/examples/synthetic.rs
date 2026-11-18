@@ -14,7 +14,11 @@ fn main() {
             clone_metadata: None,
             id,
             parent: if directory { None } else { Some(0) },
-            children: vec![],
+            children: if directory {
+                (1..count).collect()
+            } else {
+                vec![]
+            },
             name: if directory {
                 "fixture".into()
             } else {
@@ -43,9 +47,6 @@ fn main() {
             excluded: false,
         })
         .unwrap();
-    }
-    if count > 0 {
-        s.set_children(0, &(1..count).collect::<Vec<_>>()).unwrap();
     }
     let construct_ms = start.elapsed().as_millis();
     let a = Instant::now();

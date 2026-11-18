@@ -477,14 +477,6 @@ impl Snapshot {
         self.check_metadata(id, m.parent, &m.identity, m.is_directory, m.hard_link)?;
         let name_len = u32::try_from(name.len()).map_err(|_| "native name too long")?;
         let children_len = u32::try_from(children_len).map_err(|_| "too many children")?;
-        let flags = match m.identity.kind {
-            NodeKind::Directory => 0,
-            NodeKind::File => 1,
-            NodeKind::Symlink => 2,
-            NodeKind::Other => 3,
-        } | ((m.is_directory as u32) << 2)
-            | ((m.hard_link as u32) << 3)
-            | ((m.excluded as u32) << 4);
         Ok(Record {
             device: m.identity.device,
             inode: m.identity.inode,
@@ -497,7 +489,7 @@ impl Snapshot {
             parent: m.parent.unwrap_or(NO_PARENT),
             name_len,
             children_len,
-            flags,
+            flags: m.flags(),
         })
     }
     fn legacy_metadata(n: &Node) -> NodeMetadata {
@@ -552,6 +544,7 @@ impl Snapshot {
         self.tree.names.extend_from_slice(name.as_encoded_bytes());
         self.tree.children.extend_from_slice(&n.children);
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_children(&mut self, id: u32, children: &[u32]) -> Result<(), String> {
         let r = self
             .tree
@@ -676,14 +669,7 @@ impl Snapshot {
         r.allocated_size = value.allocated_size;
         r.own_logical_size = value.own_logical_size;
         r.own_allocated_size = value.own_allocated_size;
-        r.flags = match value.identity.kind {
-            NodeKind::Directory => 0,
-            NodeKind::File => 1,
-            NodeKind::Symlink => 2,
-            NodeKind::Other => 3,
-        } | ((value.is_directory as u32) << 2)
-            | ((value.hard_link as u32) << 3)
-            | ((value.excluded as u32) << 4);
+        r.flags = value.flags();
         Ok(())
     }
 }
@@ -697,6 +683,20 @@ pub struct NodeMetadata {
     pub is_directory: bool,
     pub hard_link: bool,
     pub excluded: bool,
+}
+impl NodeMetadata {
+    /// Record flag encoding: kind in bits 0-1, then directory, hard link and excluded.
+    fn flags(&self) -> u32 {
+        let kind = match self.identity.kind {
+            NodeKind::Directory => 0,
+            NodeKind::File => 1,
+            NodeKind::Symlink => 2,
+            NodeKind::Other => 3,
+        };
+        kind | ((self.is_directory as u32) << 2)
+            | ((self.hard_link as u32) << 3)
+            | ((self.excluded as u32) << 4)
+    }
 }
 impl Snapshot {
     /// Opaque identity of the first record allocation; records are not contiguous.
@@ -719,6 +719,7 @@ impl Snapshot {
         self.root = root;
         Ok(())
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn replace_node(&mut self, id: u32, n: Node) -> Result<(), String> {
         if id as usize >= self.node_count() {
             return Err("invalid node id".into());
