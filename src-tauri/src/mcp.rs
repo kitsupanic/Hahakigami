@@ -1,11 +1,17 @@
 use crate::automation::Service;
 use rmcp::{
-    handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool, tool_handler,
-    tool_router, ServerHandler, ServiceExt,
+    handler::server::wrapper::Parameters, model::CallToolResult, schemars, service::RequestContext,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -82,9 +88,22 @@ impl Mcp {
     #[tool(
         description = "Scan a directory's metadata. One active scan per session; query its result with summary, node, children, search and issues. Results end with the session. Sizes do not represent reclaimable space."
     )]
-    async fn scan(&self, Parameters(input): Parameters<ScanInput>) -> CallToolResult {
-        self.execute(move |service| service.scan(PathBuf::from(input.path)))
-            .await
+    async fn scan(
+        &self,
+        Parameters(input): Parameters<ScanInput>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        tokio::select! {
+            result = self.execute(move |service| service.scan_with(PathBuf::from(input.path), flag)) => result,
+            // A client's `notifications/cancelled` only cancels this request; stop this request's scan
+            // (not whichever one is active), even if its blocking task has not started yet.
+            _ = context.ct.cancelled() => {
+                cancel.store(true, Ordering::Relaxed);
+                CallToolResult::structured_error(json!({"error": "Scan cancelled"}))
+            }
+        }
     }
 
     #[tool(

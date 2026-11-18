@@ -411,9 +411,10 @@ mod native {
     fn wait_for_replay(
         state: &State,
         cancel: &AtomicBool,
-        deadline: Instant,
+        timeout: Duration,
         mut flush: impl FnMut() -> u64,
     ) -> Result<(), String> {
+        let mut deadline = Instant::now() + timeout;
         let mut flush_marker = None;
         loop {
             if cancel.load(Ordering::Relaxed) {
@@ -435,6 +436,8 @@ mod native {
                 // this stream. Drain that marker as well as HistoryDone;
                 // never discard newly delivered paths by a prior ID cutoff.
                 flush_marker = Some(flush());
+                // The flush joins the cache loader, which can outlast the whole timeout; the marker gets its own.
+                deadline = Instant::now() + timeout;
                 continue;
             }
             if Instant::now() >= deadline {
@@ -881,19 +884,14 @@ mod native {
                         Err("Cannot start filesystem event history".into())
                     } else {
                         FSEventStreamFlushAsync(stream);
-                        wait_for_replay(
-                            &state,
-                            cancel,
-                            Instant::now() + Duration::from_secs(5),
-                            || {
-                                let joined = worker.take().expect("loader joined once").join();
-                                loaded =
-                                    Some(joined.unwrap_or_else(|_| {
-                                        Err("Cache loading worker failed".into())
-                                    }));
-                                FSEventStreamFlushAsync(stream)
-                            },
-                        )
+                        wait_for_replay(&state, cancel, Duration::from_secs(5), || {
+                            let joined = worker.take().expect("loader joined once").join();
+                            loaded = Some(
+                                joined
+                                    .unwrap_or_else(|_| Err("Cache loading worker failed".into())),
+                            );
+                            FSEventStreamFlushAsync(stream)
+                        })
                     };
                     if started {
                         FSEventStreamStop(stream);
@@ -1020,18 +1018,18 @@ mod native {
                 ready: Condvar::new(),
             };
             assert!(
-                wait_for_replay(&state, &AtomicBool::new(true), Instant::now(), || 0)
+                wait_for_replay(&state, &AtomicBool::new(true), Duration::ZERO, || 0)
                     .unwrap_err()
                     .contains("cancelled")
             );
             assert!(
-                wait_for_replay(&state, &AtomicBool::new(false), Instant::now(), || 0)
+                wait_for_replay(&state, &AtomicBool::new(false), Duration::ZERO, || 0)
                     .unwrap_err()
                     .contains("timeout")
             );
             state.collected.lock().unwrap().error = Some("callback error".into());
             assert_eq!(
-                wait_for_replay(&state, &AtomicBool::new(false), Instant::now(), || 0).unwrap_err(),
+                wait_for_replay(&state, &AtomicBool::new(false), Duration::ZERO, || 0).unwrap_err(),
                 "callback error"
             );
         }
@@ -1053,7 +1051,7 @@ mod native {
                     wait_for_replay(
                         state_ref,
                         &AtomicBool::new(false),
-                        Instant::now() + Duration::from_secs(1),
+                        Duration::from_secs(1),
                         || {
                             send.send(()).unwrap();
                             21
@@ -1066,6 +1064,41 @@ mod native {
                 state.ready.notify_one();
                 drop(collected);
                 waiter.join().unwrap().unwrap();
+            });
+        }
+        #[test]
+        fn replay_wait_gives_the_marker_a_fresh_timeout_after_a_slow_flush() {
+            let state = State {
+                root: PathBuf::from("/private/tmp/root"),
+                since: 10,
+                collected: Mutex::new(Collected {
+                    done: true,
+                    ..Collected::default()
+                }),
+                ready: Condvar::new(),
+            };
+            std::thread::scope(|scope| {
+                let (send, receive) = std::sync::mpsc::channel();
+                let state_ref = &state;
+                // Delivers the marker shortly after the flush returned, when the first timeout is long gone.
+                scope.spawn(move || {
+                    receive.recv().unwrap();
+                    std::thread::sleep(Duration::from_millis(20));
+                    let mut collected = state_ref.collected.lock().unwrap();
+                    collected.max_id = 21;
+                    state_ref.ready.notify_one();
+                });
+                wait_for_replay(
+                    &state,
+                    &AtomicBool::new(false),
+                    Duration::from_millis(50),
+                    || {
+                        std::thread::sleep(Duration::from_millis(100));
+                        send.send(()).unwrap();
+                        21
+                    },
+                )
+                .unwrap();
             });
         }
         #[test]

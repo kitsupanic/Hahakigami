@@ -18,6 +18,15 @@ pub(crate) fn u64_at(b: &[u8], at: usize) -> io::Result<u64> {
         bytes.ok_or_else(invalid)?.try_into().unwrap(),
     ))
 }
+/// The volume (not one file) cannot answer: the single rule for "unsupported" across listing and probes.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_unsupported(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
+        || matches!(
+            error.raw_os_error(),
+            Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL)
+        )
+}
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -371,8 +380,7 @@ fn enumerate_using(
             // EINTR is the caller's `retry::interrupted` to relist; recovering here
             // would drop clone data and add a spurious warning.
             Err(error) if rich && error.kind() != io::ErrorKind::Interrupted => {
-                let unsupported =
-                    matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP));
+                let unsupported = is_unsupported(&error);
                 let expected = crate::descriptor::identity_fd(fd);
                 observations.clear();
                 drop(records);
@@ -1207,8 +1215,7 @@ mod tests {
             let records = match records {
                 Ok(records) => records,
                 Err(error) if rich => {
-                    let unsupported =
-                        matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP));
+                    let unsupported = is_unsupported(&error);
                     let expected = crate::descriptor::identity_fd(fd);
                     observations.clear();
                     return recover_listing(entries, error, unsupported, warnings, |warnings| {
@@ -1612,6 +1619,7 @@ mod tests {
             &std::sync::Mutex::new(std::collections::HashMap::new()),
             &cancel,
             std::collections::VecDeque::new(),
+            true,
         );
         assert_eq!(probes.queries, 2);
         for (index, e) in baseline.iter().enumerate() {
@@ -1625,6 +1633,41 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(p).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_unsupported_errno_recovers_silently_on_the_rich_listing() {
+        let path = std::env::temp_dir().join(format!("bulk-unsupported-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let fd = std::fs::File::open(&path).unwrap().into();
+        for (code, warns) in [
+            (libc::ENOTSUP, false),
+            (libc::EOPNOTSUPP, false),
+            (libc::EINVAL, false),
+            (libc::EIO, true),
+        ] {
+            let mut warnings = Vec::new();
+            let mut reader = |_: &std::os::fd::OwnedFd, _: &mut [u8], rich: bool| {
+                if rich {
+                    Err(io::Error::from_raw_os_error(code))
+                } else {
+                    Ok(0)
+                }
+            };
+            enumerate_using(
+                &path,
+                &std::sync::atomic::AtomicBool::new(false),
+                &fd,
+                true,
+                &mut warnings,
+                &mut std::collections::VecDeque::new(),
+                &mut Vec::new(),
+                &mut reader,
+            )
+            .unwrap();
+            assert_eq!(!warnings.is_empty(), warns, "errno {code}");
+        }
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[cfg(target_os = "macos")]
     #[test]

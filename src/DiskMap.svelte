@@ -458,6 +458,8 @@
   }
   $effect(() => {
     const el = canvas!;
+    // After a mode switch the shapes are the other mode's until the worker replies; keep the last frame.
+    if (shapes.length && completedLayout?.mode !== mode) return;
     // Empty layouts need neither a context nor a high-resolution backing store.
     // Resetting dimensions also clears any image from the previous layout.
     if (!shapes.length) {
@@ -968,7 +970,9 @@
     </div>
   {/if}
   {#if !shapes.length}<div class="map-empty">
-      The map fills in as files are found
+      {scanComplete && layoutCurrent
+        ? "Nothing here takes space on disk."
+        : "The map fills in as files are found"}
     </div>{/if}
   <p id={summaryId} class="sr-only map-summary">{summaryText}</p>
   <p class="sr-only map-announcement" aria-live="polite" aria-atomic="true">

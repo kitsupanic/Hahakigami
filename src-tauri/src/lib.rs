@@ -851,7 +851,14 @@ fn discard_scan(state: State<'_, AppState>, scan_id: String) {
 }
 #[tauri::command]
 async fn scan_summary(state: State<'_, AppState>, scan_id: String) -> Result<Summary, String> {
-    Ok(state.scans.find(&scan_id)?.summary())
+    let s = state.scans.find(&scan_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let summary = s.summary();
+        s.check_valid()?;
+        Ok(summary)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -894,57 +901,62 @@ async fn get_scan_issues(
         return Err("Request between 1 and 100 scan details.".into());
     }
     let s = state.scans.find(&scan_id)?;
-    let snapshot = s.store.read().unwrap();
-    let (details, total) = match kind {
-        IssueKind::Errors => (&snapshot.errors, snapshot.stats.errors),
-        IssueKind::Restricted => (&snapshot.errors, snapshot.stats.restricted_system_issues),
-        IssueKind::Other => (
-            &snapshot.errors,
-            snapshot
-                .stats
-                .errors
-                .saturating_sub(snapshot.stats.restricted_system_issues),
-        ),
-        IssueKind::Excluded => (&snapshot.exclusions, snapshot.stats.excluded),
-    };
-    let included = |issue: &disk_scan::ScanIssue| match kind {
-        IssueKind::Restricted => disk_scan::is_system_restriction(issue),
-        IssueKind::Other => !disk_scan::is_system_restriction(issue),
-        _ => true,
-    };
-    let retained_total = match kind {
-        IssueKind::Restricted | IssueKind::Other => {
-            details.iter().filter(|issue| included(issue)).count()
-        }
-        _ => details.len(),
-    };
-    Ok(IssuePage {
-        scan_id,
-        node_id: 0,
-        kind,
-        total,
-        retained_total,
-        offset,
-        items: details
-            .iter()
-            .filter(|issue| included(issue))
-            .skip(offset)
-            .take(limit)
-            .map(|issue| IssueView {
-                category: if kind == IssueKind::Excluded {
-                    "excluded"
-                } else if disk_scan::is_system_restriction(issue) {
-                    "restrictedSystem"
-                } else {
-                    "other"
-                },
-                path: issue.path.to_string_lossy().into_owned(),
-                message: issue.message.clone(),
-                error_kind: issue.error_kind.clone(),
-                raw_os_error: issue.raw_os_error,
-            })
-            .collect(),
+    tauri::async_runtime::spawn_blocking(move || {
+        let snapshot = s.store.read().unwrap();
+        s.check_valid()?;
+        let (details, total) = match kind {
+            IssueKind::Errors => (&snapshot.errors, snapshot.stats.errors),
+            IssueKind::Restricted => (&snapshot.errors, snapshot.stats.restricted_system_issues),
+            IssueKind::Other => (
+                &snapshot.errors,
+                snapshot
+                    .stats
+                    .errors
+                    .saturating_sub(snapshot.stats.restricted_system_issues),
+            ),
+            IssueKind::Excluded => (&snapshot.exclusions, snapshot.stats.excluded),
+        };
+        let included = |issue: &disk_scan::ScanIssue| match kind {
+            IssueKind::Restricted => disk_scan::is_system_restriction(issue),
+            IssueKind::Other => !disk_scan::is_system_restriction(issue),
+            _ => true,
+        };
+        let retained_total = match kind {
+            IssueKind::Restricted | IssueKind::Other => {
+                details.iter().filter(|issue| included(issue)).count()
+            }
+            _ => details.len(),
+        };
+        Ok(IssuePage {
+            scan_id,
+            node_id: 0,
+            kind,
+            total,
+            retained_total,
+            offset,
+            items: details
+                .iter()
+                .filter(|issue| included(issue))
+                .skip(offset)
+                .take(limit)
+                .map(|issue| IssueView {
+                    category: if kind == IssueKind::Excluded {
+                        "excluded"
+                    } else if disk_scan::is_system_restriction(issue) {
+                        "restrictedSystem"
+                    } else {
+                        "other"
+                    },
+                    path: issue.path.to_string_lossy().into_owned(),
+                    message: issue.message.clone(),
+                    error_kind: issue.error_kind.clone(),
+                    raw_os_error: issue.raw_os_error,
+                })
+                .collect(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -954,10 +966,15 @@ async fn get_node(
     node_id: u32,
 ) -> Result<NodeView, String> {
     let s = state.scans.find(&scan_id)?;
-    let snapshot = s.store.read().unwrap();
-    let issues = issue_index(&s, &snapshot);
-    let n = snapshot.node(node_id).ok_or("Node not yet available")?;
-    view(&n, &issues.1)
+    tauri::async_runtime::spawn_blocking(move || {
+        let snapshot = s.store.read().unwrap();
+        s.check_valid()?;
+        let issues = issue_index(&s, &snapshot);
+        let n = snapshot.node(node_id).ok_or("Node not yet available")?;
+        view(&n, &issues.1)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[derive(Serialize)]
 struct Page {

@@ -3255,6 +3255,114 @@ fn cleanup_queue_direct_success_partial_failure_and_persistence_warning() {
     });
 }
 
+/// Runs `work` on another thread while the scan's store is write-locked, which parks its status checks partway,
+/// and gives `edit` the queue if it is free by then. Returns whether it was, with the result of `work`.
+fn while_parked<T: Send>(
+    s: &Session,
+    queue: &Mutex<cleanup_queue::Queue>,
+    work: impl FnOnce() -> T + Send,
+    edit: impl FnOnce(&mut cleanup_queue::Queue),
+) -> (bool, T) {
+    let store = s.store.write().unwrap();
+    std::thread::scope(|scope| {
+        let work = scope.spawn(work);
+        std::thread::sleep(Duration::from_millis(200));
+        let free = match queue.try_lock() {
+            Ok(mut queue) => {
+                edit(&mut queue);
+                true
+            }
+            Err(_) => false,
+        };
+        drop(store);
+        (free, work.join().unwrap())
+    })
+}
+
+#[test]
+fn queue_view_and_review_check_the_disk_without_the_queue_lock() {
+    let dir = fixture();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("a"), b"a").unwrap();
+    std::fs::write(root.join("b"), b"b").unwrap();
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let _storage = queue_in_tempdir(&state);
+    let scan = snapshot(root);
+    let ids: Vec<_> = scan
+        .iter_nodes()
+        .filter(|n| n.parent == Some(0))
+        .map(|n| n.id)
+        .collect();
+    let s = install(&state, scan);
+    cleanup::add(&s, &state.cleanup_queue, &ids).unwrap();
+    let queue = &state.cleanup_queue;
+    let scans = state.scans.sessions();
+    // An edit that lands while the entries are checked is in the view that comes back.
+    let (free, view) = while_parked(
+        &s,
+        queue,
+        || cleanup::queue_view(queue, &scans),
+        |q| {
+            let id = q.entries[0].id.clone();
+            q.remove(&[id]).unwrap();
+        },
+    );
+    assert!(
+        free,
+        "queue_view held the queue lock while checking the disk"
+    );
+    assert_eq!(view.revision, queue.lock().unwrap().revision);
+    assert_eq!(view.entries.len(), 1);
+    // The ticket records the revision of the queue the review read.
+    let (free, review) = while_parked(
+        &s,
+        queue,
+        || cleanup::review(&s, cleanup::Pick::Queue(queue, &scans)),
+        |_| {},
+    );
+    assert!(free, "review held the queue lock while checking the disk");
+    review.unwrap();
+    assert_eq!(
+        s.ticket.lock().unwrap().as_ref().unwrap().queue_revision,
+        Some(queue.lock().unwrap().revision)
+    );
+}
+
+#[test]
+fn a_selection_that_cannot_fit_the_queue_is_refused_before_any_disk_check() {
+    const FULL: &str = "Cleanup queue supports at most 1,000 entries. Remove items first.";
+    let dir = fixture();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    for i in 0..=cleanup_queue::MAX_ENTRIES {
+        std::fs::write(root.join(i.to_string()), []).unwrap();
+    }
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let _storage = queue_in_tempdir(&state);
+    let scan = snapshot(root.clone());
+    let all: Vec<_> = scan
+        .iter_nodes()
+        .filter(|n| n.parent == Some(0))
+        .map(|n| n.id)
+        .collect();
+    let last = node_of(&scan, &root.join(cleanup_queue::MAX_ENTRIES.to_string()));
+    let s = install(&state, scan);
+    let queue = &state.cleanup_queue;
+    // A file gone from disk would fail its own check with another message: the count is judged first.
+    std::fs::remove_file(root.join(cleanup_queue::MAX_ENTRIES.to_string())).unwrap();
+    assert_eq!(cleanup::add(&s, queue, &all), Err(FULL.into()));
+    let fits: Vec<_> = all.iter().copied().filter(|&id| id != last).collect();
+    cleanup::add(&s, queue, &fits).unwrap();
+    assert_eq!(
+        queue.lock().unwrap().entries.len(),
+        cleanup_queue::MAX_ENTRIES
+    );
+    // A full queue still takes what it already holds, and refuses one more.
+    cleanup::add(&s, queue, &fits[..1]).unwrap();
+    assert_eq!(cleanup::add(&s, queue, &[last]), Err(FULL.into()));
+}
+
 // Per-disk scan slots: each disk keeps its own live scan, folders share one.
 fn register_disk(state: &AppState, root: &Path) -> platform::Target {
     let mut target = platform::target(root, "disk".into());

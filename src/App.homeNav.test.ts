@@ -9,6 +9,7 @@ import type { NodeView, ScanSummary, Target } from "./types";
 const mock = vi.hoisted(() => ({
   invoke: vi.fn(),
   app: null as ReturnType<typeof createApp> | null,
+  channels: [] as { onmessage: (s: ScanSummary) => void }[],
 }));
 vi.mock("./createApp.svelte", async (original) => {
   const module = await original<typeof import("./createApp.svelte")>();
@@ -19,6 +20,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: mock.invoke,
   Channel: class {
     onmessage = (_: unknown) => {};
+    constructor() {
+      mock.channels.push(this);
+    }
   },
 }));
 vi.mock("./DiskMap.svelte", async () => ({
@@ -111,6 +115,7 @@ beforeEach(async () => {
   discovered = [disk, backup, home];
   mounted = ["/", "/Volumes/Backup"];
   mock.invoke.mockReset();
+  mock.channels.length = 0;
   mock.invoke.mockImplementation(async (command: string) => {
     switch (command) {
       case "get_explorer_preferences":
@@ -216,6 +221,17 @@ it("stops a running scan from the menu while the welcome page is shown", async (
   menuItem("stopScan").click();
   await settle();
   expect(calls("cancel_scan")).toHaveLength(1);
+});
+
+it("names the scan in the cancelled toast while the welcome page is shown", async () => {
+  state = "running";
+  await click(scanButton());
+  await click(diskRow("Backup"));
+  state = "cancelled";
+  await act(() => mock.channels.at(-1)!.onmessage(summary()));
+  const toast = container.querySelector(".toast")?.textContent;
+  expect(toast).toContain("Scan of Macintosh HD cancelled.");
+  expect(toast).not.toContain("Partial results");
 });
 
 it("does not navigate the hidden explorer from the welcome page", async () => {

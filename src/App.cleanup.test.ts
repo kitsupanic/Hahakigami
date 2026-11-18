@@ -711,6 +711,25 @@ it("shows pending addition then persistent selected-item confirmation", async ()
   ).toHaveLength(1);
 });
 
+it("disables Trash while a queue addition is pending", async () => {
+  await emptyQueue();
+  await selectFile();
+  await flush();
+  expect(menuItem("trash").enabled).toBe(true);
+  const implementation = mock.invoke.getMockImplementation()!;
+  let finish!: (value: QueueView) => void;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "add_cleanup_queue"
+      ? new Promise<QueueView>((resolve) => (finish = resolve))
+      : implementation(command, args),
+  );
+  await click("Add to cleanup queue");
+  expect(menuItem("trash").enabled).toBe(false);
+  await act(() => finish(queue));
+  await flush();
+  expect(menuItem("trash").enabled).toBe(true);
+});
+
 it("keeps a failed addition retryable without claiming success", async () => {
   const candidate = queue.entries[0];
   await emptyQueue();
