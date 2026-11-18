@@ -50,17 +50,15 @@ for(const d of [...dirs].reverse()){const child=nodes.filter(n=>n.parentId===d.i
 const extension=(n:any)=>{const dot=n.name.lastIndexOf('.');return dot>0?n.name.slice(dot+1).toLowerCase():''};
 const groups=new Map();let groupId=0x80000000;
 for(const f of files){const type=extension(f),key=f.parentId+':'+type;let group=groups.get(key);if(!group){group={...base,id:groupId++,parentId:f.parentId,name:(type?'.'+type:'No extension')+' files',path:'',kind:'aggregate',fileType:type,fileCount:0,logicalBytes:0,allocatedBytes:0};groups.set(key,group)}group.fileCount++;group.logicalBytes+=f.logicalBytes;group.allocatedBytes+=f.allocatedBytes}
-const summary={scanId:'file-types-fixture',rootId:0,state:'completed',origin:'saved',savedId:'file-types-saved',scanPhase:'done',scanMode:'full',workers:1,workerStats:[],entries:nodes.length,logicalBytes:dirs[0].logicalBytes,allocatedBytes:dirs[0].allocatedBytes,elapsedMs:1250,startedAtMs:1792400000000,completedAtMs:1792400001250,errors:0,excluded:0};
-const entry={id:'file-types-saved',name:dirs[0].name,rootPath:'/fixture',startedAtMs:summary.startedAtMs,completedAtMs:summary.completedAtMs,savedAtMs:summary.completedAtMs,entries:nodes.length,logicalBytes:summary.logicalBytes,allocatedBytes:summary.allocatedBytes,incomplete:false,errors:0,excluded:0,fileBytes:10000};
+const summary={scanId:'file-types-fixture',rootId:0,state:'completed',scanPhase:'done',scanMode:'full',workers:1,workerStats:[],entries:nodes.length,logicalBytes:dirs[0].logicalBytes,allocatedBytes:dirs[0].allocatedBytes,elapsedMs:1250,startedAtMs:1792400000000,completedAtMs:1792400001250,errors:0,excluded:0};
 (window as any).__fileTypes={commands:[],nodes};
 export async function invoke(command:string,args:any={}) {
  (window as any).__fileTypes.commands.push({command,...args});
  switch(command){
  case 'disk_access_setup':return {required:false,confirmed:true,pendingRestart:false,appPath:'/fixture/Hahakigami.app'};
- case 'list_saved_scans':return {entries:[entry],lastOpenedId:entry.id};
- case 'begin_saved_open':return crypto.randomUUID();
-case 'cancel_saved_open':return false;
-case 'open_saved_scan':return {...summary};
+ case 'full_disk_access_status':return {status:'on',scanAnyway:false,appPath:'/fixture/Hahakigami.app'};
+ case 'start_scan':return summary.scanId;
+ case 'scan_summary':return {...summary};
  case 'discover_targets':return [{id:'fixture',name:dirs[0].name,path:'/fixture',totalBytes:200*gib,freeBytes:50*gib}];
  case 'get_explorer_preferences':case 'set_explorer_preferences':return {sort:args.sort??'sizeDescending',warning:null};
  case 'list_cleanup_queue':return {entries:[],revision:0,warning:null,blocked:false};
@@ -222,6 +220,7 @@ case 'open_saved_scan':return {...summary};
       };
       try {
         await page.goto(server.resolvedUrls.local[0]);
+        await page.locator(".welcome-scan").click();
         await page
           .getByRole("button", { name: "Treemap", exact: true })
           .click();
@@ -509,7 +508,7 @@ case 'open_saved_scan':return {...summary};
         });
         await geometry("selected");
         check.steps.push(
-          "saved scan auto-open; type selection; matching fill/solid color without type-colored dashed parent outlines",
+          "live scan start; type selection; matching fill/solid color without type-colored dashed parent outlines",
         );
         if (name === "light-1536x1024") {
           await page.evaluate(() => {

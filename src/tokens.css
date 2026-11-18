@@ -250,16 +250,6 @@
   --success: #9bdfb9;
 }
 
-/* On the spine a straw fill under straw type vanishes, so a highlighted menu item lifts
-   to the carton step; the Saved tag is a keyline. */
-:root[data-theme="guardian"] .compact-sidebar .saved-menu button:is(:hover, :focus-visible) {
-  background: var(--soft);
-}
-:root[data-theme="guardian"] .compact-sidebar .saved-badge:not(.partial) {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--accent-text);
-}
-
 /* The sidebar toggle floats over the spine while the sidebar is shown. */
 :root[data-theme="guardian"] :not(.navigation-sidebar-hidden) > .titlebar-sidebar-toggle {
   --panel: #0e1319;

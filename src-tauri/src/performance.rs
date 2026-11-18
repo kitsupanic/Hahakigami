@@ -6,7 +6,7 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::Path,
-    sync::OnceLock,
+    sync::{atomic::AtomicBool, OnceLock},
     time::Duration,
 };
 use tauri::{Emitter, Listener};
@@ -150,8 +150,6 @@ fn configure(state: &AppState, config: &Config) -> Result<platform::Target, Stri
     *state.cleanup_queue.lock().unwrap() =
         cleanup_queue::Queue::load(config.state_dir.join("cleanup-queue"));
     *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(&preferences);
-    *state.library.lock().unwrap() =
-        Some(library::Library::new(config.state_dir.join("saved-scans")));
     state
         .baselines
         .configure(config.state_dir.join(if config.mode == "full" {
@@ -183,8 +181,7 @@ async fn scan_once<R: tauri::Runtime>(
 ) -> Result<Arc<Session>, String> {
     let id = start_scan(
         app.state(),
-        Some(target.id.clone()),
-        None,
+        target.id.clone(),
         Channel::new(|_| Ok(())),
         app.handle().clone(),
     )

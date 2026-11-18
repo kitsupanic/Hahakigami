@@ -57,7 +57,6 @@ const file: NodeView = {
 };
 const summary = (): ScanSummary => ({
   scanId: "scan",
-  origin: "live",
   rootId: 0,
   state: "completed",
   workers: 1,
@@ -117,8 +116,6 @@ beforeEach(async () => {
             scanAnyway: false,
             appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "list_cleanup_queue":
         return { entries: [], revision: 0, blocked: false, warning: null };
       case "discover_targets":

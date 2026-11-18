@@ -1,4 +1,4 @@
-/** Coverage is separate from whether a scan finished or was saved. Restricted system
+/** Coverage is separate from whether a scan finished. Restricted system
  *  locations (SIP/TCC) and excluded mounts are expected on macOS and can't be worked
  *  around, so only other problems make coverage "limited". */
 export function coverageLabel(scan: {

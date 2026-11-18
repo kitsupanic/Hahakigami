@@ -27,10 +27,6 @@ export type ScanChannel = { onmessage: (summary: ScanSummary) => void };
 export type ScanPort = {
   channel(): ScanChannel;
   startScan(targetId: string, onEvent: ScanChannel): Promise<string>;
-  rescanSavedScan(
-    scanId: string,
-    onEvent: ScanChannel,
-  ): Promise<{ scanId: string; target: Target }>;
   cancelScan(scanId: string): Promise<unknown>;
   discardScan(scanId: string): Promise<unknown>;
   scanSummary(scanId: string): Promise<ScanSummary>;
@@ -40,15 +36,10 @@ export const tauriScanPort: ScanPort = {
   channel: () => new Channel<ScanSummary>(),
   startScan: (targetId, onEvent) =>
     invoke<string>("start_scan", { targetId, onEvent }),
-  rescanSavedScan: (scanId, onEvent) =>
-    invoke("rescan_saved_scan", { scanId, onEvent }),
   cancelScan: (scanId) => invoke("cancel_scan", { scanId }),
   discardScan: (scanId) => invoke("discard_scan", { scanId }),
   scanSummary: (scanId) => invoke<ScanSummary>("scan_summary", { scanId }),
 };
-
-/** A new scan of a target, or of the location a saved scan measured. */
-export type StartRequest = { target: Target } | { savedScanId: string };
 
 /**
  * What the app does for one start: the view's side of it. The slots call these in the order the
@@ -63,8 +54,6 @@ export type StartView = {
   accepted(scanId: string): void;
   /** An event of this start's scan, after its slot recorded it. `restarted`: Scan all cancelled it to start again. */
   event(summary: ScanSummary, restarted: boolean): void;
-  /** A saved scan's rescan was registered as this target, after its slot was filed. */
-  target(target: Target): void;
   /** The scan's summary fetched after its id arrived, when no event beat it. */
   fetched(summary: ScanSummary): void;
   /** The backend refused the start. True when the app dealt with it, else the start rejects. */
@@ -77,7 +66,7 @@ export type ScanSlotsHooks = {
    * `takeView` is false for the starts of Scan all that only fill their sidebar row.
    */
   begin(
-    request: StartRequest,
+    target: Target,
     how: { takeView: boolean; batch: boolean },
   ): StartView | null;
 };
@@ -99,13 +88,6 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     slots = Object.fromEntries(
       Object.entries(slots).filter(([, slot]) => slot.scanId !== scanId),
     );
-  }
-  // Keeps a slot's summary current. A scan that was replaced or discarded no longer has a slot.
-  function patch(scanId: string, change: Partial<ScanSummary>) {
-    const key = Object.keys(slots).find((k) => slots[k].scanId === scanId);
-    const slot = key ? slots[key] : undefined;
-    if (key && slot?.summary)
-      put(key, { ...slot, summary: { ...slot.summary, ...change } });
   }
   function record(s: ScanSummary) {
     const key = Object.keys(slots).find((k) => slots[k].scanId === s.scanId);
@@ -163,24 +145,20 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
   const unfiled = new Map<string, { ejected: boolean }>();
 
   async function run(
-    request: StartRequest,
+    place: Target,
     how: { takeView: boolean; batch: boolean },
   ) {
-    const place = "target" in request ? request.target : null;
-    // rescan_saved_scan registers a folder target, so a saved scan is rescanned in the folder slot.
-    if (slotBusy(place ? slotKey(place) : FOLDER_SLOT)) return;
-    const view = hooks.begin(request, how);
+    if (slotBusy(slotKey(place))) return;
+    const view = hooks.begin(place, how);
     if (!view) return;
     ++starts;
     const pending = { ejected: false };
-    if (place) unfiled.set(slotKey(place), pending);
+    unfiled.set(slotKey(place), pending);
     let startedId: string | null = null;
-    // Events that arrive before a saved scan's rescan target is known.
-    let latest: ScanSummary | null = null;
     const accept = (id: string) => {
       if (startedId !== null) return;
       startedId = id;
-      if (place && unfiled.get(slotKey(place)) === pending)
+      if (unfiled.get(slotKey(place)) === pending)
         unfiled.delete(slotKey(place));
       if (pending.ejected) {
         void port.discardScan(id).catch(() => {});
@@ -189,10 +167,8 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
       }
       // The backend replaced this slot's scan at once; other slots keep theirs. The slot is tracked
       // whatever the user opened since, so a start that another one overtook is not lost.
-      if (place) {
-        put(slotKey(place), { target: place, scanId: id, summary: null });
-        trackBatch(slotKey(place));
-      }
+      put(slotKey(place), { target: place, scanId: id, summary: null });
+      trackBatch(slotKey(place));
       view.accepted(id);
     };
     let updates = 0;
@@ -201,7 +177,6 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     channel.onmessage = (s) => {
       accept(s.scanId);
       ++updates;
-      latest = s;
       if (s.state !== "running")
         draining = draining.filter((id) => id !== s.scanId);
       record(s);
@@ -210,24 +185,7 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     };
     try {
       if (view.ready) await view.ready;
-      let id: string;
-      if ("savedScanId" in request) {
-        const result = await port.rescanSavedScan(
-          request.savedScanId,
-          channel,
-        );
-        id = result.scanId;
-        accept(id);
-        put(slotKey(result.target), {
-          target: result.target,
-          scanId: id,
-          summary: latest,
-        });
-        trackBatch(slotKey(result.target));
-        view.target(result.target);
-      } else {
-        id = await port.startScan(request.target.id, channel);
-      }
+      const id = await port.startScan(place.id, channel);
       accept(id);
       if (!pending.ejected && view.current()) {
         const beforeSummary = updates;
@@ -241,7 +199,7 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
       if (!view.failed(e)) throw e;
     } finally {
       --starts;
-      if (place && unfiled.get(slotKey(place)) === pending)
+      if (unfiled.get(slotKey(place)) === pending)
         unfiled.delete(slotKey(place));
     }
   }
@@ -287,15 +245,12 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     },
     /** Whether a scan of this place would meet its own slot scanning. */
     busy: (place: Target) => slotBusy(slotKey(place)),
-    /** The folder slot's scan runs: where a saved scan's rescan goes. */
+    /** The folder slot's scan runs. */
     folderBusy: () => slotBusy(FOLDER_SLOT),
     /** Starts a scan; a busy slot is a no-op. Rejects with the backend's refusal when the app does not deal with it. */
-    start: (request: StartRequest) =>
-      run(request, { takeView: true, batch: false }),
+    start: (place: Target) => run(place, { takeView: true, batch: false }),
     /** Forgets a scan: replaced by a cleanup, or its disk is gone. */
     drop,
-    /** Changes a scan's recorded summary. */
-    patch,
     /** Ejects a disk's scan: the backend frees it, the slot is dropped. Returns its id, or null with no scan. */
     discard(place: Target) {
       const slot = slots[slotKey(place)];
@@ -335,10 +290,7 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
               // Ejected while waiting: nothing to scan.
               if (!disks().some((item) => item.id === disk.id)) return;
               if (slotBusy(key)) return report("The scan did not stop in time.");
-              await run(
-                { target: disk },
-                { takeView: options.takeView(key), batch: true },
-              );
+              await run(disk, { takeView: options.takeView(key), batch: true });
             } catch (e) {
               report(e);
             } finally {

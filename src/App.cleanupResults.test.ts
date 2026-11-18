@@ -109,8 +109,6 @@ beforeEach(async () => {
             scanAnyway: false,
             appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "discover_targets":
         return [target];
       case "list_cleanup_queue":

@@ -78,11 +78,7 @@ async function click(name: string) {
     await flush();
     return;
   }
-  const scope =
-    name === "Compare scans"
-      ? container.querySelector(".comparison-panel") || container
-      : container;
-  const b = Array.from(scope.querySelectorAll("button")).find(
+  const b = Array.from(container.querySelectorAll("button")).find(
     (b) =>
       b.getAttribute("aria-label") === name ||
       b.textContent?.trim() === name ||
@@ -95,23 +91,8 @@ async function click(name: string) {
   });
   await flush();
 }
-function expectHistoricalStatus(historical = true) {
-  const line = container.querySelector(".scan-status-line");
-  const chip = line?.querySelector(".status-chip.is-saved");
-  expect(chip !== null).toBe(historical);
-  if (historical) {
-    expect(chip?.textContent).toBe("Saved scan");
-    expect(line?.querySelector(".is-unsaved")).toBeNull();
-    expect(line?.querySelector('[role="status"]')).toBeNull();
-    expect(line?.textContent).not.toContain("Read-only");
-  }
-}
 const rescanAction = () =>
   container.querySelector<HTMLButtonElement>("header .rescan-action")!;
-const displayedPath = () =>
-  container.querySelector<HTMLElement>(
-    'nav[aria-label="Folder breadcrumbs"] button',
-  )?.title;
 const currentCrumb = () =>
   container.querySelector(
     'nav[aria-label="Folder breadcrumbs"] [aria-current="page"]',
@@ -123,7 +104,6 @@ const locationTarget = (text: string) => ({
       (item) => item.name.includes(text) || item.path === text,
     )!;
     mock.app!.setTarget(chosen);
-    mock.app!.setHistoricalSource(false);
   },
 });
 async function chooseFolderFromHome() {
@@ -134,14 +114,6 @@ async function chooseFolderFromHome() {
       .click(),
   );
   await flush();
-}
-async function savedAction(name: "Export scan" | "Remove scan") {
-  const trigger = container.querySelector<HTMLButtonElement>(
-    ".saved-menu-trigger",
-  )!;
-  await act(() => trigger.click());
-  await flush();
-  await click(name);
 }
 beforeEach(async () => {
   setShowLogicalSize(true);
@@ -154,8 +126,6 @@ beforeEach(async () => {
           return { sort: "sizeDescending", warning: null };
         case "set_explorer_sort":
           return { sort: args.sort, warning: null };
-        case "list_saved_scans":
-          return { entries: [], lastOpenedId: null };
         case "full_disk_access_status":
           return {
             status: "on",
@@ -508,43 +478,6 @@ it("shows one toolbar row of navigation, breadcrumbs, search, scan action and in
   expect(
     container.querySelector("#search-scope-description")?.textContent,
   ).toContain("Search covers all file names in Home");
-});
-it("offers Save from the status line for a live scan that is not saved", async () => {
-  await click("Scan location");
-  const line = container.querySelector(".scan-status-line")!;
-  expect(line.querySelector(".status-chip.is-unsaved")?.textContent).toBe(
-    "Save scan",
-  );
-  expect(line.textContent).toContain("Scan complete");
-  expect(
-    mock.invoke.mock.calls.some(([command]) => command === "save_scan"),
-  ).toBe(false);
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) =>
-    command === "save_scan"
-      ? Promise.resolve(savedEntry)
-      : original(command, args),
-  );
-  await click("Save scan");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([command, args]) => command === "save_scan" && args.scanId === "scan-1",
-    ),
-  ).toBe(true);
-  // Once saved, the chip stops offering Save so a second click can't duplicate it.
-  expect(line.querySelector(".status-chip.is-unsaved")).toBeNull();
-  const chip = line.querySelector<HTMLButtonElement>(".status-chip.is-saved")!;
-  expect(chip.textContent).toBe("Saved");
-  // Same button, so keyboard focus is not dropped; a second click is inert.
-  expect(chip.tagName).toBe("BUTTON");
-  expect(chip.getAttribute("aria-disabled")).toBe("true");
-  expect(line.querySelector("[role=status]")?.textContent).toContain(
-    "Scan saved",
-  );
-  await act(() => chip.click());
-  expect(
-    mock.invoke.mock.calls.filter(([command]) => command === "save_scan"),
-  ).toHaveLength(1);
 });
 it("ignores the second click of a double-click on Rescan", async () => {
   await click("Scan location");
@@ -1081,202 +1014,6 @@ it("shows completed system-only restrictions as a plain complete scan with no co
   expect(container.textContent).not.toContain("restricted system locations");
 });
 
-const savedEntry = {
-  id: "saved-1",
-  name: "Home history",
-  rootPath: "/fixture",
-  startedAtMs: 1000,
-  completedAtMs: 2000,
-  savedAtMs: 3000,
-  entries: 2,
-  logicalBytes: 100,
-  allocatedBytes: 100,
-  incomplete: false,
-  errors: 0,
-  excluded: 0,
-  fileBytes: 80,
-};
-async function mountHistory(
-  restore = true,
-  accessOff = false,
-  accounting: Partial<ScanSummary> = {},
-  entry = savedEntry,
-) {
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "list_saved_scans")
-      return {
-        entries: [entry],
-        lastOpenedId: restore ? entry.id : null,
-      };
-    if (command === "open_saved_scan")
-      return {
-        ...summary("historical"),
-        origin: "saved",
-        scanMode: "full",
-        savedId: entry.id,
-        ...accounting,
-      };
-    if (command === "full_disk_access_status" && accessOff)
-      return { status: "off", scanAnyway: false, appPath };
-    if (command === "rescan_saved_scan")
-      return {
-        scanId: "scan-1",
-        target: {
-          id: "saved-location",
-          name: "Saved location",
-          path: "/historical-root",
-          totalBytes: null,
-          freeBytes: null,
-        },
-      };
-    return original(command, args);
-  });
-  await act(async () => {
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-  });
-  await flush();
-}
-it("shows a recorded epoch completion time in the historical header", async () => {
-  await mountHistory(true, false, {}, { ...savedEntry, completedAtMs: 0 });
-  const timestamp = container.querySelector(".scan-timestamp");
-  expect(timestamp).not.toBeNull();
-  expect(timestamp?.textContent).toContain("Scanned");
-  expect(timestamp?.getAttribute("title")).toContain("Scan completed");
-});
-
-it("shows saved clone attribution before setup while retaining historical action restrictions", async () => {
-  const original = mock.invoke.getMockImplementation()!;
-  const clone: NodeView = {
-    ...file,
-    allocatedBytes: 0,
-    rawAllocatedBytes: 100,
-    verifiedClone: true,
-    cloneOwner: false,
-    cloneDeductionBytes: 100,
-  };
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "get_children") return { items: [clone], total: 1 };
-    if (command === "get_node" && args.nodeId === 1) return clone;
-    return original(command, args);
-  });
-  await mountHistory(true, true, {
-    accountingModel: "fullClonesV1",
-    accountingWarnings: ["Historical accounting warning"],
-  });
-  await act(async () =>
-    (container.querySelector("[role=treeitem]") as HTMLButtonElement).click(),
-  );
-  await flush();
-  expect(menuItem("trash").enabled).toBe(false);
-  expect(
-    mock.invoke.mock.calls.some(([command]) => command === "prepare_trash"),
-  ).toBe(false);
-});
-it("restores saved results without a dialog while access is off and blocks only the rescan", async () => {
-  asMac();
-  await mountHistory(true, true);
-  expect(
-    container.querySelector<HTMLElement>("#selection-inspector")?.hidden,
-  ).toBe(false);
-  expectHistoricalStatus();
-  expect(
-    container.querySelector(".scan-status-line")?.textContent,
-  ).not.toContain("full scan");
-  expect(container.querySelector("[role=dialog]")).toBeNull();
-  const buttons = [...container.querySelectorAll("button")];
-  expect(
-    buttons.some((b) => b.textContent?.trim() === "Reveal in Finder ↗"),
-  ).toBe(false);
-  expect(buttons.some((b) => b.textContent?.trim() === "Quick Look")).toBe(
-    false,
-  );
-  expect(buttons.some((b) => b.textContent?.trim() === "Move to Trash")).toBe(
-    false,
-  );
-  expect(menuItem("trash").enabled).toBe(false);
-  expect(container.querySelector(".status-chip.is-unsaved")).toBeNull();
-  const rescan = rescanAction();
-  expect(rescan.disabled).toBe(false);
-  await act(() => rescan.click());
-  await flush();
-  expect(container.querySelector("[role=dialog]")?.textContent).toContain(
-    "Full Disk Access is off",
-  );
-  expect(mock.invoke.mock.calls.some(([c]) => c === "rescan_saved_scan")).toBe(
-    false,
-  );
-});
-it("removes the archive and closes the displayed saved scan", async () => {
-  await mountHistory();
-  await savedAction("Remove scan");
-  expect(container.querySelector("[role=dialog]")?.textContent).toContain(
-    "Only the stored result",
-  );
-  await click("Remove saved result");
-  expect(mock.invoke.mock.calls).toContainEqual([
-    "delete_saved_scan",
-    { id: "saved-1" },
-  ]);
-  // No Current scan sits behind it, so Home is shown with no results.
-  expect(container.querySelector(".scan-status-line")).toBeNull();
-  expect(container.querySelector(".status-chip.is-saved")).toBeNull();
-  expect(container.textContent).toContain("No saved scans yet.");
-});
-it("imports into the library without replacing the current live results", async () => {
-  await click("Scan location");
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "import_saved_scan") return savedEntry;
-    return original(command, args);
-  });
-  await click("Import Scan");
-  expect(mock.invoke).toHaveBeenCalledWith("import_saved_scan", {
-    onProgress: expect.anything(),
-  });
-  expect(container.textContent).toContain("Home history");
-  expect(container.textContent).toContain("Imported scan added to Saved Scans");
-  expect(container.textContent).toContain("Scan complete");
-  expectHistoricalStatus(false);
-  expect(mock.invoke.mock.calls.some(([c]) => c === "open_saved_scan")).toBe(
-    false,
-  );
-});
-it("exports through a native picker using only a saved ID and preserves historical restrictions", async () => {
-  await mountHistory(true, true);
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "export_saved_scan") return true;
-    return original(command, args);
-  });
-  await savedAction("Export scan");
-  expect(mock.invoke).toHaveBeenCalledWith("export_saved_scan", {
-    id: savedEntry.id,
-    onProgress: expect.anything(),
-  });
-  expect(container.textContent).toContain("Scan exported");
-  expect(
-    container.querySelector(".import-button")?.getAttribute("title"),
-  ).toContain("full paths and sizes, but no file contents");
-  expectHistoricalStatus();
-  expect(menuItem("trash").enabled).toBe(false);
-});
-it("treats portable dialog cancellation as a no-op without losing results", async () => {
-  await mountHistory();
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "import_saved_scan") return null;
-    if (command === "export_saved_scan") return false;
-    return original(command, args);
-  });
-  await click("Import Scan");
-  await savedAction("Export scan");
-  expect(container.querySelector('.error[role="alert"]')).toBeNull();
-  expect(container.textContent).not.toContain("Scan exported");
-  expect(container.querySelectorAll(".saved-entry")).toHaveLength(1);
-});
 const failureDialog = () =>
   container.querySelector<HTMLElement>('[role="dialog"]');
 // jsdom has no `inert` reflection, so read the property Svelte sets.
@@ -1286,148 +1023,27 @@ const failureButton = (label: string) =>
   [...(failureDialog()?.querySelectorAll("button") ?? [])].find(
     (b) => b.textContent?.trim() === label,
   ) as HTMLButtonElement | undefined;
-it("opens a modal for a failed import and recovers by choosing another file", async () => {
-  await mountHistory();
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "import_saved_scan")
-      throw new Error("Invalid shared scan checksum");
-    return original(command, args);
-  });
-  await click("Import Scan");
-  const dialog = failureDialog()!;
-  expect(dialog.getAttribute("aria-modal")).toBe("true");
-  expect(dialog.querySelector("h2")?.textContent).toContain("Import failed");
-  // The raw error is only a technical detail, never the main message.
-  const details = dialog.querySelector("details")!;
-  expect(details.textContent).toContain("Invalid shared scan checksum");
-  expect(dialog.textContent?.replace(details.textContent!, "")).not.toContain(
-    "Invalid shared scan checksum",
-  );
-  expect(container.querySelector("main .scan-transfer")).toBeNull();
-  expect(inert("main")).toBe(true);
-  expect(inert("aside")).toBe(true);
-  expectHistoricalStatus();
-  expect(container.querySelectorAll(".saved-entry")).toHaveLength(1);
-  const before = mock.invoke.mock.calls.filter(
-    ([c]) => c === "import_saved_scan",
-  ).length;
-  await act(() => failureButton("Choose another file")!.click());
-  await flush();
-  expect(
-    mock.invoke.mock.calls.filter(([c]) => c === "import_saved_scan"),
-  ).toHaveLength(before + 1);
-});
-it("opens a modal for a failed export with its reason and a Done button", async () => {
-  await mountHistory();
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "export_saved_scan") throw new Error("Disk is full");
-    return original(command, args);
-  });
-  await savedAction("Export scan");
-  const dialog = failureDialog()!;
-  expect(dialog.querySelector("h2")?.textContent).toContain("Export failed");
-  expect(dialog.querySelector("details")?.textContent).toContain(
-    "Disk is full",
-  );
-  expect(container.querySelector("main .scan-transfer")).toBeNull();
-  await act(() => failureButton("Done")!.click());
-  expect(failureDialog()).toBeNull();
-  expect(inert("main")).toBe(false);
-});
-it("keeps the pending transfer indicator out of the explorer layout", async () => {
-  await mountHistory();
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) =>
-    command === "import_saved_scan"
-      ? new Promise(() => {})
-      : original(command, args),
-  );
-  await click("Import Scan");
-  expect(
-    container.querySelector(".scan-transfer .transfer-phase"),
-  ).not.toBeNull();
-  expect(container.querySelector("main .scan-transfer")).toBeNull();
-});
 const toast = () => container.querySelector<HTMLElement>(".toast");
 const toastButton = (label: string) =>
   [...(toast()?.querySelectorAll("button") ?? [])].find(
     (b) =>
       b.textContent?.trim() === label || b.getAttribute("aria-label") === label,
   ) as HTMLButtonElement;
-function answerWith(command: string, value: unknown) {
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (name, args) =>
-    name === command ? value : original(name, args),
-  );
-}
-it.each([
-  {
-    label: "Import Scan",
-    command: "import_saved_scan",
-    value: null,
-    text: "Import cancelled",
-  },
-  {
-    label: "Export scan",
-    command: "export_saved_scan",
-    value: false,
-    text: "Export cancelled",
-  },
-  {
-    label: "Export scan",
-    command: "export_saved_scan",
-    value: true,
-    text: "Scan exported",
-  },
-  {
-    label: "Import Scan",
-    command: "import_saved_scan",
-    value: savedEntry,
-    text: "Imported scan added to Saved Scans",
-  },
-])(
-  "announces $text in a polite toast without moving focus or adding a card above the map",
-  async ({ label, command, value, text }) => {
-    await mountHistory(true, true);
-    answerWith(command, value);
-    const focused = document.activeElement;
-    if (label === "Import Scan") await click(label);
-    else await savedAction("Export scan");
-    expect(toast()?.textContent).toContain(text);
-    const region = toast()!.closest("[aria-live]")!;
-    expect(region.getAttribute("aria-live")).toBe("polite");
-    expect(region.getAttribute("role")).toBe("status");
-    expect(container.contains(document.activeElement)).toBe(
-      container.contains(focused),
-    );
-    expect(toast()!.contains(document.activeElement)).toBe(false);
-    expect(container.querySelector(".scan-transfer")).toBeNull();
-  },
-);
-it("confirms a saved scan with a toast", async () => {
-  await click("Scan location");
-  answerWith("save_scan", savedEntry);
-  await click("Save scan");
-  expect(toast()?.textContent).toContain("Scan saved");
-});
-it("opens a modal for a failed save, with the raw error only under Technical details", async () => {
-  await click("Scan location");
+it("opens a modal for a failed folder pick, with the raw error only under Technical details", async () => {
   const original = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "save_scan") throw new Error("No space left on device");
+    if (command === "choose_folder") throw new Error("Picker offline");
     return original(command, args);
   });
-  await click("Save scan");
+  await chooseFolderFromHome();
   const dialog = failureDialog()!;
   expect(dialog.querySelector("h2")?.textContent).toContain(
-    "Couldn’t save the scan",
+    "Couldn’t choose the folder",
   );
   const details = dialog.querySelector("details")!;
-  expect(details.textContent).toContain("No space left on device");
+  expect(details.textContent).toContain("Picker offline");
   expect(dialog.textContent?.replace(details.textContent!, "")).not.toContain(
-    "No space left on device",
+    "Picker offline",
   );
   expect(container.querySelector("main .error")).toBeNull();
   expect(toast()).toBeNull();
@@ -1435,6 +1051,28 @@ it("opens a modal for a failed save, with the raw error only under Technical det
   await act(() => failureButton("Close")!.click());
   expect(failureDialog()).toBeNull();
   expect(inert("main")).toBe(false);
+});
+// Each cancelled scan raises one "Scan cancelled" toast.
+async function cancelledScan() {
+  await act(() => mock.app!.start());
+  await flush();
+  await act(async () =>
+    mock.channels.at(-1)!.onmessage(summary("scan-1", "cancelled")),
+  );
+}
+it("announces a toast politely without moving focus or adding a card above the map", async () => {
+  await click("Scan location");
+  const focused = document.activeElement;
+  await cancelledScan();
+  expect(toast()?.textContent).toContain("Scan cancelled");
+  const region = toast()!.closest("[aria-live]")!;
+  expect(region.getAttribute("aria-live")).toBe("polite");
+  expect(region.getAttribute("role")).toBe("status");
+  expect(container.contains(document.activeElement)).toBe(
+    container.contains(focused),
+  );
+  expect(toast()!.contains(document.activeElement)).toBe(false);
+  expect(container.querySelector(".scan-note")).toBeNull();
 });
 it("shows a cancelled scan as a toast instead of a note above the map", async () => {
   await click("Scan location");
@@ -1487,16 +1125,15 @@ it("closes the failed scan modal with Escape and does not reopen it for the same
   expect(failureDialog()).toBeNull();
 });
 it("fades a toast after about four seconds, unless hovered or focused", async () => {
-  await mountHistory(true, true);
-  answerWith("export_saved_scan", true);
+  await click("Scan location");
   vi.useFakeTimers();
   try {
-    await savedAction("Export scan");
+    await cancelledScan();
     await act(() => vi.advanceTimersByTimeAsync(3900));
     expect(toast()).not.toBeNull();
     await act(() => vi.advanceTimersByTimeAsync(300));
     expect(toast()).toBeNull();
-    await act(() => toastlessExport());
+    await cancelledScan();
     await act(() =>
       toast()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })),
     );
@@ -1507,7 +1144,7 @@ it("fades a toast after about four seconds, unless hovered or focused", async ()
     );
     await act(() => vi.advanceTimersByTimeAsync(4100));
     expect(toast()).toBeNull();
-    await act(() => toastlessExport());
+    await cancelledScan();
     await act(() =>
       toast()!.dispatchEvent(new FocusEvent("focusin", { bubbles: true })),
     );
@@ -1521,340 +1158,21 @@ it("fades a toast after about four seconds, unless hovered or focused", async ()
   } finally {
     vi.useRealTimers();
   }
-  async function toastlessExport() {
-    await savedAction("Export scan");
-  }
 });
 it("dismisses a toast early and lets a new toast replace the current one", async () => {
-  await mountHistory(true, true);
-  answerWith("export_saved_scan", true);
-  await savedAction("Export scan");
+  await click("Scan location");
+  await cancelledScan();
   await act(() => toastButton("Dismiss").click());
   expect(toast()).toBeNull();
-  await savedAction("Export scan");
-  expect(toast()?.textContent).toContain("Scan exported");
-  answerWith("export_saved_scan", false);
-  await savedAction("Export scan");
+  await cancelledScan();
+  const first = toast();
+  expect(first?.textContent).toContain("Scan cancelled");
+  await cancelledScan();
   expect(container.querySelectorAll(".toast")).toHaveLength(1);
-  expect(toast()?.textContent).toContain("Export cancelled");
-  expect(toast()?.textContent).not.toContain("Scan exported");
+  expect(toast()).not.toBe(first);
 });
-it("keeps the old cards' actions on their toasts", async () => {
-  await mountHistory(true, true);
-  answerWith("import_saved_scan", savedEntry);
-  await click("Import Scan");
-  const opens = () =>
-    mock.invoke.mock.calls.filter(([c]) => c === "open_saved_scan").length;
-  const before = opens();
-  await act(() => toastButton("Open imported scan").click());
-  await flush();
-  expect(opens()).toBe(before + 1);
-  expect(toast()).toBeNull();
-  answerWith("import_saved_scan", null);
-  await click("Import Scan");
-  answerWith("import_saved_scan", savedEntry);
-  await act(() => toastButton("Choose file again").click());
-  await flush();
-  expect(toast()?.textContent).toContain("Imported scan added");
-});
-it("blocks conflicting operations while importing and releases controls after cancellation", async () => {
-  await mountHistory();
-  let finish!: (value: unknown) => void;
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) => {
-    if (command === "import_saved_scan")
-      return new Promise((resolve) => {
-        finish = resolve;
-      });
-    return original(command, args);
-  });
-  await click("Import Scan");
-  expect(
-    container.querySelector(".scan-transfer .transfer-phase")?.textContent,
-  ).toContain("Choose a shared scan file in the file dialog.");
-  expect(
-    container.querySelector<HTMLButtonElement>(".saved-menu-trigger")?.disabled,
-  ).toBe(true);
-  for (const name of ["Import Scan", "Rescan Home"]) {
-    expect(
-      [...container.querySelectorAll("button")].find(
-        (b) =>
-          b.getAttribute("aria-label") === name ||
-          b.textContent?.trim() === name,
-      )?.disabled,
-    ).toBe(true);
-  }
-  await act(() =>
-    container.querySelector<HTMLButtonElement>(".saved-menu-trigger")!.click(),
-  );
-  expect(container.querySelector(".saved-menu")).toBeNull();
-  expect(mock.invoke.mock.calls.some(([c]) => c === "export_saved_scan")).toBe(
-    false,
-  );
-  await act(async () => finish(null));
-  await flush();
-  expect(
-    [...container.querySelectorAll("button")].find(
-      (b) => b.getAttribute("aria-label") === "Import Scan",
-    )?.disabled,
-  ).toBe(false);
-});
-it("rescans saved locations through the native trusted-location command", async () => {
-  await mountHistory();
-  const inspector = container.querySelector<HTMLElement>(
-    "#selection-inspector",
-  )!;
-  expect(inspector.getAttribute("aria-label")).toBe("Current folder details");
-  const visibleActions = [
-    ...inspector.querySelectorAll<HTMLButtonElement>(
-      ".inspector-actions > button",
-    ),
-  ].filter((button) => !button.hidden);
-  expect(visibleActions).toHaveLength(0);
-  expect(inspector.querySelector(".historical-context")?.textContent).toContain(
-    "can't preview or queue files from a saved scan",
-  );
-  expect(container.querySelectorAll("header .rescan-action")).toHaveLength(1);
-  await click("Rescan Home");
-  await flush();
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c, a]) => c === "rescan_saved_scan" && a.scanId === "historical",
-    ),
-  ).toBe(true);
-  expectHistoricalStatus(false);
-});
-it("shows open errors without replacing the current live result", async () => {
-  await mountHistory(false);
-  await click("Scan location");
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "open_saved_scan")
-      throw new Error("Archive checksum failed");
-    return original(command, args);
-  });
-  const history = [...container.querySelectorAll("button")].find(
-    (b) =>
-      b.getAttribute("aria-label")?.includes("Home history") &&
-      b.classList.contains("saved-summary"),
-  )!;
-  await act(async () => history.click());
-  await flush();
-  expect(container.textContent).toContain("Archive checksum failed");
-  expect(container.textContent).toContain("Scan complete");
-  expectHistoricalStatus(false);
-});
-it("blocks switching during saving while keeping browsing controls available", async () => {
-  await click("Scan location");
-  let finish!: (value: unknown) => void;
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) => {
-    if (command === "save_scan")
-      return new Promise((resolve) => {
-        finish = resolve;
-      });
-    return original(command, args);
-  });
-  await click("Save scan");
-  expect(container.textContent).toContain("Saving scan");
-  expect(
-    [...container.querySelectorAll("button")].find(
-      (b) => b.getAttribute("aria-label") === "Rescan Home",
-    )!.disabled,
-  ).toBe(true);
-  expect(
-    [...container.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Logical",
-    )!.disabled,
-  ).toBe(false);
-  await act(async () => finish(savedEntry));
-  await flush();
-  expect(container.textContent).toContain("Home history");
-  expect(container.textContent).not.toContain("Saving scan");
-});
-
-it("uses the authoritative historical rescan target for cleanup rescanning", async () => {
-  await mountHistory();
-  await click("Rescan Home");
-  expect(displayedPath()).toBe("/historical-root");
-  await act(async () =>
-    (container.querySelector("[role=treeitem]") as HTMLButtonElement).click(),
-  );
-  await click("Move to Trash");
-  await act(async () =>
-    (
-      container.querySelector("[role=dialog] .danger") as HTMLButtonElement
-    ).click(),
-  );
-  await flush();
-  const starts = mock.invoke.mock.calls.filter(([c]) => c === "start_scan");
-  expect(starts.at(-1)?.[1].targetId).toBe("saved-location");
-});
-
-it("restores once after remount and retains the opening lock", async () => {
-  const original = mock.invoke.getMockImplementation()!;
-  const lists: ((value: unknown) => void)[] = [];
-  let finish!: (value: unknown) => void;
-  mock.invoke.mockImplementation((command, args) => {
-    if (command === "list_saved_scans")
-      return new Promise((resolve) => lists.push(resolve));
-    if (command === "open_saved_scan")
-      return new Promise((resolve) => {
-        finish = resolve;
-      });
-    return original(command, args);
-  });
-  await act(async () => {
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-  });
-  expect(lists).toHaveLength(2);
-  await act(async () =>
-    lists[1]({ entries: [savedEntry], lastOpenedId: savedEntry.id }),
-  );
-  await flush();
-  await act(async () =>
-    lists[0]({ entries: [savedEntry], lastOpenedId: savedEntry.id }),
-  );
-  await flush();
-  expect(
-    mock.invoke.mock.calls.filter(([c]) => c === "open_saved_scan"),
-  ).toHaveLength(1);
-  expect(container.textContent).toContain("Opening saved scan");
-  expect(rescanAction().disabled).toBe(true);
-  await act(async () =>
-    finish({
-      ...summary("historical"),
-      origin: "saved",
-      savedId: savedEntry.id,
-    }),
-  );
-  await flush();
-  expectHistoricalStatus();
-  expect(container.textContent).not.toContain("Opening saved scan");
-});
-
-it("scans a newly selected live location while retaining historical action guards", async () => {
-  await mountHistory();
-  await act(() => locationTarget("Other").click());
-  await flush();
-  expect(displayedPath()).toBe("/fixture");
-  expect(container.querySelector(".pending-scan")).toBeNull();
-  expect(rescanAction().getAttribute("aria-label")).toBe("Scan Other");
-  expect(rescanAction().textContent?.trim()).toBe("Scan");
-  expect(mock.invoke.mock.calls.some(([c]) => c === "start_scan")).toBe(false);
-  expectHistoricalStatus();
-  expect(
-    [...container.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Reveal in Finder ↗",
-    ),
-  ).toBeUndefined();
-  await click("Scan Other");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c, a]) => c === "start_scan" && a.targetId === "other",
-    ),
-  ).toBe(true);
-  expect(mock.invoke.mock.calls.some(([c]) => c === "rescan_saved_scan")).toBe(
-    false,
-  );
-});
-it("scans a picked folder rather than the displayed historical root", async () => {
-  await mountHistory();
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) =>
-    command === "choose_folder"
-      ? Promise.resolve({
-          id: "picked",
-          name: "Picked",
-          path: "/picked",
-          totalBytes: null,
-          freeBytes: null,
-        })
-      : original(command, args),
-  );
-  await chooseFolderFromHome();
-  await act(() => mock.app!.showResults());
-  expect(rescanAction().getAttribute("aria-label")).toBe("Scan Picked");
-  expect(displayedPath()).toBe("/fixture");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c]) => c === "start_scan" || c === "rescan_saved_scan",
-    ),
-  ).toBe(false);
-  await click("Scan Picked");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c, a]) => c === "start_scan" && a.targetId === "picked",
-    ),
-  ).toBe(true);
-});
-it("retains a historical-root rescan action after selecting another location", async () => {
-  await mountHistory();
-  await act(async () => locationTarget("Other").click());
-  await flush();
-  expect(container.querySelector(".pending-scan")).toBeNull();
-  expect(container.querySelector(".rescan-source-action")).toBeNull();
-  expect(rescanAction().getAttribute("aria-label")).toBe("Scan Other");
-  await act(() => locationTarget("/fixture").click());
-  await flush();
-  expect(rescanAction().getAttribute("aria-label")).toBe("Rescan Home");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c]) => c === "start_scan" || c === "rescan_saved_scan",
-    ),
-  ).toBe(false);
-  await click("Rescan Home");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c, a]) => c === "rescan_saved_scan" && a.scanId === "historical",
-    ),
-  ).toBe(true);
-});
-
-it("choosing the displayed location again preserves displayed results and rescans the original saved location", async () => {
-  await mountHistory();
-  await act(() => locationTarget("Other").click());
-  await flush();
-  const heading = currentCrumb();
-  const rows = container.querySelector(".file-list")!.textContent;
-  const mapCalls = mock.invoke.mock.calls.filter(
-    ([c]) => c === "get_map",
-  ).length;
-  await act(() => locationTarget("/fixture").click());
-  await flush();
-  expect(currentCrumb()).toBe(heading);
-  expect(container.querySelector(".file-list")!.textContent).toBe(rows);
-  expect(mock.invoke.mock.calls.filter(([c]) => c === "get_map")).toHaveLength(
-    mapCalls,
-  );
-  expect(
-    mock.invoke.mock.calls.some(
-      ([c]) => c === "start_scan" || c === "rescan_saved_scan",
-    ),
-  ).toBe(false);
-  const rescan = rescanAction();
-  expect(rescan.getAttribute("aria-label")).toBe("Rescan Home");
-  expect(rescan.textContent?.trim()).toBe("Rescan");
-  await act(() => rescan.click());
-  await flush();
-  expect(
-    mock.invoke.mock.calls.some(
-      ([command, args]) =>
-        command === "rescan_saved_scan" && args.scanId === "historical",
-    ),
-  ).toBe(true);
-  expect(
-    mock.invoke.mock.calls.some(([command]) => command === "start_scan"),
-  ).toBe(false);
-});
-
 it("the inspector returns to current-folder context when an explicit selection clears", async () => {
-  await mountHistory();
+  await click("Scan location");
   const inspector = container.querySelector<HTMLElement>(
     "#selection-inspector",
   )!;
@@ -1876,24 +1194,17 @@ it("the inspector returns to current-folder context when an explicit selection c
   expect(inspector.getAttribute("aria-label")).toBe("Current folder details");
 });
 
-it("shows only one rescan action when the selected location matches the saved root", async () => {
-  await mountHistory();
+it("shows only one rescan action when the selected location matches the scanned root", async () => {
+  await click("Scan location");
   await act(() => locationTarget("/fixture").click());
   await flush();
-  expectHistoricalStatus();
-  expect(container.querySelector(".historical-rescan")).toBeNull();
   expect(container.querySelectorAll(".rescan-action")).toHaveLength(1);
   expect(rescanAction().getAttribute("aria-label")).toBe("Rescan Home");
+  const starts = () =>
+    mock.invoke.mock.calls.filter(([c]) => c === "start_scan").length;
+  const before = starts();
   await click("Rescan Home");
-  expect(
-    mock.invoke.mock.calls.some(
-      ([command, args]) =>
-        command === "rescan_saved_scan" && args.scanId === "historical",
-    ),
-  ).toBe(true);
-  expect(
-    mock.invoke.mock.calls.some(([command]) => command === "start_scan"),
-  ).toBe(false);
+  expect(starts()).toBe(before + 1);
 });
 
 it("shows incremental reuse and safe full-scan fallback reasons", async () => {
@@ -1989,197 +1300,6 @@ it("loads the published incremental root after a same-count placeholder lookup f
   expect(container.querySelector("[role=treeitem]")?.textContent).toContain(
     "large.dat",
   );
-});
-
-it("compares the finished Current scan with a saved scan of its location without saving it", async () => {
-  const original = mock.invoke.getMockImplementation()!;
-  let entries = [{ ...savedEntry, id: "elsewhere", rootPath: "/other" }];
-  mock.invoke.mockImplementation((command, args) => {
-    if (command === "list_saved_scans")
-      return Promise.resolve({ entries, lastOpenedId: null });
-    return original(command, args);
-  });
-  const compareButton = () =>
-    container.querySelector<HTMLButtonElement>(
-      '[aria-label="Compare saved scans"]',
-    )!;
-  await act(async () => {
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-  });
-  await flush();
-  await click("Scan location");
-  await act(async () =>
-    mock.channels[0].onmessage(summary("scan-1", "running")),
-  );
-  await flush();
-  expect(compareButton().disabled).toBe(true);
-  await act(async () => mock.channels[0].onmessage(summary()));
-  await flush();
-  // A finished Current scan needs a saved scan of the same location.
-  expect(compareButton().disabled).toBe(true);
-  entries = [savedEntry, ...entries];
-  await act(async () => {
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-  });
-  await flush();
-  await click("Scan location");
-  await act(async () => mock.channels.at(-1)!.onmessage(summary()));
-  await flush();
-  expect(compareButton().disabled).toBe(false);
-  await click("Compare saved scans");
-  expect(container.textContent).toContain(
-    "Comparing the Current scan with a saved scan",
-  );
-  await click("Compare scans");
-  const call = mock.invoke.mock.calls.find(
-    ([c]) => c === "compare_current_scan",
-  )!;
-  expect(call[1]).toMatchObject({
-    scanId: "scan-1",
-    savedId: savedEntry.id,
-    currentAfter: true,
-  });
-  await click("Swap scans");
-  await click("Compare scans");
-  expect(
-    mock.invoke.mock.calls
-      .filter(([c]) => c === "compare_current_scan")
-      .at(-1)![1],
-  ).toMatchObject({
-    scanId: "scan-1",
-    savedId: savedEntry.id,
-    currentAfter: false,
-  });
-  expect(
-    mock.invoke.mock.calls.some(([c]) =>
-      ["save_scan", "compare_saved_scans"].includes(c),
-    ),
-  ).toBe(false);
-});
-
-it("compares saved scans with progress while preserving the displayed session", async () => {
-  const original = mock.invoke.getMockImplementation()!;
-  const newer = {
-    ...savedEntry,
-    id: "saved-2",
-    completedAtMs: 4000,
-    savedAtMs: 5000,
-  };
-  let finish!: (value: unknown) => void;
-  mock.invoke.mockImplementation((command, args) => {
-    if (command === "list_saved_scans")
-      return Promise.resolve({
-        entries: [newer, savedEntry],
-        lastOpenedId: savedEntry.id,
-      });
-    if (command === "open_saved_scan")
-      return Promise.resolve({
-        ...summary("historical"),
-        origin: "saved",
-        savedId: savedEntry.id,
-      });
-    if (command === "compare_saved_scans")
-      return new Promise((resolve) => {
-        finish = resolve;
-      });
-    return original(command, args);
-  });
-  await act(async () => {
-    root.unmount();
-    root = createRoot(container);
-    root.render(App);
-  });
-  await flush();
-  await click("Compare saved scans");
-  expect(container.querySelector("main header")).toBeNull();
-  expect(container.querySelector(".explorer")).toBeNull();
-  await click("Compare scans");
-  const call = mock.invoke.mock.calls.find(
-    ([c]) => c === "compare_saved_scans",
-  )!;
-  expect(call[1].beforeId).toBe(savedEntry.id);
-  expect(call[1].afterId).toBe(newer.id);
-  const channel = call[1].onProgress;
-  await act(async () =>
-    channel.onmessage({
-      operation: "compare",
-      phase: "readingAfter",
-      bytes: 1024,
-    }),
-  );
-  expect(container.querySelector("[role=status]")?.textContent).toContain(
-    "1 KiB (1.02 KB)",
-  );
-  expect(
-    [...container.querySelectorAll(".saved-entry button")].every(
-      (b) => (b as HTMLButtonElement).disabled,
-    ),
-  ).toBe(true);
-  await act(async () =>
-    finish({
-      beforeId: savedEntry.id,
-      afterId: newer.id,
-      rootPath: "/fixture",
-      before: {
-        entries: 2,
-        logicalBytes: 100,
-        allocatedBytes: 100,
-        incomplete: false,
-        errors: 0,
-        excluded: 0,
-      },
-      after: {
-        entries: 2,
-        logicalBytes: 200,
-        allocatedBytes: 200,
-        incomplete: false,
-        errors: 0,
-        excluded: 0,
-      },
-      logicalDelta: 100,
-      allocatedDelta: 100,
-      added: 0,
-      removed: 0,
-      changed: 1,
-      unchanged: 0,
-      warnings: ["Recorded metadata only"],
-      rankings: [],
-    }),
-  );
-  await flush();
-  expect(container.textContent).toContain("Comparing two past scans");
-  expect(container.textContent).toContain("Recorded metadata only");
-  expect(
-    mock.invoke.mock.calls.filter(([c]) => c === "open_saved_scan"),
-  ).toHaveLength(1);
-  mock.invoke.mockImplementationOnce(async () => {
-    throw new Error("Comparison archive is corrupt");
-  });
-  await click("Compare scans");
-  expect(container.querySelector('[role="dialog"] h2')?.textContent).toContain(
-    "Couldn’t compare the scans",
-  );
-  expect(
-    container.querySelector("[role=dialog] details")?.textContent,
-  ).toContain("Comparison archive is corrupt");
-  expect(container.textContent).toContain("Recorded metadata only");
-  expect(
-    container
-      .querySelector(".comparison-panel button")
-      ?.hasAttribute("disabled"),
-  ).toBe(false);
-  expect(
-    mock.invoke.mock.calls.some(([c]) =>
-      ["prepare_trash", "commit_trash", "reveal_node"].includes(c),
-    ),
-  ).toBe(false);
-  await click("Close comparison");
-  expect(container.querySelector("main header")).toBeTruthy();
-  expectHistoricalStatus();
 });
 
 it("traps Trash dialog focus, cancels with Escape and restores the opener", async () => {

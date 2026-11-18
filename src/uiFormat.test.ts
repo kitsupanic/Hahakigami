@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { mapLabelColor, mapTileTones, usageColors } from "./uiFormat";
+import {
+  formatScanTimestamp,
+  mapLabelColor,
+  mapTileTones,
+  usageColors,
+} from "./uiFormat";
 
 const luminance = (color: string) => {
   const channels = color.slice(1).match(/../g)!.map((hex) => {
@@ -36,3 +41,37 @@ it("selects the stronger contrast for every current branch and derived gradient 
     }
   }
 });
+
+it("labels a scan time by local calendar day, with h23 midnight", () => {
+  const now = new Date(2026, 0, 1, 0, 1);
+  const label = (date: Date) => formatScanTimestamp(date.getTime(), now).label;
+  const clock = (date: Date) =>
+    date.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+  const today = new Date(2026, 0, 1, 0, 0);
+  const yesterday = new Date(2025, 11, 31, 0, 0);
+  const older = new Date(2025, 11, 30, 23, 59);
+  const thisYear = new Date(2026, 0, 2);
+  expect(label(today)).toBe(`Today, ${clock(today)}`);
+  expect(label(yesterday)).toBe(`Yesterday, ${clock(yesterday)}`);
+  expect(label(older)).toBe(
+    `${older.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}, ${clock(older)}`,
+  );
+  expect(label(thisYear)).toBe(
+    `${thisYear.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${clock(thisYear)}`,
+  );
+});
+
+it.each([NaN, Infinity, -Infinity, 8.64e15 + 1])(
+  "handles the invalid scan time %s without throwing",
+  (ms) => {
+    expect(formatScanTimestamp(ms)).toEqual({
+      label: "Date unavailable",
+      absolute: "Date unavailable",
+    });
+  },
+);

@@ -67,8 +67,6 @@ beforeEach(async () => {
         return removed(args.entryIds);
       case "get_explorer_preferences":
         return { sort: "sizeDescending", warning: null };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: null };
       case "discover_targets":
         return [];
       case "full_disk_access_status":
@@ -97,7 +95,6 @@ afterEach(async () => {
 it("removes stale saved entries without access or a fresh scan and preserves single removal compatibility", async () => {
   expect(app.summary).toBeNull();
   expect(app.access?.status).toBe("off");
-  app.setHistoricalSource(true);
   expect(await app.removeQueue("q1")).toBe(1);
   expect(app.queue.entries.map((entry) => entry.id)).toEqual(["q2", "q3"]);
   expect(
@@ -112,9 +109,6 @@ it("guards empty batches, other operations and blocked storage", async () => {
   app.setBusy(true);
   expect(await app.removeQueues(["q1"])).toBe(0);
   app.setBusy(false);
-  app.setLibraryBusy(true);
-  expect(await app.removeQueues(["q1"])).toBe(0);
-  app.setLibraryBusy(false);
   queue = { ...queue, blocked: true };
   await app.refreshQueue();
   expect(await app.removeQueues(["q1"])).toBe(0);

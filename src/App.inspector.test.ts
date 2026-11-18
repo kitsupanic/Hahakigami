@@ -58,9 +58,8 @@ const other: NodeView = {
   name: "other.jpg",
   path: "/fixture/Photos/other.jpg",
 };
-const summary = (scanId = "historical"): ScanSummary => ({
+const summary = (scanId = "live"): ScanSummary => ({
   scanId,
-  origin: "saved",
   rootId: 0,
   state: "completed",
   workers: 1,
@@ -74,6 +73,8 @@ const summary = (scanId = "historical"): ScanSummary => ({
 });
 let container: HTMLDivElement, root: Root;
 let previewRevision: number;
+// The id the next start_scan answers with.
+let nextScan: string;
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -96,6 +97,14 @@ async function select(node: NodeView, additive = false) {
   );
   await flush();
 }
+async function click(name: string) {
+  const button = [...container.querySelectorAll("button")].find(
+    (item) =>
+      item.textContent?.trim() === name || item.getAttribute("aria-label") === name,
+  )!;
+  await act(() => button.click());
+  await flush();
+}
 async function tab(id: string) {
   await act(() =>
     container.querySelector<HTMLButtonElement>(`#${id}`)!.click(),
@@ -105,6 +114,7 @@ async function tab(id: string) {
 beforeEach(async () => {
   vi.useFakeTimers();
   previewRevision = 0;
+  nextScan = "live";
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args = {}) => {
     switch (command) {
@@ -116,8 +126,6 @@ beforeEach(async () => {
             scanAnyway: false,
             appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: "saved" };
       case "discover_targets":
         return [
           {
@@ -128,8 +136,10 @@ beforeEach(async () => {
             freeBytes: null,
           },
         ];
-      case "open_saved_scan":
-        return summary(args.id === "second" ? "second" : "historical");
+      case "start_scan":
+        return nextScan;
+      case "scan_summary":
+        return summary(args.scanId);
       case "get_node":
         return args.nodeId === 1
           ? folder
@@ -172,6 +182,7 @@ beforeEach(async () => {
   root = createTestRoot(container);
   await act(() => root.render(App));
   await flush();
+  await click("Scan Fixture");
 });
 afterEach(async () => {
   expect(
@@ -187,7 +198,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-it("shows the list and current-folder details together, with historical guards", async () => {
+it("shows the list and current-folder details together, with file actions waiting for a selection", async () => {
   expect(app().mode).toBe("sunburst");
   expect(
     container.querySelector("#file-list-column .file-list"),
@@ -220,7 +231,6 @@ it("shows the list and current-folder details together, with historical guards",
   expect(inspector().querySelector(".details-name")?.textContent).toBe(
     "Fixture",
   );
-  expect(inspector().textContent).toContain("can't preview or queue files from a saved scan");
   const actions = [
     ...inspector().querySelectorAll<HTMLButtonElement>(
       ".inspector-actions button",
@@ -234,15 +244,11 @@ it("shows the list and current-folder details together, with historical guards",
   expect(
     actions.some((button) => /Move to Trash/.test(button.textContent ?? "")),
   ).toBe(false);
-  // File actions stay disabled; only the notice's own Rescan remains available.
+  // Nothing is selected, so there is nothing to queue yet.
   expect(
-    actions
-      .filter((button) => !button.closest(".historical-context"))
-      .every((button) => button.disabled),
+    actions.find((button) => /Add to cleanup queue/.test(button.textContent ?? ""))!
+      .disabled,
   ).toBe(true);
-  expect(
-    inspector().querySelector(".historical-context button")?.textContent,
-  ).toMatch(/^Rescan /);
   expect(inspector().querySelector(".allocation-warning")).toBeNull();
   expect(inspector().textContent).not.toContain("space freed");
 });
@@ -324,11 +330,11 @@ it("keeps file rows mounted with expanded branches and scroll across tab switche
   expect(rows.scrollTop).toBe(84);
 });
 
-it("resets to Files & Folders when another scan opens", async () => {
+it("resets to Files & Folders when another scan starts", async () => {
   await select(image);
   await tab("file-types-tab");
-  await act(() => app().openSaved("second"));
-  await flush();
+  nextScan = "second";
+  await click("Rescan Fixture");
   expect(app().summary?.scanId).toBe("second");
   expect(inspector().hidden).toBe(false);
   expect(
@@ -385,8 +391,6 @@ it("keeps a newer selection when a pending breadcrumb ancestor completes", async
 });
 
 it("preserves Files & Folders when Space previews a completed live row", async () => {
-  await act(() => app().setSummary({ ...app().summary!, origin: "live" }));
-  await flush();
   await act(() =>
     row(image).dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -418,7 +422,7 @@ it("refreshes selected folder sizes and contents during scanning and at completi
       : standard(command, args),
   );
   await act(() =>
-    app().setSummary({ ...summary(), origin: "live", state: "running" }),
+    app().setSummary({ ...summary(), state: "running" }),
   );
   await select(folder);
   current = { ...folder, allocatedBytes: 2048, childrenCount: 4 };
@@ -452,7 +456,7 @@ it("refreshes every selected file before calculating completed selection totals"
     return standard(command, args);
   });
   await act(() =>
-    app().setSummary({ ...summary(), origin: "live", state: "running" }),
+    app().setSummary({ ...summary(), state: "running" }),
   );
   await select(image);
   await select(other, true);
@@ -477,14 +481,13 @@ it.each(["selection", "scan", "revision"])(
           })
         : standard(command, args),
     );
-    await act(() => app().setSummary({ ...summary(), origin: "live" }));
     await select(folder);
     const stale = finish;
     expect(stale).toBeTypeOf("function");
     mock.invoke.mockImplementation(standard);
     if (change === "scan") {
-      await act(() => app().openSaved("second"));
-      await flush();
+      nextScan = "second";
+      await click("Rescan Fixture");
       expect(app().summary?.scanId).toBe("second");
     }
     if (change === "revision") {
@@ -633,7 +636,7 @@ it("hides and restores locations without remounting its content or changing resu
       .querySelector(".app")
       ?.classList.contains("navigation-sidebar-hidden"),
   ).toBe(true);
-  expect(app().summary?.scanId).toBe("historical");
+  expect(app().summary?.scanId).toBe("live");
   expect(app().selection.map((node) => node.id)).toEqual([image.id]);
   const show = container.querySelector<HTMLButtonElement>(
     '[aria-label="Show sidebar"]',

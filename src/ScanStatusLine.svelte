@@ -2,34 +2,18 @@
   import { coverageLabel } from "./scanCoverage";
   import ScanDetails from "./ScanDetails.svelte";
   import type { Metric, ScanSummary } from "./types";
-  import { scanTime } from "./uiFormat";
-  import { formatScanTimestamp } from "./savedHistory";
+  import { formatScanTimestamp, scanTime } from "./uiFormat";
   import type { Snippet } from "svelte";
 
   let {
     summary,
     metric,
-    historical,
     cancelling,
-    canSave,
-    savesEnabled = true,
-    liveSaved = false,
-    savedTimestamp,
-    savedTimestampPrecise = false,
-    onSave,
     controls,
   }: {
     summary: ScanSummary;
     metric: Metric;
-    historical: boolean;
     cancelling: boolean;
-    canSave: boolean;
-    /** False when saved scans are turned off for this build: no Save chip at all. */
-    savesEnabled?: boolean;
-    liveSaved?: boolean;
-    savedTimestamp?: number;
-    savedTimestampPrecise?: boolean;
-    onSave: () => void;
     /** The map's view controls, kept on this row so the strip is the one toolbar under the header. */
     controls?: Snippet;
   } = $props();
@@ -61,7 +45,6 @@
           ? "Scan cancelled · partial results"
           : "Scan failed",
   );
-  let announced = $derived(liveSaved ? `${status} · Scan saved` : status);
   let stateLabel = $derived(
     running
       ? "Scanning"
@@ -101,11 +84,7 @@
           ? "Only the entries found before stopping are shown. Scan again for complete results."
           : "The scan could not finish. Any results shown are partial. Review the error and try scanning again.",
   );
-  let timestamp = $derived(
-    historical
-      ? savedTimestamp
-      : (summary.completedAtMs ?? summary.startedAtMs),
-  );
+  let timestamp = $derived(summary.completedAtMs ?? summary.startedAtMs);
 </script>
 
 <div
@@ -116,26 +95,26 @@
   <!-- The visible state lives in the first cell; this region only announces it. -->
   <span
     class="scan-status-text sr-only"
-    role={historical ? undefined : "status"}
-    aria-live={historical ? undefined : "polite"}
-    aria-atomic={historical ? undefined : "true"}
-    title={status}>{announced}</span
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+    title={status}>{status}</span
   >
   {#key summary.scanId}
-    <ScanDetails {summary} {metric} {historical} {description}>
+    <ScanDetails {summary} {metric} {description}>
       {#snippet lead()}
       <span
         class="scan-timestamp status-cell"
         title={running || timestamp == null
           ? status
-          : `Scan ${historical || summary.completedAtMs != null ? "completed" : "started"} ${formatScanTimestamp(timestamp).absolute}`}
+          : `Scan ${summary.completedAtMs != null ? "completed" : "started"} ${formatScanTimestamp(timestamp).absolute}`}
         ><small>{stateLabel}</small>
         <span class="status-value is-state"
           >{running
             ? phaseLabel
             : timestamp == null
               ? "—"
-              : formatScanTimestamp(timestamp, undefined, savedTimestampPrecise)
+              : formatScanTimestamp(timestamp)
                   .label}</span
         >{#if running}<span class="scan-progress" aria-hidden="true"></span>{/if}</span
       >
@@ -147,7 +126,7 @@
       {/snippet}
     </ScanDetails>
   {/key}
-  {#if !historical && summary.cacheWarning}
+  {#if summary.cacheWarning}
     <span class="scan-cache-note" title={summary.cacheWarning}
       >Rescan cache unavailable</span
     >
@@ -157,19 +136,6 @@
   {/if}
   <div class="scan-status-end">
     {@render controls?.()}
-    {#if historical}
-      <span class="status-chip is-saved">Saved scan</span>
-    {:else if completed && savesEnabled}
-      <!-- One button for both states so keyboard focus survives saving. -->
-      <button
-        class="status-chip"
-        class:is-unsaved={!liveSaved}
-        class:is-saved={liveSaved}
-        aria-disabled={liveSaved || !canSave}
-        onclick={() => !liveSaved && canSave && onSave()}
-        >{liveSaved ? "Saved" : "Save scan"}</button
-      >
-    {/if}
   </div>
 </div>
 
@@ -269,35 +235,6 @@
     gap: 8px;
     margin-left: auto;
     padding-left: 12px;
-  }
-  .status-chip {
-    min-height: 0;
-    padding: 3px 10px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-secondary);
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .status-chip[aria-disabled="true"] {
-    cursor: default;
-  }
-  /* Saving is the strip's one action, so it takes the accent fill. */
-  .status-chip.is-unsaved {
-    color: var(--on-accent);
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .status-chip.is-unsaved:not([aria-disabled="true"]):hover {
-    background: var(--accent-hover);
-  }
-  .status-chip.is-unsaved[aria-disabled="true"] {
-    opacity: 0.55;
-  }
-  .status-chip.is-saved {
-    color: var(--success);
-    background: transparent;
-    border-color: var(--success-line);
   }
   .scan-state-description {
     min-width: 0;

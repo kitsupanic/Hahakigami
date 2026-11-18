@@ -30,22 +30,13 @@ struct PageInput {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct SnapshotInput {
-    /// "current" for this session's latest snapshot. Saved scan UUIDs are refused while saved scans are turned off.
-    scan_id: String,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct NodeInput {
-    scan_id: String,
     node_id: u32,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ChildrenInput {
-    scan_id: String,
     node_id: u32,
     #[serde(default)]
     offset: usize,
@@ -57,19 +48,7 @@ struct ChildrenInput {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchInput {
-    scan_id: String,
     query: String,
-    #[serde(default)]
-    offset: usize,
-    #[serde(default = "default_limit")]
-    #[schemars(range(min = 1, max = 1000))]
-    limit: usize,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct IssuesInput {
-    scan_id: String,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_limit")]
@@ -98,11 +77,10 @@ impl Mcp {
     }
 }
 
-// Tool texts say saved scans are off; reword them when SAVED_SCANS_ENABLED flips back on.
 #[tool_router]
 impl Mcp {
     #[tool(
-        description = "Scan a directory's metadata. One active scan per session; query its result with scan_id \"current\". Saved scans are turned off in this version, so results are not kept after the session. Sizes do not represent reclaimable space."
+        description = "Scan a directory's metadata. One active scan per session; query its result with summary, node, children, search and issues. Results end with the session. Sizes do not represent reclaimable space."
     )]
     async fn scan(&self, Parameters(input): Parameters<ScanInput>) -> CallToolResult {
         self.execute(move |service| service.scan(PathBuf::from(input.path)))
@@ -110,71 +88,58 @@ impl Mcp {
     }
 
     #[tool(
-        description = "Get the active scan's status and coverage. Saved results are metadata snapshots, not live filesystem state."
+        description = "Get the active scan's status and coverage. Results are metadata snapshots, not live filesystem state."
     )]
     async fn status(&self) -> CallToolResult {
         self.execute(Service::status).await
     }
 
     #[tool(
-        description = "Request cancellation of this session's active scan. Partial results remain available as current."
+        description = "Request cancellation of this session's active scan. Partial results remain available to queries."
     )]
     async fn cancel(&self) -> CallToolResult {
         self.execute(Service::cancel).await
     }
 
     #[tool(
-        description = "List saved scans, paginated. Saved scans are turned off in this version, so this always returns an error."
+        description = "Read the latest scan's totals, coverage and accounting warnings. Logical and allocated sizes do not represent reclaimable space."
     )]
-    async fn list(&self, Parameters(input): Parameters<PageInput>) -> CallToolResult {
-        self.execute(move |service| service.list(input.offset, input.limit))
-            .await
+    async fn summary(&self) -> CallToolResult {
+        self.execute(Service::summary).await
     }
 
     #[tool(
-        description = "Read scan totals, coverage and accounting warnings. Logical and allocated sizes do not represent reclaimable space."
-    )]
-    async fn summary(&self, Parameters(input): Parameters<SnapshotInput>) -> CallToolResult {
-        self.execute(move |service| service.summary(&input.scan_id))
-            .await
-    }
-
-    #[tool(
-        description = "Read a node's saved metadata, native path representation, logical and allocated sizes."
+        description = "Read a node's metadata, native path representation, logical and allocated sizes."
     )]
     async fn node(&self, Parameters(input): Parameters<NodeInput>) -> CallToolResult {
-        self.execute(move |service| service.node(&input.scan_id, input.node_id))
+        self.execute(move |service| service.node(input.node_id))
             .await
     }
 
     #[tool(description = "Read a directory node's children from a metadata snapshot, paginated.")]
     async fn children(&self, Parameters(input): Parameters<ChildrenInput>) -> CallToolResult {
-        self.execute(move |service| {
-            service.children(&input.scan_id, input.node_id, input.offset, input.limit)
-        })
-        .await
+        self.execute(move |service| service.children(input.node_id, input.offset, input.limit))
+            .await
     }
 
     #[tool(
         description = "Search filenames in a metadata snapshot, paginated. Does not read file contents."
     )]
     async fn search(&self, Parameters(input): Parameters<SearchInput>) -> CallToolResult {
-        self.execute(move |service| {
-            service.search(&input.scan_id, &input.query, input.offset, input.limit)
-        })
-        .await
+        self.execute(move |service| service.search(&input.query, input.offset, input.limit))
+            .await
     }
 
     #[tool(description = "Read scan issues explaining incomplete coverage, paginated.")]
-    async fn issues(&self, Parameters(input): Parameters<IssuesInput>) -> CallToolResult {
-        self.execute(move |service| service.issues(&input.scan_id, input.offset, input.limit))
+    async fn issues(&self, Parameters(input): Parameters<PageInput>) -> CallToolResult {
+        self.execute(move |service| service.issues(input.offset, input.limit))
             .await
     }
 }
 
 #[tool_handler(
     name = "Hahakigami",
-    instructions = "Scan and query local filesystem metadata without reading file contents. Query results with scan_id \"current\"; saved scans are turned off in this version, so results end with the session. Results are metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; logical and allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
+    instructions = "Scan and query local filesystem metadata without reading file contents. Queries read this session's latest scan; results end with the session. Results are metadata snapshots, not live filesystem state. Observe coverage and accounting warnings; logical and allocated sizes do not represent reclaimable space. Use the cancel tool to cancel an active scan."
 )]
 impl ServerHandler for Mcp {}
 

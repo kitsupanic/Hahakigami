@@ -1,7 +1,7 @@
 //! The Rescan baseline (`GLOSSARY.md`): whether a scan starts from an earlier one, and keeping its
 //! result for the next. `run_scan` reaches the rescan cache and the filesystem event journal only
 //! through here: `Baselines::acquire` before the scan, `Ticket::publish` after it.
-use crate::{cache, events, library, now_ms};
+use crate::{cache, cache_store, events, now_ms};
 use disk_scan::{ScanState, Snapshot};
 #[cfg(feature = "performance-benchmark")]
 use std::time::Instant;
@@ -397,7 +397,7 @@ impl Ticket<'_> {
         snapshot: &Snapshot,
         cancel: &AtomicBool,
         scan: Scanned,
-        about_to_write: impl FnOnce() -> library::ScanMetadata,
+        about_to_write: impl FnOnce() -> cache_store::ScanMetadata,
         #[cfg(feature = "performance-benchmark")] timing: Timing<'_>,
     ) -> Option<Published> {
         if !eligible(snapshot) || cancel.load(Ordering::Acquire) {
@@ -734,8 +734,8 @@ mod tests {
         )
         .unwrap()
     }
-    fn metadata(started_at_ms: u64) -> library::ScanMetadata {
-        library::ScanMetadata {
+    fn metadata(started_at_ms: u64) -> cache_store::ScanMetadata {
+        cache_store::ScanMetadata {
             started_at_ms,
             completed_at_ms: now_ms(),
             workers: 1,

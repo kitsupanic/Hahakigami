@@ -63,9 +63,8 @@ const archive: NodeView = {
   allocatedBytes: 10,
   logicalBytes: 500,
 };
-const summary = (scanId = "historical"): ScanSummary => ({
+const summary = (scanId = "live"): ScanSummary => ({
   scanId,
-  origin: "saved",
   rootId: 0,
   state: "completed",
   workers: 1,
@@ -100,6 +99,8 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 let element: HTMLDivElement, root: Root;
+// The id the next start_scan answers with.
+let nextScan: string;
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -132,6 +133,7 @@ async function selectType(extension: string) {
 beforeEach(async () => {
   setShowLogicalSize(true);
   vi.useFakeTimers();
+  nextScan = "live";
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args = {}) => {
     switch (command) {
@@ -143,8 +145,6 @@ beforeEach(async () => {
             scanAnyway: false,
             appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: "saved" };
       case "discover_targets":
         return [
           {
@@ -155,8 +155,10 @@ beforeEach(async () => {
             freeBytes: null,
           },
         ];
-      case "open_saved_scan":
-        return summary(args.id === "second" ? "second" : "historical");
+      case "start_scan":
+        return nextScan;
+      case "scan_summary":
+        return summary(args.scanId);
       case "get_node":
         return [scanRoot, folder, image, archive][args.nodeId] ?? scanRoot;
       case "get_children":
@@ -209,6 +211,7 @@ beforeEach(async () => {
   root = createTestRoot(element);
   await act(() => root.render(App));
   await flush();
+  await click(".welcome-scan");
 });
 afterEach(async () => {
   await act(() => root.unmount());
@@ -225,7 +228,7 @@ it("loads real scoped statistics on demand, links highlighting, and keeps file s
   await openTypes();
   expect(panel().hidden).toBe(false);
   expect(mock.invoke).toHaveBeenCalledWith("get_file_types", {
-    scanId: "historical",
+    scanId: "live",
     nodeId: 0,
   });
   expect(panel().textContent).toContain("66.7%");
@@ -349,8 +352,8 @@ it("supports keyboard tabs, keeps the file-types panel open during navigation, a
   ).toBe(false);
   expect(panel().hidden).toBe(false);
   expect(map().dataset.type).toBe("jpg");
-  await act(() => app().openSaved("second"));
-  await flush();
+  nextScan = "second";
+  await click(".rescan-action");
   expect(map().dataset.type).toBe("none");
   expect(map().dataset.ids).toBe("");
 });
@@ -391,7 +394,7 @@ it("requests type-aware map data, safely links grouped tiles to the sidebar, and
     "get_map",
     expect.objectContaining({
       colorMode: "fileType",
-      scanId: "historical",
+      scanId: "live",
       nodeId: 0,
     }),
   );

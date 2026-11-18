@@ -2,12 +2,8 @@ import { onMount, untrack } from "svelte";
 import createQuickLook from "./createQuickLook.svelte";
 import { logicalSize } from "./logicalSize.svelte";
 import { createCleanupQueue, tauriQueuePort } from "./cleanupQueue.svelte";
-import {
-  createSessionState,
-  createExplorerState,
-  createLibraryState,
-} from "./appState.svelte";
-import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { createSessionState, createExplorerState } from "./appState.svelte";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import "./quickLook.css";
 import {
@@ -16,18 +12,15 @@ import {
   type ExplorerPreferences,
 } from "./sortTypes";
 import { emptyFilter, filterActive, type ExplorerFilter } from "./filterTypes";
-import type { Comparison } from "./comparisonTypes";
 import {
   createScanSlots,
   slotKey,
   tauriScanPort,
-  type StartRequest,
   type StartView,
 } from "./scanSlots.svelte";
 import { latestOnly } from "./latestQuery";
 import type { CleanupReport, QueueView } from "./cleanupTypes";
 import { cleanupResult } from "./cleanupResults";
-import type { ScanTransferReport } from "./scanTransferTypes";
 import type { AppToast } from "./toastTypes";
 import { canvasEvidence, runNativeInteractions } from "./nativeBenchmark";
 import {
@@ -35,8 +28,6 @@ import {
   size,
   type FullDiskAccess,
   type Metric,
-  type SavedEntry,
-  type LibraryProgress,
   type NodeView,
   type Page,
   type ScanSummary,
@@ -54,8 +45,7 @@ declare global {
 }
 export default function createApp() {
   const session = createSessionState(),
-    explorer = createExplorerState(),
-    library = createLibraryState();
+    explorer = createExplorerState();
   let performanceConfig = $state.raw<{
     root: string;
     mode: string;
@@ -145,8 +135,6 @@ export default function createApp() {
     errorContext = value ? context : null;
   }
   let targetsLoading = $state.raw(isTauri());
-  // Backend master switch (SAVED_SCANS_ENABLED); off until the backend answers so the sidebar never flashes, on outside Tauri.
-  let savedScansEnabled = $state.raw(!isTauri());
   let choosingFolder = $state(false);
   let folderRequest = 0;
   let disposed = false;
@@ -201,7 +189,7 @@ export default function createApp() {
   let clearQueueOpen = $state(false);
   const cleanupQueue = createCleanupQueue(tauriQueuePort, {
     available: () => !performanceBuild && isTauri(),
-    mutable: () => !choosingFolder && !busy && !libraryBusy,
+    mutable: () => !choosingFolder && !busy,
     reporter() {
       const id = cleanupReport?.id;
       return (state, view, error = null) =>
@@ -220,21 +208,18 @@ export default function createApp() {
   const queueBusy = $derived(cleanupQueue.busy);
   const refreshQueue = cleanupQueue.refresh;
   function showQueue(value: boolean) {
-    if (busy || libraryBusy || trash || queueBusy || choosingFolder) return;
+    if (busy || trash || queueBusy || choosingFolder) return;
     quickLook.dismiss();
     queueOpen = value;
     if (value) {
       homeOpen = false;
-      setComparisonOpen(false);
       void refreshQueue();
     }
   }
   async function addQueue() {
     if (
       !summary ||
-      historical ||
       summary.state !== "completed" ||
-      summary.savedId ||
       sessionBlocked ||
       selection.some((n) => n.excluded) ||
       !selection.length
@@ -267,7 +252,6 @@ export default function createApp() {
   async function prepareQueue() {
     if (
       !summary ||
-      historical ||
       summary.state !== "completed" ||
       sessionBlocked ||
       queueBusy ||
@@ -498,40 +482,21 @@ export default function createApp() {
   let openedSettings = false;
   let blockedScan: {
     target: Target | null;
-    savedScanId?: string;
     // The blocked request was Scan all disks: "Scan anyway" runs it again for every disk.
     scanAll?: true;
   } | null =
     null;
   const generation = { current: 0 };
   const navigation = $state({ current: 0 });
-  // The Scan target of the live scan on screen, kept while a saved scan is shown.
+  // The Scan target of the scan on screen.
   let liveTarget = $state.raw<Target | null>(null);
   const activeId: { current: string | null } = { current: null };
-  const setSaved = library.setSaved;
-  let saved = $derived(library.saved);
-  const setLibraryBusy = library.setLibraryBusy;
-  let libraryBusy = $derived(library.libraryBusy);
-  const setLibraryProgress = library.setLibraryProgress;
-  let libraryProgress = $derived(library.libraryProgress);
-  const setRemoveEntry = library.setRemoveEntry;
-  let removeEntry = $derived(library.removeEntry);
-  const libraryLock = { current: false };
-  const setComparisonOpen = library.setComparisonOpen;
-  let comparisonOpen = $derived(library.comparisonOpen);
-  const setComparison = library.setComparison;
-  let comparison = $derived(library.comparison);
-  const historical = $derived(summary?.origin === "saved");
-  const setHistoricalSource = session.setHistoricalSource;
-  let historicalSource = $derived(session.historicalSource);
-  const blocked = $derived(busy || libraryBusy || choosingFolder);
+  const blocked = $derived(busy || choosingFolder);
   const running = $derived(summary?.state === "running");
   const sessionBlocked = $derived(blocked || quickLook.pending || queueBusy);
-  const previewDialog = $derived(
-    accessOpen || !!removeEntry || !!trash || comparisonOpen || clearQueueOpen,
-  );
+  const previewDialog = $derived(accessOpen || !!trash || clearQueueOpen);
   $effect(() => {
-    [accessOpen, removeEntry, trash, comparisonOpen, clearQueueOpen];
+    [accessOpen, trash, clearQueueOpen];
     return untrack(() => {
       if (previewDialog) quickLook.dismiss();
     });
@@ -540,7 +505,6 @@ export default function createApp() {
     return (
       isTauri() &&
       !!summary &&
-      summary.origin === "live" &&
       summary.state === "completed" &&
       node.kind === "file" &&
       !node.excluded &&
@@ -582,55 +546,28 @@ export default function createApp() {
   });
   // The slot whose live results are on screen.
   const displayedSlot = $derived(
-    summary && !historical
+    summary
       ? (Object.keys(scans.slots).find(
           (k) => scans.slots[k].scanId === summary!.scanId,
         ) ?? null)
       : null,
   );
-  // The scan on screen, its slot and Scan target (both null for a saved scan); null on Home or with none.
+  // The scan on screen, its slot and Scan target; null on Home or with none.
   const shown = $derived(
     summary && !homeOpen
-      ? {
-          summary,
-          slot: displayedSlot,
-          target: historical ? null : liveTarget,
-        }
+      ? { summary, slot: displayedSlot, target: liveTarget }
       : null,
   );
-  // The live scan on screen, or the one last on screen while a saved scan is shown.
-  const currentScan = $derived.by(() => {
-    if (!historical) return summary;
-    const place = liveTarget;
-    return (place && scans.slots[slotKey(place)]?.summary) || null;
-  });
-  // A finished live scan on screen can be compared with saved scans of its location without saving it.
-  const comparableCurrent = $derived.by(() => {
-    const path = liveTarget?.path;
-    return currentScan?.state === "completed" &&
-      currentScan.origin !== "saved" &&
-      path
-      ? {
-          id: currentScan.scanId,
-          rootPath: path,
-          completedAtMs: currentScan.completedAtMs ?? 0,
-        }
-      : null;
-  });
-  // The open saved scan's summary while it is not shown; the backend still holds its results.
-  let parkedSaved = $state.raw<ScanSummary | null>(null);
   // A null summary is a scan that has not reported yet: an empty view that its first event fills.
   function resetView(s: ScanSummary | null, scanId = s?.scanId ?? null) {
     homeOpen = false;
     clearResultsReturn();
     clearNavigationHistory();
     quickLook.dismiss();
-    setComparisonOpen(false);
     ++generation.current;
     ++navigation.current;
     activeId.current = scanId;
     setSummary(s);
-    setHistoricalSource(s?.origin === "saved");
     setFocus(null);
     setCrumbs([]);
     setSelection([]);
@@ -646,445 +583,11 @@ export default function createApp() {
   }
   let toast = $state.raw<AppToast | null>(null);
   let toastId = 0;
-  function showToast(message: string, action?: AppToast["action"]) {
-    toast = { id: ++toastId, message, action };
+  function showToast(message: string) {
+    toast = { id: ++toastId, message };
   }
   function dismissToast() {
     toast = null;
-  }
-  let scanTransfer = $state.raw<ScanTransferReport | null>(null);
-  let scanTransferId = 0;
-  let libraryOperationId = 0;
-  function dismissScanTransfer() {
-    if (scanTransfer?.state === "pending") return;
-    scanTransfer = null;
-  }
-  const libraryFailures: Partial<
-    Record<LibraryProgress["operation"], { title: string; reason: string }>
-  > = {
-    save: {
-      title: "Couldn’t save the scan",
-      reason:
-        "Hahakigami could not save this scan to Saved Scans. Check that your disk has room, then try again.",
-    },
-    compare: {
-      title: "Couldn’t compare the scans",
-      reason:
-        "Hahakigami could not read one of the saved scans. The file may be damaged. Try again, or pick other scans.",
-    },
-  };
-  async function libraryOperation<T>(
-    operation: LibraryProgress["operation"],
-    action: (channel: Channel<LibraryProgress>) => Promise<T>,
-    hooks?: {
-      onProgress?: (progress: LibraryProgress) => void;
-      onError?: (error: unknown) => void | Promise<void>;
-    },
-  ): Promise<T | undefined> {
-    if (
-      disposed ||
-      libraryLock.current ||
-      choosingFolder ||
-      quickLook.isPending()
-    )
-      return;
-    const request = ++libraryOperationId;
-    let acceptsProgress = true;
-    const current = () =>
-      !disposed && libraryLock.current && request === libraryOperationId;
-    libraryLock.current = true;
-    setLibraryBusy(true);
-    setError("");
-    setLibraryProgress({
-      operation,
-      phase:
-        operation === "import" || operation === "export"
-          ? "choosing"
-          : operation === "save"
-            ? "writing"
-            : operation === "compare"
-              ? "readingBefore"
-              : "reading",
-      bytes: 0,
-    });
-    const channel = new Channel<LibraryProgress>();
-    channel.onmessage = (p) => {
-      if (
-        !acceptsProgress ||
-        !current() ||
-        !p ||
-        p.operation !== operation ||
-        !Number.isSafeInteger(p.bytes) ||
-        p.bytes < 0
-      )
-        return;
-      const phases: Record<LibraryProgress["operation"], readonly string[]> = {
-        import: ["choosing", "reading", "writing", "validating", "done"],
-        export: ["choosing", "reading", "writing", "validating", "done"],
-        open: ["reading", "validating", "done"],
-        save: ["writing", "validating", "done"],
-        compare: ["readingBefore", "readingAfter", "comparing", "done"],
-      };
-      if (!phases[operation].includes(p.phase)) return;
-      setLibraryProgress(p);
-      hooks?.onProgress?.(p);
-    };
-    try {
-      const value = await action(channel);
-      return current() ? value : undefined;
-    } catch (e) {
-      acceptsProgress = false;
-      channel.onmessage = () => {};
-      if (current()) {
-        if (hooks?.onError) await hooks.onError(e);
-        else setError(String(e), libraryFailures[operation] ?? null);
-      }
-    } finally {
-      acceptsProgress = false;
-      libraryLock.current = false;
-      if (!disposed) {
-        setLibraryBusy(false);
-        setLibraryProgress(null);
-      }
-      channel.onmessage = () => {};
-    }
-  }
-  let openingSavedEntry = $state.raw<SavedEntry | null>(null);
-  let savedOpenCancelling = $state(false);
-  let savedOpenRequest: string | null = null;
-  async function cancelSavedOpen() {
-    if (libraryProgress?.operation !== "open" || savedOpenCancelling) return;
-    savedOpenCancelling = true;
-    if (savedOpenRequest) {
-      try {
-        await invoke<boolean>("cancel_saved_open", {
-          requestId: savedOpenRequest,
-        });
-      } catch (error) {
-        savedOpenCancelling = false;
-        setError(String(error), {
-          title: "Couldn’t cancel opening",
-          reason:
-            "Hahakigami could not stop opening this saved scan. Wait for it to finish.",
-        });
-      }
-    }
-  }
-  async function openSaved(id: string) {
-    if (
-      sessionBlocked ||
-      quickLook.isPending() ||
-      running ||
-      scans.anyRunning ||
-      libraryLock.current
-    )
-      return;
-    if (parkedSaved?.savedId === id) {
-      resetView(parkedSaved);
-      parkedSaved = null;
-      closeAccess();
-      return;
-    }
-    openingSavedEntry = saved.find((entry) => entry.id === id) ?? null;
-    try {
-      const s = await libraryOperation(
-        "open",
-        async (onProgress) => {
-          savedOpenRequest = await invoke<string>("begin_saved_open");
-          if (savedOpenCancelling) {
-            try {
-              await invoke<boolean>("cancel_saved_open", {
-                requestId: savedOpenRequest,
-              });
-            } catch (error) {
-              savedOpenCancelling = false;
-              setError(String(error), {
-                title: "Couldn’t cancel opening",
-                reason:
-                  "Hahakigami could not stop opening this saved scan. Wait for it to finish.",
-              });
-            }
-          }
-          return invoke<ScanSummary>("open_saved_scan", {
-            id,
-            requestId: savedOpenRequest,
-            onProgress,
-          });
-        },
-        {
-          onError: (error) => {
-            if (String(error) !== "Saved scan opening cancelled.")
-              setError(String(error), {
-                title: "Couldn’t open the saved scan",
-                reason:
-                  "Hahakigami could not open this saved scan. The file may be damaged. You can remove it from Saved Scans.",
-              });
-          },
-        },
-      );
-      if (s) {
-        resetView(s);
-        parkedSaved = null;
-        closeAccess();
-      }
-    } finally {
-      openingSavedEntry = null;
-      savedOpenRequest = null;
-      savedOpenCancelling = false;
-    }
-  }
-  async function saveScan() {
-    if (
-      !savedScansEnabled ||
-      !summary ||
-      historical ||
-      summary.state !== "completed" ||
-      sessionBlocked ||
-      quickLook.isPending() ||
-      libraryLock.current
-    )
-      return;
-    const scanId = summary.scanId;
-    const entry = await libraryOperation("save", (onProgress) =>
-      invoke<SavedEntry>("save_scan", { scanId, onProgress }),
-    );
-    if (!entry) return;
-    // Link the live scan to its saved entry so Save can't create a duplicate.
-    setSummary((old) =>
-      old?.scanId === scanId ? { ...old, savedId: entry.id } : old,
-    );
-    scans.patch(scanId, { savedId: entry.id });
-    setSaved((old) =>
-      [entry, ...old].sort((a, b) => b.savedAtMs - a.savedAtMs),
-    );
-    showToast("Scan saved.");
-  }
-  async function compareScans(beforeId: string, afterId: string) {
-    if (
-      sessionBlocked ||
-      quickLook.isPending() ||
-      running ||
-      scans.anyRunning ||
-      libraryLock.current
-    )
-      return;
-    const current = comparableCurrent;
-    const currentAfter = afterId === current?.id;
-    const result = await libraryOperation("compare", (onProgress) =>
-      current && (currentAfter || beforeId === current.id)
-        ? invoke<Comparison>("compare_current_scan", {
-            scanId: current.id,
-            savedId: currentAfter ? beforeId : afterId,
-            currentAfter,
-            onProgress,
-          })
-        : invoke<Comparison>("compare_saved_scans", {
-            beforeId,
-            afterId,
-            onProgress,
-          }),
-    );
-    if (result) setComparison(result);
-  }
-  function isSavedEntry(value: unknown): value is SavedEntry {
-    if (!value || typeof value !== "object") return false;
-    const entry = value as Record<string, unknown>;
-    return (
-      typeof entry.id === "string" &&
-      !!entry.id &&
-      typeof entry.name === "string" &&
-      typeof entry.rootPath === "string" &&
-      typeof entry.incomplete === "boolean" &&
-      ["startedAtMs", "completedAtMs", "savedAtMs"].every(
-        (key) =>
-          typeof entry[key] === "number" &&
-          Number.isFinite(entry[key]) &&
-          !Number.isNaN(new Date(entry[key] as number).getTime()),
-      ) &&
-      ["logicalBytes", "allocatedBytes"].every(
-        (key) => Number.isInteger(entry[key]) && (entry[key] as number) >= 0,
-      ) &&
-      ["entries", "errors", "excluded", "fileBytes"].every(
-        (key) =>
-          Number.isSafeInteger(entry[key]) && (entry[key] as number) >= 0,
-      )
-    );
-  }
-  async function transferScan(
-    operation: ScanTransferReport["operation"],
-    exportId?: string,
-  ) {
-    if (
-      disposed ||
-      !isTauri() ||
-      sessionBlocked ||
-      quickLook.isPending() ||
-      running ||
-      scans.anyRunning ||
-      libraryLock.current
-    )
-      return;
-    quickLook.dismiss();
-    const entry =
-      operation === "export"
-        ? saved.find((entry) => entry.id === exportId)
-        : null;
-    const id = ++scanTransferId;
-    const current = () => !disposed && scanTransfer?.id === id;
-    const requestCurrent = () =>
-      !disposed && scanTransferId === id && libraryLock.current;
-    await libraryOperation(
-      operation,
-      async (onProgress) => {
-        scanTransfer = {
-          id,
-          operation,
-          state: "pending",
-          phase: "choosing",
-          bytes: 0,
-          entry: entry ? { ...entry } : null,
-          error: null,
-        };
-        const value: unknown = await (operation === "import"
-          ? invoke("import_saved_scan", { onProgress })
-          : invoke("export_saved_scan", { id: exportId, onProgress }));
-        if (!current()) return;
-        const cancelled =
-          operation === "import" ? value === null : value === false;
-        if (
-          !cancelled &&
-          (operation === "import" ? !isSavedEntry(value) : value !== true)
-        )
-          throw new Error("The transfer response could not be confirmed.");
-        const retry = {
-          label:
-            operation === "import"
-              ? "Choose file again"
-              : "Choose destination again",
-          run: () => void transferScan(operation, exportId),
-        };
-        if (operation === "import" && !cancelled && isSavedEntry(value)) {
-          const imported = { ...value };
-          setSaved((old) =>
-            [imported, ...old.filter((entry) => entry.id !== imported.id)].sort(
-              (a, b) => b.savedAtMs - a.savedAtMs,
-            ),
-          );
-          scanTransfer = null;
-          showToast("Imported scan added to Saved Scans.", {
-            label: "Open imported scan",
-            run: () => void openSaved(imported.id),
-          });
-        } else {
-          scanTransfer = null;
-          if (cancelled)
-            showToast(
-              `${operation === "import" ? "Import" : "Export"} cancelled. Your current results remain available.`,
-              retry,
-            );
-          else {
-            showToast("Scan exported. You can share the .hahakigamiscan file.");
-          }
-        }
-      },
-      {
-        onProgress: (progress) => {
-          if (!current() || scanTransfer?.state !== "pending") return;
-          scanTransfer = {
-            ...scanTransfer,
-            phase:
-              progress.phase === "choosing"
-                ? "choosing"
-                : progress.phase === "done"
-                  ? "finishing"
-                  : "processing",
-            bytes: progress.bytes,
-          };
-        },
-        onError: async (error) => {
-          if (!current()) return;
-          scanTransfer = {
-            ...scanTransfer!,
-            state: "failed",
-            error: String(error),
-          };
-          // Publication may have succeeded before an import's final metadata write failed.
-          // Refresh the library under the same lock without restoring lastOpenedId.
-          if (operation === "import") {
-            try {
-              const list = await invoke<{ entries: unknown[] }>(
-                "list_saved_scans",
-              );
-              if (
-                requestCurrent() &&
-                Array.isArray(list?.entries) &&
-                list.entries.every(isSavedEntry)
-              )
-                setSaved(
-                  [...list.entries].sort((a, b) => b.savedAtMs - a.savedAtMs),
-                );
-            } catch {
-              // Keep the original unconfirmed transfer error and existing library view.
-            }
-          }
-        },
-      },
-    );
-  }
-  async function importScan() {
-    await transferScan("import");
-  }
-  async function exportScan(id: string) {
-    await transferScan("export", id);
-  }
-  async function removeSaved() {
-    if (
-      !removeEntry ||
-      sessionBlocked ||
-      quickLook.isPending() ||
-      libraryLock.current
-    )
-      return;
-    libraryLock.current = true;
-    setLibraryBusy(true);
-    setError("");
-    try {
-      await invoke("delete_saved_scan", { id: removeEntry.id });
-      // The backend closed the deleted saved scan; leave it for the live scan behind it or Home.
-      if (historical && summary?.savedId === removeEntry.id) {
-        if (currentScan && liveTarget)
-          showSlot(slotKey(liveTarget));
-        else {
-          quickLook.dismiss();
-          clearResultsReturn();
-          clearNavigationHistory();
-          ++generation.current;
-          activeId.current = null;
-          setHistoricalSource(false);
-          setSelection([]);
-          setSummary(null);
-          showHome();
-        }
-      }
-      setSaved((old) => old.filter((e) => e.id !== removeEntry.id));
-      setSummary((old) =>
-        old?.savedId === removeEntry.id ? { ...old, savedId: null } : old,
-      );
-      for (const slot of Object.values(scans.slots))
-        if (slot.summary?.savedId === removeEntry.id)
-          scans.patch(slot.scanId, { savedId: null });
-      if (parkedSaved?.savedId === removeEntry.id) parkedSaved = null;
-      setRemoveEntry(null);
-    } catch (e) {
-      setError(String(e), {
-        title: "Couldn’t remove the saved scan",
-        reason:
-          "Hahakigami could not delete this saved scan. Check the Saved Scans list, then try again.",
-      });
-    } finally {
-      libraryLock.current = false;
-      setLibraryBusy(false);
-    }
   }
   async function loadAccess(current = () => true) {
     setAccessBusy(true);
@@ -1140,7 +643,7 @@ export default function createApp() {
     }
     closeAccess();
     if (request?.scanAll) await scanAllDisks();
-    else if (request) await start(request.target, request.savedScanId);
+    else if (request) await start(request.target);
   }
   async function openSettings() {
     try {
@@ -1179,10 +682,8 @@ export default function createApp() {
       disposed ||
       targetsLoading ||
       sessionBlocked ||
-      libraryLock.current ||
       quickLook.isPending() ||
       accessOpen ||
-      !!removeEntry ||
       !!trash ||
       clearQueueOpen
     )
@@ -1193,8 +694,7 @@ export default function createApp() {
       nav = navigation.current;
     const scanId = activeId.current,
       previousTarget = target,
-      previousSummary = summary,
-      previousComparisonOpen = comparisonOpen;
+      previousSummary = summary;
     const current = () =>
       !disposed &&
       request === folderRequest &&
@@ -1203,16 +703,13 @@ export default function createApp() {
       activeId.current === scanId &&
       target === previousTarget &&
       // Progress replaces the summary object of a scan that keeps running while the dialog is open.
-      summary?.scanId === previousSummary?.scanId &&
-      comparisonOpen === previousComparisonOpen;
+      summary?.scanId === previousSummary?.scanId;
     quickLook.dismiss();
     try {
       const chosen = await invoke<Target | null>("choose_folder");
       if (!current()) return;
       if (chosen) {
-        setComparisonOpen(false);
         setTarget(chosen);
-        setHistoricalSource(false);
         setTargets((previous) =>
           previous.some((item) => item.id === chosen.id)
             ? previous
@@ -1236,49 +733,7 @@ export default function createApp() {
   }
   onMount(() => {
     let cancelled = false;
-    if (isTauri()) {
-      void loadAccess(() => !cancelled);
-      setLibraryBusy(true);
-      libraryLock.current = true;
-      const loadSaved = () =>
-        invoke<{
-          entries: SavedEntry[];
-          lastOpenedId: string | null;
-        }>("list_saved_scans")
-          .then(async (list) => {
-            if (cancelled) return;
-            setSaved(list.entries.sort((a, b) => b.savedAtMs - a.savedAtMs));
-            if (list.lastOpenedId) {
-              libraryLock.current = false;
-              setLibraryBusy(false);
-              await openSaved(list.lastOpenedId);
-            } else {
-              libraryLock.current = false;
-              setLibraryBusy(false);
-            }
-          })
-          .catch((e) => {
-            if (cancelled) return;
-            setError(String(e), {
-              title: "Couldn’t load Saved Scans",
-              reason:
-                "Hahakigami could not read your list of Saved Scans. Restart Hahakigami to try again.",
-            });
-            libraryLock.current = false;
-            setLibraryBusy(false);
-          });
-      // Ask the backend first; with saved scans off, never list or reopen the library.
-      // A failed probe keeps the library off rather than calling commands that may refuse.
-      const unlockLibrary = () => {
-        libraryLock.current = false;
-        setLibraryBusy(false);
-      };
-      invoke<boolean>("saved_scans_enabled").then((on) => {
-        savedScansEnabled = on !== false;
-        if (savedScansEnabled) return loadSaved();
-        unlockLibrary();
-      }, unlockLibrary);
-    }
+    if (isTauri()) void loadAccess(() => !cancelled);
     if (isTauri())
       invoke<Target[]>("discover_targets")
         .then((t) => {
@@ -1408,7 +863,6 @@ export default function createApp() {
       targets,
       access,
       sortReady,
-      libraryBusy,
       busy,
     ];
     return untrack(() => {
@@ -1419,7 +873,6 @@ export default function createApp() {
         performanceStarted.current ||
         !access ||
         !sortReady ||
-        libraryBusy ||
         busy
       )
         return;
@@ -1483,30 +936,21 @@ export default function createApp() {
       canvas_evidence: canvas,
     });
   }
-  function start(t = target, savedScanId?: string) {
-    if (!t && !savedScanId) return Promise.resolve();
-    return scans.start(savedScanId ? { savedScanId } : { target: t! });
+  function start(t = target) {
+    if (!t) return Promise.resolve();
+    return scans.start(t);
   }
   // The app's side of a start, for the scan slots: its gates, then what the view does as the scan
   // reports. Only a start that no newer start or navigation overtook (`g`) takes the view.
   function beginStart(
-    request: StartRequest,
+    t: Target,
     how: { takeView: boolean; batch: boolean },
   ): StartView | null {
-    const t = "target" in request ? request.target : null;
-    const savedScanId =
-      "savedScanId" in request ? request.savedScanId : undefined;
     const blocking = {
       target: t,
-      savedScanId,
       scanAll: how.batch ? (true as const) : undefined,
     };
-    if (
-      choosingFolder ||
-      libraryLock.current ||
-      quickLook.isPending() ||
-      scanBlocked(blocking)
-    )
+    if (choosingFolder || quickLook.isPending() || scanBlocked(blocking))
       return null;
     quickLook.dismiss();
     // -1 never matches the current generation, so this start never takes the view.
@@ -1526,8 +970,6 @@ export default function createApp() {
         clearResultsReturn();
         clearNavigationHistory();
         liveTarget = t;
-        if (historical) parkedSaved = summary;
-        setHistoricalSource(false);
         performanceDrawnMap = null;
         performanceMapReady = false;
         performanceProgressUpdates = 0;
@@ -1559,16 +1001,6 @@ export default function createApp() {
         )
           showToast("Scan cancelled. Partial results are shown.");
         setSummary(s);
-      },
-      target(result) {
-        setTargets((old) => [
-          ...old.filter((existing) => existing.id !== result.id),
-          result,
-        ]);
-        if (g === generation.current) {
-          liveTarget = result;
-          setTarget(result);
-        }
       },
       fetched: setSummary,
       failed(e) {
@@ -1660,7 +1092,7 @@ export default function createApp() {
   $effect(() => {
     [scanIdentity, revision, selectionIdentity];
     return untrack(() => {
-      if (!summary || historical || !selection.length) return;
+      if (!summary || !selection.length) return;
       const scanId = summary.scanId,
         version = revision,
         ids = selectionIdentity;
@@ -1881,27 +1313,27 @@ export default function createApp() {
     }
   }
   async function restoreView(
-    saved: ResultsReturn,
+    snapshot: ResultsReturn,
     returnPoint: ResultsReturn | null,
   ) {
     const nav = ++navigation.current;
     invalidateList();
-    setFocus(saved.focus);
-    setCrumbs(saved.crumbs.length ? [...saved.crumbs] : [saved.focus]);
-    setQuery(saved.query);
-    setDebouncedQuery(saved.query);
-    setFilters({ ...saved.filters });
-    setMetric(saved.metric);
-    const sortChanged = sort !== saved.sort;
+    setFocus(snapshot.focus);
+    setCrumbs(snapshot.crumbs.length ? [...snapshot.crumbs] : [snapshot.focus]);
+    setQuery(snapshot.query);
+    setDebouncedQuery(snapshot.query);
+    setFilters({ ...snapshot.filters });
+    setMetric(snapshot.metric);
+    const sortChanged = sort !== snapshot.sort;
     ++sortChoice.current;
-    setSort(saved.sort);
-    setOffset(saved.offset);
-    setSelection([...saved.selection]);
-    listScroll = saved.scroll;
-    listScrollRestore = { id: ++scrollRestoreId, top: saved.scroll };
+    setSort(snapshot.sort);
+    setOffset(snapshot.offset);
+    setSelection([...snapshot.selection]);
+    listScroll = snapshot.scroll;
+    listScrollRestore = { id: ++scrollRestoreId, top: snapshot.scroll };
     resultsReturn = returnPoint;
-    if (sortChanged) void persistSort(saved.sort);
-    if (!saved.crumbs.length) await loadCrumbs(saved.focus, saved.scanId, nav);
+    if (sortChanged) void persistSort(snapshot.sort);
+    if (!snapshot.crumbs.length) await loadCrumbs(snapshot.focus, snapshot.scanId, nav);
   }
   function canNavigateHistory(history: NavigationView[]) {
     return !!(
@@ -1912,25 +1344,24 @@ export default function createApp() {
       !sessionBlocked &&
       !previewDialog &&
       !homeOpen &&
-      !queueOpen &&
-      !comparisonOpen
+      !queueOpen
     );
   }
   async function goBack() {
     if (!canNavigateHistory(backHistory)) return;
     const current = captureView()!;
-    const saved = backHistory.at(-1)!;
+    const snapshot = backHistory.at(-1)!;
     backHistory = backHistory.slice(0, -1);
     forwardHistory = [...forwardHistory.slice(-99), current];
-    await restoreView(saved, saved.resultsReturn);
+    await restoreView(snapshot, snapshot.resultsReturn);
   }
   async function goForward() {
     if (!canNavigateHistory(forwardHistory)) return;
     const current = captureView()!;
-    const saved = forwardHistory.at(-1)!;
+    const snapshot = forwardHistory.at(-1)!;
     forwardHistory = forwardHistory.slice(0, -1);
     backHistory = [...backHistory.slice(-99), current];
-    await restoreView(saved, saved.resultsReturn);
+    await restoreView(snapshot, snapshot.resultsReturn);
   }
   async function open(n: NodeView) {
     if (n.excluded) {
@@ -1963,19 +1394,19 @@ export default function createApp() {
     await loadCrumbs(n, scanId, nav);
   }
   function returnToResults() {
-    const saved = resultsReturn;
+    const snapshot = resultsReturn;
     if (
-      !saved ||
+      !snapshot ||
       !summary ||
-      saved.scanId !== summary.scanId ||
-      activeId.current !== saved.scanId ||
+      snapshot.scanId !== summary.scanId ||
+      activeId.current !== snapshot.scanId ||
       sessionBlocked ||
       previewDialog
     )
       return;
     const current = captureView();
     if (current) rememberView(current);
-    void restoreView(saved, null);
+    void restoreView(snapshot, null);
   }
   function select(n: NodeView, multi = false) {
     if (n.kind === "aggregate") return;
@@ -1992,7 +1423,6 @@ export default function createApp() {
   async function prepareTrash() {
     if (
       !summary ||
-      historical ||
       summary.state !== "completed" ||
       !selection.length ||
       sessionBlocked ||
@@ -2016,7 +1446,7 @@ export default function createApp() {
     }
   }
   async function commitTrash() {
-    if (!summary || historical || libraryBusy || busy || !trash) return;
+    if (!summary || busy || !trash) return;
     const review = {
       ...trash,
       items: trash.items.map((item) => ({ ...item })),
@@ -2087,35 +1517,20 @@ export default function createApp() {
       ? crumbs.find((node) => node.id === focus.parentId)
       : undefined,
   );
-  const selectedSavedEntry = $derived(
-    saved.find((entry) => entry.id === summary?.savedId),
-  );
   // A selected target describes the next scan, never the identity of existing results.
   const resultLocation = $derived.by(() => {
-    if (!summary) {
-      return openingSavedEntry
-        ? { name: openingSavedEntry.name, path: openingSavedEntry.rootPath }
-        : null;
-    }
+    if (!summary) return null;
     const root = crumbs[0];
-    const recorded = historical ? selectedSavedEntry : null;
-    const scanned = historical ? null : liveTarget;
-    const path = scanned?.path ?? root?.path ?? recorded?.rootPath;
-    return path
-      ? { name: scanned?.name ?? root?.name ?? recorded?.name, path }
-      : null;
+    const scanned = liveTarget;
+    const path = scanned?.path ?? root?.path;
+    return path ? { name: scanned?.name ?? root?.name, path } : null;
   });
   const displayedTargetSelected = $derived(
-    !!summary &&
-      !!resultLocation &&
-      ((historical && historicalSource) ||
-        target?.path === resultLocation.path),
+    !!summary && !!resultLocation && target?.path === resultLocation.path,
   );
   // Scan the location of the results on screen, whatever the sidebar has selected.
   function rescanDisplayed() {
-    return historical
-      ? start(null, summary?.scanId)
-      : start(liveTarget);
+    return start(liveTarget);
   }
   function rescan() {
     return displayedTargetSelected && !homeOpen
@@ -2125,14 +1540,12 @@ export default function createApp() {
   function showHome() {
     quickLook.dismiss();
     queueOpen = false;
-    setComparisonOpen(false);
     homeOpen = true;
   }
-  // Leave Home, the queue or the comparison for the results already loaded.
+  // Leave Home or the queue for the results already loaded.
   function showResults() {
     quickLook.dismiss();
     queueOpen = false;
-    setComparisonOpen(false);
     homeOpen = false;
   }
   // Open a slot's own scan; nothing is reloaded or rescanned.
@@ -2143,10 +1556,8 @@ export default function createApp() {
       ? summary.scanId === slot.scanId
       : !slot.summary && activeId.current === slot.scanId;
     if (!onScreen) {
-      const open = historical ? summary : null;
       liveTarget = slot.target;
       resetView(slot.summary, slot.scanId);
-      if (open) parkedSaved = open;
     }
     showResults();
   }
@@ -2174,38 +1585,21 @@ export default function createApp() {
     ++generation.current;
     activeId.current = null;
     liveTarget = null;
-    setHistoricalSource(false);
     setSelection([]);
     setSummary(null);
     if (wasShown) setTarget(startup);
     void refreshQueue();
   }
-  function openComparison() {
-    if (!savedScansEnabled) return;
-    showQueue(false);
-    homeOpen = false;
-    quickLook.dismiss();
-    setComparisonOpen(true);
-    closeAccess();
-    setTrash(null);
-  }
   // The explorer (map, file list, inspector) is what the user is looking at.
-  const exploring = $derived(
-    !!summary && !homeOpen && !queueOpen && !comparisonOpen,
-  );
+  const exploring = $derived(!!summary && !homeOpen && !queueOpen);
   const selectionActionable = $derived(
     exploring &&
-      !historical &&
-      !libraryBusy &&
       summary?.state === "completed" &&
       selection.length > 0 &&
       !busy &&
       !quickLook.pending &&
       !selection.some((node) => node.excluded),
   );
-  // For what cannot overlap any scan on any disk (the saved-scan library); backend gates match.
-  // Starting a scan only needs its own slot free: see can.rescan.
-  const idle = $derived(!running && !scans.anyRunning && !sessionBlocked);
   const readyHereEntries = $derived(cleanupQueue.readyHere);
   const queueSelection = cleanupQueue.selection;
   /**
@@ -2225,8 +1619,7 @@ export default function createApp() {
         !homeOpen &&
         !sessionBlocked &&
         !previewDialog &&
-        !queueOpen &&
-        !comparisonOpen
+        !queueOpen
       );
     },
     get openFolder() {
@@ -2260,7 +1653,6 @@ export default function createApp() {
         !queueBusy &&
         !blocked &&
         !queue.blocked &&
-        !historical &&
         shown?.summary.state === "completed" &&
         readyHereEntries.length > 0
       );
@@ -2268,8 +1660,6 @@ export default function createApp() {
     get reveal() {
       return (
         exploring &&
-        !historical &&
-        !libraryBusy &&
         selection.length <= 1 &&
         !!inspected &&
         inspected.kind !== "aggregate"
@@ -2287,14 +1677,13 @@ export default function createApp() {
     get rescan() {
       const shown = !!summary && !homeOpen;
       const onDisplayed = shown && displayedTargetSelected;
-      // What the click scans: the displayed results' place (a saved scan rescans in the folder slot)
-      // or the sidebar target. Only that slot has to be free; other disks may be scanning.
-      const savedRescan = onDisplayed && historical;
+      // What the click scans: the displayed results' place or the sidebar target. Only that slot
+      // has to be free; other disks may be scanning.
       const place = onDisplayed ? liveTarget : target;
       return (
-        (savedRescan || !!place) &&
+        !!place &&
         !sessionBlocked &&
-        !(savedRescan ? scans.folderBusy() : scans.busy(place!)) &&
+        !scans.busy(place) &&
         !!access &&
         (shown || (isTauri() && !targetsLoading))
       );
@@ -2315,9 +1704,9 @@ export default function createApp() {
       return (
         !!summary &&
         !homeOpen &&
-        (historical || !!liveTarget) &&
+        !!liveTarget &&
         !sessionBlocked &&
-        !(historical ? scans.folderBusy() : scans.busy(liveTarget!)) &&
+        !scans.busy(liveTarget) &&
         !!access
       );
     },
@@ -2325,41 +1714,12 @@ export default function createApp() {
       return (
         !!summary &&
         running &&
-        !historical &&
         !cancelling &&
         summary.scanPhase !== "caching"
       );
     },
-    get saveScan() {
-      return (
-        savedScansEnabled &&
-        summary?.state === "completed" &&
-        !historical &&
-        !sessionBlocked &&
-        !summary.savedId
-      );
-    },
     get chooseFolder() {
       return isTauri() && !sessionBlocked && !targetsLoading && !!access;
-    },
-    get importScan() {
-      return savedScansEnabled && isTauri() && idle;
-    },
-    /** Any saved scan's own Export action. */
-    get exportSaved() {
-      return savedScansEnabled && isTauri() && idle;
-    },
-    /** Export the displayed saved scan. */
-    get exportScan() {
-      return savedScansEnabled && isTauri() && idle && !!selectedSavedEntry;
-    },
-    get compareScans() {
-      return (
-        savedScansEnabled &&
-        idle &&
-        (saved.length >= 2 ||
-          saved.some((entry) => entry.rootPath === comparableCurrent?.rootPath))
-      );
     },
     get cleanupQueue() {
       return !blocked && !trash;
@@ -2374,7 +1734,7 @@ export default function createApp() {
       return exploring && logicalSize.shown;
     },
     get toggleSidebar() {
-      return !accessOpen && !removeEntry && !trash && !clearQueueOpen;
+      return !accessOpen && !trash && !clearQueueOpen;
     },
     get toggleFileList() {
       return exploring;
@@ -2389,9 +1749,6 @@ export default function createApp() {
     get parentFolder() {
       return parentFolder;
     },
-    get selectedSavedEntry() {
-      return selectedSavedEntry;
-    },
     get resultLocation() {
       return resultLocation;
     },
@@ -2404,7 +1761,6 @@ export default function createApp() {
     get batchProgress() {
       return scans.batchProgress;
     },
-    openComparison,
     goBack,
     goForward,
     get resultsReturn() {
@@ -2482,9 +1838,6 @@ export default function createApp() {
     },
     get target() {
       return target;
-    },
-    get comparableCurrent() {
-      return comparableCurrent;
     },
     get summary() {
       return summary;
@@ -2574,36 +1927,6 @@ export default function createApp() {
     get accessReturned() {
       return accessReturned;
     },
-    get saved() {
-      return saved;
-    },
-    get libraryBusy() {
-      return libraryBusy;
-    },
-    get libraryProgress() {
-      return libraryProgress;
-    },
-    get savedOpenCancelling() {
-      return savedOpenCancelling;
-    },
-    get cancelSavedOpen() {
-      return cancelSavedOpen;
-    },
-    get openingSavedEntry() {
-      return openingSavedEntry;
-    },
-    get removeEntry() {
-      return removeEntry;
-    },
-    get comparisonOpen() {
-      return comparisonOpen;
-    },
-    get comparison() {
-      return comparison;
-    },
-    get historicalSource() {
-      return historicalSource;
-    },
     get setTargets() {
       return setTargets;
     },
@@ -2685,27 +2008,6 @@ export default function createApp() {
     get setAccessError() {
       return setAccessError;
     },
-    get setSaved() {
-      return setSaved;
-    },
-    get setLibraryBusy() {
-      return setLibraryBusy;
-    },
-    get setLibraryProgress() {
-      return setLibraryProgress;
-    },
-    get setRemoveEntry() {
-      return setRemoveEntry;
-    },
-    get setComparisonOpen() {
-      return setComparisonOpen;
-    },
-    get setComparison() {
-      return setComparison;
-    },
-    get setHistoricalSource() {
-      return setHistoricalSource;
-    },
     get quickLook() {
       return quickLook;
     },
@@ -2714,9 +2016,6 @@ export default function createApp() {
     },
     get filterKey() {
       return filterKey;
-    },
-    get historical() {
-      return historical;
     },
     get blocked() {
       return blocked;
@@ -2768,9 +2067,6 @@ export default function createApp() {
     get activeId() {
       return activeId;
     },
-    get libraryLock() {
-      return libraryLock;
-    },
     get invalidateList() {
       return invalidateList;
     },
@@ -2792,41 +2088,10 @@ export default function createApp() {
     get previewRow() {
       return previewRow;
     },
-    get libraryOperation() {
-      return libraryOperation;
-    },
-    get openSaved() {
-      return openSaved;
-    },
-    get importScan() {
-      return importScan;
-    },
-    get exportScan() {
-      return exportScan;
-    },
-    get scanTransfer() {
-      return scanTransfer;
-    },
-    dismissScanTransfer,
     get toast() {
       return toast;
     },
     dismissToast,
-    get saveScan() {
-      return saveScan;
-    },
-    get savedScansEnabled() {
-      return savedScansEnabled;
-    },
-    get liveScanSaved() {
-      return !historical && !!summary?.savedId;
-    },
-    get compareScans() {
-      return compareScans;
-    },
-    get removeSaved() {
-      return removeSaved;
-    },
     get openAccess() {
       return openAccess;
     },

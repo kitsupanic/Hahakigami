@@ -1,12 +1,12 @@
-//! Versioned private optimization cache; historical archives use their existing codec.
-use super::ScanMetadata;
+//! Versioned wire format of the private rescan cache.
+use crate::cache_store::ScanMetadata;
 use disk_scan::{
-    AccountingInfo, CloneMetadata, Identity, LegacyTreeBuilder, Node, NodeKind, ScanState,
-    ScanStats, Snapshot, WorkerStats,
+    AccountingInfo, Identity, LegacyTreeBuilder, Node, NodeKind, ScanState, ScanStats, Snapshot,
+    WorkerStats,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     io::{Read, Write},
     os::unix::ffi::{OsStrExt, OsStringExt},
 };
@@ -14,8 +14,7 @@ const MAGIC: &[u8; 8] = b"HAHCAC03";
 const FIELD_LIMIT: usize = 64 * 1024;
 const HEADER_LIMIT: usize = 1024 * 1024;
 const RECORD_BYTES: usize = 69;
-const CLONE_BYTES: usize = 29;
-pub(super) const WRITE_BATCH: usize = 128 * 1024;
+pub(crate) const WRITE_BATCH: usize = 128 * 1024;
 #[derive(Serialize, Deserialize)]
 struct Header {
     metadata: ScanMetadata,
@@ -37,7 +36,7 @@ fn kind(k: &NodeKind) -> u8 {
         NodeKind::Other => 3,
     }
 }
-pub(super) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Result<(), String> {
+pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Result<(), String> {
     if !s.incremental_accounting_eligible()
         || !s.accounting.warnings.is_empty()
         || s.accounting.deduction_bytes != 0
@@ -65,45 +64,21 @@ pub(super) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Resu
     w.write_all(&(header.len() as u32).to_le_bytes())
         .map_err(err)?;
     w.write_all(&header).map_err(err)?;
-    write_nodes(w, s, FIELD_LIMIT, false)
-}
-/// Writes the node count and fixed records shared by caches and binary archives.
-/// `archive` additionally permits the sparse clone-metadata flag and payload.
-pub(super) fn write_nodes(
-    w: &mut impl Write,
-    s: &Snapshot,
-    field_limit: usize,
-    archive: bool,
-) -> Result<(), String> {
     w.write_all(&(s.node_count() as u32).to_le_bytes())
         .map_err(err)?;
     let mut paths = s.path_cursor();
     for n in s.iter_nodes() {
-        let (path, parent) = paths.paths(n.id)?;
+        let path = paths.path(n.id)?;
         let path = path.as_os_str().as_bytes();
-        let native = n.native_name();
         let label = n.display_name();
         let name = label.as_bytes();
-        let clone = n.clone_metadata();
-        if path.len() > field_limit
-            || name.len() > field_limit
+        if path.len() > FIELD_LIMIT
+            || name.len() > FIELD_LIMIT
             || n.children().len() > s.node_count()
-            || (clone.is_some() && !archive)
+            || n.clone_metadata().is_some()
         {
             return Err("Cache node exceeds field limit".into());
         }
-        // Archives omit a path the reader rebuilds from the parent and the native
-        // basename; the root and any other spelling keep their exact bytes.
-        let explicit = !archive
-            || !parent.is_some_and(|parent| {
-                is_child_path(parent.as_os_str().as_bytes(), native.as_bytes(), path)
-            });
-        let has_label = !archive || label != native.to_string_lossy();
-        let first = if archive && !explicit {
-            native.as_bytes()
-        } else {
-            path
-        };
         let mut fixed = [0u8; RECORD_BYTES];
         fixed[0..4].copy_from_slice(&n.id.to_le_bytes());
         fixed[4..8].copy_from_slice(&n.parent.unwrap_or(u32::MAX).to_le_bytes());
@@ -123,57 +98,21 @@ pub(super) fn write_nodes(
         fixed[56] = kind(&n.identity.kind)
             | (u8::from(n.is_directory) << 2)
             | (u8::from(n.hard_link) << 3)
-            | (u8::from(n.excluded) << 4)
-            | (u8::from(clone.is_some()) << 5)
-            | (u8::from(archive && explicit) << 6);
-        // Archive label length is stored plus one so zero means "same as the lossy native name".
-        let label_field = if archive {
-            if has_label {
-                name.len() + 1
-            } else {
-                0
-            }
-        } else {
-            name.len()
-        };
-        for (i, value) in [first.len(), label_field, n.children().len()]
+            | (u8::from(n.excluded) << 4);
+        for (i, value) in [path.len(), name.len(), n.children().len()]
             .iter()
             .enumerate()
         {
             fixed[57 + i * 4..61 + i * 4].copy_from_slice(&(*value as u32).to_le_bytes());
         }
         w.write_all(&fixed).map_err(err)?;
-        w.write_all(first).map_err(err)?;
-        if has_label {
-            w.write_all(name).map_err(err)?;
-        }
+        w.write_all(path).map_err(err)?;
+        w.write_all(name).map_err(err)?;
         for child in n.children() {
             w.write_all(&child.to_le_bytes()).map_err(err)?;
         }
-        if let Some(clone) = clone {
-            let mut b = [0u8; CLONE_BYTES];
-            b[0..8].copy_from_slice(&clone.clone_id.to_le_bytes());
-            b[8..16].copy_from_slice(&clone.data_allocated_size.to_le_bytes());
-            b[16..24].copy_from_slice(&clone.data_logical_size.to_le_bytes());
-            b[24..28].copy_from_slice(&clone.reference_count.to_le_bytes());
-            b[28] = u8::from(clone.may_share_blocks) | (u8::from(clone.verified) << 1);
-            w.write_all(&b).map_err(err)?;
-        }
     }
     Ok(())
-}
-/// Whether `path` is `parent` joined with the ordinary component `native` (the
-/// join the reader performs): non-empty, not `.`/`..`, no separator.
-fn is_child_path(parent: &[u8], native: &[u8], path: &[u8]) -> bool {
-    let separator = usize::from(parent.last().is_some_and(|b| *b != b'/'));
-    !native.is_empty()
-        && native != b"."
-        && native != b".."
-        && !native.contains(&b'/')
-        && path.len() == parent.len() + separator + native.len()
-        && path.starts_with(parent)
-        && (separator == 0 || path[parent.len()] == b'/')
-        && path.ends_with(native)
 }
 fn read_u32(r: &mut impl Read) -> Result<u32, String> {
     let mut b = [0; 4];
@@ -182,7 +121,7 @@ fn read_u32(r: &mut impl Read) -> Result<u32, String> {
 }
 /// Reads exactly `count` bytes into `out`, growing only with bytes actually
 /// present: a hostile length on a truncated stream never reserves `count`.
-pub(super) fn read_bytes(
+fn read_bytes(
     r: &mut impl Read,
     out: &mut Vec<u8>,
     count: usize,
@@ -208,7 +147,7 @@ fn bytes(r: &mut impl Read, count: usize, limit: usize) -> Result<Vec<u8>, Strin
     read_bytes(r, &mut b, count, limit)?;
     Ok(b)
 }
-pub(super) fn decode(
+pub(crate) fn decode(
     r: &mut impl Read,
     node_limit: usize,
 ) -> Result<(Snapshot, ScanMetadata), String> {
@@ -227,7 +166,7 @@ pub(super) fn decode(
     {
         return Err("Cache requires verified nonshared clone accounting".into());
     }
-    let mut snapshot = read_nodes(r, node_limit, FIELD_LIMIT, false)?;
+    let mut snapshot = read_nodes(r, node_limit)?;
     snapshot.stats = h.stats;
     snapshot.accounting = h.accounting;
     snapshot.state = ScanState::Completed;
@@ -237,19 +176,12 @@ pub(super) fn decode(
     snapshot.descriptor_peak = h.descriptor_peak;
     Ok((snapshot, h.metadata))
 }
-/// Reads the node count, every record and the end of stream. Shared by caches
-/// and binary archives; `archive` admits the clone-metadata flag and payload.
-pub(super) fn read_nodes(
-    r: &mut impl Read,
-    node_limit: usize,
-    field_limit: usize,
-    archive: bool,
-) -> Result<Snapshot, String> {
+/// Reads the node count, every record and the end of stream.
+fn read_nodes(r: &mut impl Read, node_limit: usize) -> Result<Snapshot, String> {
     let count = read_u32(r)? as usize;
     if count == 0 || count > node_limit {
         return Err("Cache exceeds node limit or has no root".into());
     }
-    let flag_mask: u8 = if archive { 127 } else { 31 };
     // Never reserve an untrusted count: a truncated stream allocates at most a bounded record.
     let mut builder = LegacyTreeBuilder::new(std::path::PathBuf::new());
     // One transient wire record owns reusable buffers. The builder copies all
@@ -275,79 +207,39 @@ pub(super) fn read_nodes(
         clone_metadata: None,
     };
     let mut children_left = count - 1;
-    let mut native = Vec::new();
     for _ in 0..count {
         let mut fixed = [0; RECORD_BYTES];
         r.read_exact(&mut fixed).map_err(err)?;
         let u32_at = |offset| u32::from_le_bytes(fixed[offset..offset + 4].try_into().unwrap());
         let u64_at = |offset| u64::from_le_bytes(fixed[offset..offset + 8].try_into().unwrap());
         let flags = fixed[56];
-        if flags & !flag_mask != 0
+        if flags & !31 != 0
             || (flags & 4 != 0) != (flags & 3 == 0)
             || (flags & 8 != 0 && flags & 3 != 1)
         {
             return Err("Invalid cache node flags".into());
         }
         let path_count = u32_at(57) as usize;
-        // Archives store the label length plus one; zero means no explicit label.
-        let name_count = if archive {
-            u32_at(61).checked_sub(1).map(|l| l as usize)
-        } else {
-            Some(u32_at(61) as usize)
-        };
+        let name_count = u32_at(61) as usize;
         let child_count = u32_at(65) as usize;
-        if path_count > field_limit || name_count.is_some_and(|c| c > field_limit) {
+        if path_count > FIELD_LIMIT || name_count > FIELD_LIMIT {
             return Err("Cache field exceeds limit".into());
         }
         if child_count > children_left {
             return Err("Cache child count exceeds topology limit".into());
         }
         children_left -= child_count;
-        // Without the explicit-path flag an archive stores only the native basename.
-        let explicit = !archive || flags & 64 != 0;
-        if explicit {
-            let mut path = std::mem::take(&mut node.path).into_os_string().into_vec();
-            read_bytes(r, &mut path, path_count, field_limit)?;
-            node.path = OsString::from_vec(path).into();
-        } else {
-            read_bytes(r, &mut native, path_count, field_limit)?;
-        }
-        if let Some(count) = name_count {
-            let mut name = std::mem::take(&mut node.name).into_bytes();
-            read_bytes(r, &mut name, count, field_limit)?;
-            node.name = String::from_utf8(name).map_err(err)?;
-        } else if explicit {
-            node.name.clear();
-            node.name.push_str(
-                &node
-                    .path
-                    .file_name()
-                    .unwrap_or(node.path.as_os_str())
-                    .to_string_lossy(),
-            );
-        }
+        let mut path = std::mem::take(&mut node.path).into_os_string().into_vec();
+        read_bytes(r, &mut path, path_count, FIELD_LIMIT)?;
+        node.path = OsString::from_vec(path).into();
+        let mut name = std::mem::take(&mut node.name).into_bytes();
+        read_bytes(r, &mut name, name_count, FIELD_LIMIT)?;
+        node.name = String::from_utf8(name).map_err(err)?;
         node.children.clear();
         // Grow only from actual decoded child IDs, never an untrusted reserve.
         for _ in 0..child_count {
             node.children.push(read_u32(r)?);
         }
-        node.clone_metadata = if flags & 32 != 0 {
-            let mut b = [0; CLONE_BYTES];
-            r.read_exact(&mut b).map_err(err)?;
-            if b[28] > 3 {
-                return Err("Invalid clone metadata flags".into());
-            }
-            Some(CloneMetadata {
-                clone_id: u64::from_le_bytes(b[0..8].try_into().unwrap()),
-                data_allocated_size: u64::from_le_bytes(b[8..16].try_into().unwrap()),
-                data_logical_size: u64::from_le_bytes(b[16..24].try_into().unwrap()),
-                reference_count: u32::from_le_bytes(b[24..28].try_into().unwrap()),
-                may_share_blocks: b[28] & 1 != 0,
-                verified: b[28] & 2 != 0,
-            })
-        } else {
-            None
-        };
         let parent = u32_at(4);
         node.id = u32_at(0);
         node.parent = if parent == u32::MAX {
@@ -372,12 +264,7 @@ pub(super) fn read_nodes(
         node.is_directory = flags & 4 != 0;
         node.hard_link = flags & 8 != 0;
         node.excluded = flags & 16 != 0;
-        if explicit {
-            builder.append_ref(&node)?;
-        } else {
-            let label = name_count.map(|_| node.name.as_str());
-            builder.append_child_ref(&node, OsStr::from_bytes(&native), label, field_limit)?;
-        }
+        builder.append_ref(&node)?;
     }
     let mut extra = [0];
     if r.read(&mut extra).map_err(err)? != 0 {
@@ -489,7 +376,7 @@ mod tests {
             .unwrap()
             .join(OsString::from_vec(b"native-\xff".to_vec()));
         snapshot.replace_node(file_id, file).unwrap();
-        super::super::validate(&snapshot, 8_000_000).unwrap();
+        crate::cache_store::validate(&snapshot, 8_000_000).unwrap();
         let original_root = snapshot.root.as_os_str().as_bytes();
         for suffix in [b"//".as_slice(), b"/./".as_slice()] {
             for variant_children in [false, true] {
@@ -522,11 +409,11 @@ mod tests {
                 compact.finalization_us = snapshot.finalization_us;
                 compact.descriptor_limit = snapshot.descriptor_limit;
                 compact.descriptor_peak = snapshot.descriptor_peak;
-                super::super::validate(&compact, 8_000_000).unwrap();
+                crate::cache_store::validate(&compact, 8_000_000).unwrap();
                 let mut encoded = Vec::new();
                 encode(&mut encoded, &compact, &metadata).unwrap();
                 let (decoded, metadata) = decode(&mut encoded.as_slice(), 8_000_000).unwrap();
-                super::super::validate(&decoded, 8_000_000).unwrap();
+                crate::cache_store::validate(&decoded, 8_000_000).unwrap();
                 assert_eq!(decoded.root.as_os_str().as_bytes(), root_bytes);
                 for (id, path) in expected.iter().enumerate() {
                     assert_eq!(
@@ -679,7 +566,7 @@ mod tests {
                 .unwrap()
             );
         }
-        super::super::validate(&decoded, 8_000_000).unwrap();
+        crate::cache_store::validate(&decoded, 8_000_000).unwrap();
         assert_eq!(
             serde_json::to_value(decoded_metadata.clone()).unwrap(),
             serde_json::to_value(metadata).unwrap()
@@ -795,9 +682,9 @@ mod tests {
             s.append_legacy_node(node).unwrap();
         }
         if let Some(path) = std::env::var_os("HAH_CODEC_PROBE_CACHE_DIR") {
-            let library = super::super::Library::new(path.into());
-            let id = library.list().unwrap().entries.first().unwrap().id.clone();
-            s = library.load_cache(&id).unwrap().0;
+            let store = crate::cache_store::Store::new(path.into());
+            let id = store.list().unwrap().first().unwrap().id.clone();
+            s = store.load(&id).unwrap().0;
         }
         let mut old = Vec::new();
         encode(&mut old, &s, &m).unwrap();

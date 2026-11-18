@@ -136,8 +136,6 @@ beforeEach(() => {
       switch (command) {
         case "get_explorer_preferences":
           return { sort: "sizeDescending", warning: null };
-        case "list_saved_scans":
-          return { entries: [], lastOpenedId: null };
         case "full_disk_access_status":
           return {
             status: "on",

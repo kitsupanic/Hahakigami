@@ -14,8 +14,8 @@ With a scan per disk (ADR 0003), the only thing left that forced one scan at a t
 
 ## What still cannot overlap
 
-- **Calibration, first-run setup and restart, saved-scan open, import, export and compare** need no scan at all, a winding-down one included (`LiveSlots::any_running`). Calibration times a sample walk at full width, restart ends the process, and the saved-scan operations replace or read the one open archive. Calibration also refuses new scans while it runs.
-- **The activity gate** keeps one exclusive operation at a time (library, cleanup, queue edits, Quick Look, reveal, restart, calibration). Scan starts hold it shared, so several can begin together, and an exclusive operation and a start still refuse each other. This is what keeps a "no scan running" check true until its operation is done.
+- **Calibration and first-run setup and restart** need no scan at all, a winding-down one included (`LiveSlots::any_running`). Calibration times a sample walk at full width and restart ends the process. Calibration also refuses new scans while it runs.
+- **The activity gate** keeps one exclusive operation at a time (cleanup, queue edits, Quick Look, reveal, restart, calibration). Scan starts hold it shared, so several can begin together, and an exclusive operation and a start still refuse each other. This is what keeps a "no scan running" check true until its operation is done.
 - A cleanup on one disk waits for no other disk, and it invalidates only its own session.
 - A winding-down scan no longer blocks starts: it only keeps its budget share and the gates above.
 

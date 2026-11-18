@@ -202,8 +202,8 @@ mod resolution_tests {
         let report = PathBuf::from(std::env::var_os("HAH_ALIAS_REPORT").unwrap());
         assert!(cache_root.is_absolute() && report.is_absolute());
         assert!(report.starts_with("/private/tmp"));
-        let (snapshot, _) = crate::library::Library::new(cache_root)
-            .load_cache(&cache_id)
+        let (snapshot, _) = crate::cache_store::Store::new(cache_root)
+            .load(&cache_id)
             .unwrap();
         let mut output = OpenOptions::new()
             .write(true)

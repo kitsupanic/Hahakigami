@@ -49,8 +49,7 @@ const file = (
 let items: NodeView[],
   queue: QueueView,
   container: HTMLDivElement,
-  root: Root | undefined,
-  historical: boolean;
+  root: Root | undefined;
 const entries = (...paths: string[]) =>
   paths.map((path, index) => ({
     id: `q${index + 1}`,
@@ -102,7 +101,7 @@ async function mount() {
   root = createTestRoot(container);
   await act(() => root!.render(App));
   await flush();
-  if (!historical) await click("Scan location");
+  await click("Scan location");
 }
 beforeEach(() => {
   items = [
@@ -116,12 +115,10 @@ beforeEach(() => {
     warning: null,
     blocked: false,
   };
-  historical = false;
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args) => {
     const summary = {
-      scanId: historical ? "saved" : "live",
-      origin: historical ? "saved" : "live",
+      scanId: "live",
       state: "completed",
       rootId: 0,
       workers: 1,
@@ -142,16 +139,11 @@ beforeEach(() => {
             scanAnyway: false,
             appPath: "/Fixture.app",
         };
-      case "list_saved_scans":
-        return { entries: [], lastOpenedId: historical ? "saved" : null };
       case "discover_targets":
         return [target];
-      case "begin_saved_open":
-        return "saved-open-request";
       case "start_scan":
         return "live";
       case "scan_summary":
-      case "open_saved_scan":
         return summary;
       case "get_node":
         return node;
@@ -310,22 +302,7 @@ it("keeps Add available on a folder containing queued descendants", async () => 
   expect(removedIds()).toEqual([]);
 });
 
-it("permits removing an exact stale entry while viewing historical data", async () => {
-  historical = true;
-  await mount();
-  await vi.waitFor(async () => {
-    await flush();
-    expect(row(1)).toBeTruthy();
-  });
-  await select(1);
-  expect(button("Added to cleanup queue. Remove from cleanup queue")?.disabled).toBe(false);
-  await click("Added to cleanup queue. Remove from cleanup queue");
-  expect(removedIds()).toEqual(["q1"]);
-  expect(button("Add to cleanup queue")?.disabled).toBe(true);
-});
-
-it("does not match an imported native path to an unrelated live queue entry", async () => {
-  historical = true;
+it("does not match a path to a queue entry with a different native key", async () => {
   items = [{ ...file(2, "native-�"), pathKey: "/fixture/native-%FF" }];
   queue.entries = [
     {

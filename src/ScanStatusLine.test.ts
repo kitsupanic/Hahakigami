@@ -6,11 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { setShowLogicalSize } from "./logicalSize.svelte";
 import ScanStatusLine from "./ScanStatusLine.svelte";
 import { act, createTestRoot, type Root } from "./testUtils";
-import { formatScanTimestamp } from "./savedHistory";
+import { formatScanTimestamp } from "./uiFormat";
 import type { Metric, ScanSummary } from "./types";
 
 let container: HTMLDivElement, root: Root;
-const save = vi.fn();
 const base: ScanSummary = {
   scanId: "scan",
   rootId: 1,
@@ -27,7 +26,6 @@ const base: ScanSummary = {
 };
 beforeEach(() => {
   setShowLogicalSize(true);
-  save.mockClear();
   container = document.createElement("div");
   document.body.append(container);
   root = createTestRoot(container);
@@ -39,23 +37,15 @@ afterEach(async () => {
 async function render(
   summary: Partial<ScanSummary> = {},
   props: {
-    historical?: boolean;
     cancelling?: boolean;
-    canSave?: boolean;
-    savesEnabled?: boolean;
     metric?: Metric;
-    savedTimestamp?: number;
-    savedTimestampPrecise?: boolean;
   } = {},
 ) {
   await act(() =>
     root.render(ScanStatusLine, {
       summary: { ...base, ...summary },
       metric: "allocated",
-      historical: false,
       cancelling: false,
-      canSave: true,
-      onSave: save,
       ...props,
     }),
   );
@@ -65,7 +55,6 @@ const popover = () =>
   container.querySelector<HTMLElement>(".scan-details-popover");
 const press = (selector: string) =>
   act(() => container.querySelector<HTMLElement>(selector)!.click());
-const chip = () => container.querySelector<HTMLElement>(".status-chip");
 
 it("announces phases without announcing rapidly updating counters or early completion", async () => {
   await render({ scanPhase: "checking", entries: 0, elapsedMs: 0 });
@@ -100,7 +89,6 @@ it("announces phases without announcing rapidly updating counters or early compl
   expect(container.querySelector(".scan-timestamp small")?.textContent).toBe(
     "Scanning",
   );
-  expect(chip()).toBeNull();
   await render({ state: "completed", scanPhase: "done" });
   expect(status()).toBe("Scan complete");
   expect(container.querySelector(".scan-timestamp small")?.textContent).toBe(
@@ -111,7 +99,6 @@ it("announces phases without announcing rapidly updating counters or early compl
 });
 it("shows the phase instead of a chip or timestamp while a scan runs", async () => {
   await render({ startedAtMs: 1000 });
-  expect(chip()).toBeNull();
   expect(
     container.querySelector(".scan-timestamp .status-value")?.textContent,
   ).toBe("Counting files…");
@@ -124,20 +111,6 @@ it("shows the phase instead of a chip or timestamp while a scan runs", async () 
     container.querySelector(".scan-information-description")?.textContent,
   ).toContain("current filesystem operation");
 });
-it("offers to save a completed live scan through the Save chip", async () => {
-  await render({ state: "completed", startedAtMs: 1000, completedAtMs: 2000 });
-  expect(chip()?.textContent?.trim()).toBe("Save scan");
-  expect(chip()?.tagName).toBe("BUTTON");
-  expect(container.textContent).not.toContain("Saved scan");
-  await act(() => chip()!.click());
-  expect(save).toHaveBeenCalledOnce();
-  await render({ state: "completed" }, { canSave: false });
-  expect(chip()?.getAttribute("aria-disabled")).toBe("true");
-  await act(() => chip()!.click());
-  expect(save).toHaveBeenCalledOnce();
-  await render({ state: "completed" }, { savesEnabled: false });
-  expect(chip()).toBeNull();
-});
 it("keeps cancellation and failure as partial results with guidance inline", async () => {
   await render({ state: "cancelled" });
   expect(status()).toBe("Scan cancelled · partial results");
@@ -147,7 +120,6 @@ it("keeps cancellation and failure as partial results with guidance inline", asy
   expect(
     container.querySelector(".scan-state-description")?.textContent,
   ).toContain("Scan again for complete results.");
-  expect(chip()).toBeNull();
   await render({ state: "failed", message: "Filesystem unavailable" });
   expect(status()).toBe("Scan failed");
   expect(container.querySelector(".scan-timestamp small")?.textContent).toBe(
@@ -244,48 +216,15 @@ it("shows nonfatal cache trouble with its exact reason discoverable", async () =
   ).toBe("Cache disk is full");
   expect(popover()?.textContent).toContain("Cache disk is full");
   expect(popover()?.textContent).not.toContain("Previous metadata is stale");
-  await render(
-    { state: "completed", cacheWarning: "Cache disk is full" },
-    { historical: true },
-  );
-  expect(container.querySelector(".scan-cache-note")).toBeNull();
 });
-it("labels historical results as a Saved scan, silently, preserving epoch-zero timestamps", async () => {
-  await render(
-    { state: "completed" },
-    {
-      historical: true,
-      savedTimestamp: 0,
-      savedTimestampPrecise: true,
-      metric: "logical",
-    },
-  );
-  expect(chip()?.textContent).toBe("Saved scan");
-  expect(chip()?.tagName).not.toBe("BUTTON");
-  expect(container.textContent).not.toContain("Read-only");
-  expect(container.textContent).not.toContain("Save scan");
-  expect(container.querySelector('[role="status"]')).toBeNull();
-  expect(container.querySelector("[aria-live]")).toBeNull();
+it("shows an epoch-zero completion time rather than treating it as missing", async () => {
+  await render({ state: "completed", completedAtMs: 0, startedAtMs: 1000 });
   expect(
     container.querySelector(".scan-timestamp .status-value")?.textContent,
-  ).toBe(formatScanTimestamp(0, undefined, true).label);
+  ).toBe(formatScanTimestamp(0).label);
   expect(
     container.querySelector(".scan-timestamp")?.getAttribute("title"),
   ).toBe(`Scan completed ${formatScanTimestamp(0).absolute}`);
-});
-it("keeps historical failures and incomplete status explicit without live announcements", async () => {
-  await render({ state: "failed" }, { historical: true });
-  expect(container.querySelector(".scan-status-text")?.textContent).toBe(
-    "Scan failed",
-  );
-  expect(container.querySelector('[role="status"]')).toBeNull();
-  expect(
-    container.querySelector(".scan-state-description")?.textContent,
-  ).toContain("results shown are partial");
-  await render({ state: "completed", incomplete: true }, { historical: true });
-  expect(
-    container.querySelector(".scan-status-text")?.getAttribute("title"),
-  ).toContain("limited coverage");
 });
 it.each([
   [61234, "1m 1s"],

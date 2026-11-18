@@ -10,7 +10,6 @@
   } = $props();
   const paths: Record<string, string> = {
     copy: "M9 3h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM4 7H3a1 1 0 0 0-1 1v12a2 2 0 0 0 2 2h11",
-    clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 3.5V12l3.5 2",
     target:
       "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z",
     home: "m3 11 9-8 9 8M5 10v11h5v-7h4v7h5V10",
@@ -19,8 +18,6 @@
     "queue-add": "M3 6h10M3 12h10M3 18h10M7 3v6m3 0v6m-4 0v6M18 3v6m-3-3h6",
     "folder-outline": "M3 7V4h6l2 3h10v13H3V7Zm0 0h8",
     filter: "M3 6h18M3 12h18M3 18h18M8 3v6m8 0v6M10 15v6",
-    import: "M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6",
-    export: "M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6",
     plus: "M12 4v16M4 12h16",
     minus: "M4 12h16",
     check: "m5 12 4 4L19 6",

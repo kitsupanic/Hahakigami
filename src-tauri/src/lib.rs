@@ -3,17 +3,17 @@ mod automation;
 mod baseline;
 mod budget;
 mod cache;
+mod cache_codec;
+mod cache_store;
 mod cleanup;
 mod cleanup_queue;
 pub mod cli;
-mod comparison;
 mod events;
 mod explorer_preferences;
 mod file_type_map;
 mod file_types;
 mod filters;
 mod instance;
-mod library;
 mod mcp;
 #[cfg(feature = "performance-benchmark")]
 pub mod performance;
@@ -33,31 +33,13 @@ use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
+        atomic::{AtomicIsize, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{ipc::Channel, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-
-/// Master switch for the Saved scans feature. Flip to `true` and un-skip the tests marked with this name.
-/// Also restore the "turned off" wording in README.md, cli.rs and mcp.rs.
-pub(crate) const SAVED_SCANS_ENABLED: bool = false;
-pub(crate) const SAVED_SCANS_DISABLED: &str = "Saved scans are turned off in this version.";
-
-pub(crate) fn require_saved_scans() -> Result<(), String> {
-    if SAVED_SCANS_ENABLED {
-        Ok(())
-    } else {
-        Err(SAVED_SCANS_DISABLED.into())
-    }
-}
-
-#[tauri::command]
-fn saved_scans_enabled() -> bool {
-    SAVED_SCANS_ENABLED
-}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,8 +143,6 @@ struct Summary {
     finalization_us: u64,
     descriptor_limit: Option<usize>,
     descriptor_peak: Option<usize>,
-    origin: SessionOrigin,
-    saved_id: Option<String>,
     started_at_ms: u64,
     completed_at_ms: Option<u64>,
     scan_mode: String,
@@ -172,12 +152,6 @@ struct Summary {
     rescanned_directories: u64,
     fallback_reason: Option<String>,
     cache_warning: Option<String>,
-}
-#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum SessionOrigin {
-    Live,
-    Saved,
 }
 #[derive(Clone)]
 struct ScanDetails {
@@ -253,8 +227,6 @@ impl Session {
             rescanned_directories: details.rescanned_directories,
             fallback_reason: details.fallback_reason,
             cache_warning: details.cache_warning,
-            origin: self.origin,
-            saved_id: self.saved_id.clone(),
             started_at_ms: self.started_at_ms,
             completed_at_ms: match self.completed_at_ms.load(Ordering::Acquire) {
                 0 => None,
@@ -323,13 +295,11 @@ struct AppState {
     access_setup: Arc<Mutex<access_setup::AccessSetup>>,
     targets: Mutex<HashMap<String, (platform::Target, PathBuf)>>,
     target_guards: Mutex<HashMap<String, safety::CheckedItem>>,
-    // The live scans, the open saved scan and the scan budget; commands reach scans only through it.
+    // The live scans and the scan budget; commands reach scans only through it.
     scans: Arc<slots::Slots>,
-    library: Arc<Mutex<Option<library::Library>>>,
     cleanup_queue: Arc<Mutex<cleanup_queue::Queue>>,
     baselines: Arc<baseline::Baselines>,
     activity: Arc<ActivityGate>,
-    saved_open: Arc<Mutex<Option<Arc<SavedOpen>>>>,
 }
 fn register(
     state: &AppState,
@@ -451,8 +421,8 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 // Owned guard can cross the blocking-task boundary. All session mutations reserve
-// it before acquiring other locks, so library operations cannot race cleanup.
-// Exclusive holders (library, cleanup, queue edits, restart) refuse each other and every scan start.
+// it before acquiring other locks.
+// Exclusive holders (cleanup, queue edits, restart) refuse each other and every scan start.
 // Scan starts only share it, so scans on different slots can begin at the same time.
 #[derive(Default)]
 struct ActivityGate {
@@ -460,6 +430,7 @@ struct ActivityGate {
     state: AtomicIsize,
 }
 impl ActivityGate {
+    #[cfg(test)]
     fn busy(&self) -> bool {
         self.state.load(Ordering::Acquire) != 0
     }
@@ -499,467 +470,6 @@ impl Drop for Activity {
             self.gate.state.store(0, Ordering::Release);
         }
     }
-}
-// The commit mutex orders cancellation against selection persistence and session replacement.
-struct SavedOpen {
-    id: String,
-    cancelled: AtomicBool,
-    started: AtomicBool,
-    committed: Mutex<bool>,
-}
-struct SavedOpenGuard(Arc<Mutex<Option<Arc<SavedOpen>>>>, String);
-impl Drop for SavedOpenGuard {
-    fn drop(&mut self) {
-        let mut slot = self.0.lock().unwrap();
-        if slot.as_ref().is_some_and(|job| job.id == self.1) {
-            *slot = None;
-        }
-    }
-}
-#[tauri::command]
-fn begin_saved_open(state: State<'_, AppState>) -> Result<String, String> {
-    require_saved_scans()?;
-    let mut slot = state.saved_open.lock().unwrap();
-    if slot
-        .as_ref()
-        .is_some_and(|job| job.started.load(Ordering::Acquire))
-        || state.activity.busy()
-    {
-        return Err("Another operation is in progress. Wait for it to finish.".into());
-    }
-    // A lost handshake response must not reserve application activity forever.
-    // Unstarted tokens can be replaced; claiming and replacement share this lock.
-    let id = uuid::Uuid::new_v4().to_string();
-    *slot = Some(Arc::new(SavedOpen {
-        id: id.clone(),
-        cancelled: AtomicBool::new(false),
-        started: AtomicBool::new(false),
-        committed: Mutex::new(false),
-    }));
-    Ok(id)
-}
-#[tauri::command]
-fn cancel_saved_open(state: State<'_, AppState>, request_id: String) -> bool {
-    let job = state.saved_open.lock().unwrap().clone();
-    let Some(job) = job.filter(|job| job.id == request_id) else {
-        return false;
-    };
-    let committed = job.committed.lock().unwrap();
-    if *committed {
-        return false;
-    }
-    job.cancelled.store(true, Ordering::Release);
-    true
-}
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LibraryProgress {
-    operation: &'static str,
-    phase: &'static str,
-    bytes: u64,
-}
-fn progress(
-    channel: &Channel<LibraryProgress>,
-    operation: &'static str,
-    phase: &'static str,
-    bytes: u64,
-) {
-    let _ = channel.send(LibraryProgress {
-        operation,
-        phase,
-        bytes,
-    });
-}
-#[tauri::command]
-async fn list_saved_scans(state: State<'_, AppState>) -> Result<library::List, String> {
-    require_saved_scans()?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        library
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or("Saved scan library is unavailable.")?
-            .list()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[tauri::command]
-async fn save_scan(
-    state: State<'_, AppState>,
-    scan_id: String,
-    on_progress: Channel<LibraryProgress>,
-) -> Result<library::SavedEntry, String> {
-    require_saved_scans()?;
-    let activity = Activity::begin(&state.activity)?;
-    let s = state.scans.find(&scan_id)?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        let held = s.hold(Need::LiveCompleted)?;
-        let summary = s.summary();
-        let snapshot = held.completed_snapshot()?;
-        let metadata = library::ScanMetadata {
-            started_at_ms: s.started_at_ms,
-            completed_at_ms: summary
-                .completed_at_ms
-                .ok_or("Scan completion time is unavailable.")?,
-            workers: s.actual_workers(),
-            worker_mode: match s.worker_mode {
-                settings::WorkerMode::Auto => "auto",
-                settings::WorkerMode::Manual => "manual",
-            }
-            .into(),
-            worker_source: s.worker_source.clone(),
-            qos: s.qos,
-        };
-        progress(&on_progress, "save", "writing", 0);
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        let mut last_progress = Instant::now();
-        let entry = library.save(&snapshot, &metadata, |bytes| {
-            if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                progress(&on_progress, "save", "writing", bytes);
-                last_progress = Instant::now();
-            }
-        })?;
-        progress(&on_progress, "save", "done", 0);
-        Ok(entry)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[tauri::command]
-async fn open_saved_scan<R: tauri::Runtime>(
-    state: State<'_, AppState>,
-    id: String,
-    request_id: String,
-    on_progress: Channel<LibraryProgress>,
-    app: tauri::AppHandle<R>,
-) -> Result<Summary, String> {
-    require_saved_scans()?;
-    let job = {
-        let slot = state.saved_open.lock().unwrap();
-        let job = slot
-            .as_ref()
-            .filter(|job| job.id == request_id)
-            .cloned()
-            .ok_or("Saved scan opening request is no longer active.")?;
-        job.started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "Saved scan opening request has already started.")?;
-        job
-    };
-    let request_guard = SavedOpenGuard(state.saved_open.clone(), request_id);
-    if job.cancelled.load(Ordering::Acquire) {
-        return Err(library::OPEN_CANCELLED.into());
-    }
-    let activity = Activity::begin(&state.activity)?;
-    quick_look::close(app.clone(), state.preview.clone()).await?;
-    state
-        .scans
-        .require_idle("Cancel the running scan before opening saved results.")?;
-    let library = state.library.clone();
-    let scans = state.scans.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _request_guard = request_guard;
-        let _activity = activity;
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        progress(&on_progress, "open", "reading", 0);
-        let mut last_progress = Instant::now();
-        let (snapshot, metadata) = library
-            .load_cancellable(
-                &id,
-                |bytes| {
-                    if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                        progress(&on_progress, "open", "reading", bytes);
-                        last_progress = Instant::now();
-                    }
-                },
-                &job.cancelled,
-                || progress(&on_progress, "open", "validating", 0),
-            )
-            .map_err(|error| {
-                if job.cancelled.load(Ordering::Acquire) {
-                    library::OPEN_CANCELLED.to_string()
-                } else {
-                    error
-                }
-            })?;
-        let s = Arc::new(Session::saved(&id, snapshot, metadata));
-        // Startup selection must commit before replacement, keeping the existing
-        // session available on every load/persistence failure.
-        let mut committed = job.committed.lock().unwrap();
-        if job.cancelled.load(Ordering::Acquire) {
-            return Err(library::OPEN_CANCELLED.into());
-        }
-        library.mark_opened(&id)?;
-        let summary = s.summary();
-        scans.open_saved(s);
-        *committed = true;
-        drop(committed);
-        progress(&on_progress, "open", "done", 0);
-        Ok(summary)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[tauri::command]
-async fn delete_saved_scan(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    require_saved_scans()?;
-    let activity = Activity::begin(&state.activity)?;
-    let library = state.library.clone();
-    let scans = state.scans.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        library
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or("Saved scan library is unavailable.")?
-            .delete(&id)?;
-        // A deleted saved scan must not stay open.
-        scans.close_saved(&id);
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-// Sharing never grants authority over the paths recorded inside an archive.
-// Only the native dialog supplies an external source/destination path.
-fn portable_activity(state: &AppState) -> Result<Activity, String> {
-    state.scans.idle_exclusive(
-        &state.activity,
-        "Cancel the running scan before importing or exporting results.",
-    )
-}
-
-#[tauri::command]
-async fn import_saved_scan<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    state: State<'_, AppState>,
-    on_progress: Channel<LibraryProgress>,
-) -> Result<Option<library::SavedEntry>, String> {
-    require_saved_scans()?;
-    let activity = portable_activity(&state)?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        let Some(file) = app
-            .dialog()
-            .file()
-            .add_filter("Hahakigami scan", &["hahakigamiscan"])
-            .blocking_pick_file()
-        else {
-            return Ok(None);
-        };
-        let path = file.into_path().map_err(|e| e.to_string())?;
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        progress(&on_progress, "import", "reading", 0);
-        let mut last_progress = Instant::now();
-        let entry = library.import_scan(&path, |bytes| {
-            if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                progress(&on_progress, "import", "reading", bytes);
-                last_progress = Instant::now();
-            }
-        })?;
-        progress(&on_progress, "import", "done", 0);
-        Ok(Some(entry))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn export_saved_scan<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    state: State<'_, AppState>,
-    id: String,
-    on_progress: Channel<LibraryProgress>,
-) -> Result<bool, String> {
-    require_saved_scans()?;
-    let activity = portable_activity(&state)?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        // Derive the suggested name from the local library, never a frontend path.
-        let filename = {
-            let guard = library.lock().unwrap();
-            let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-            let entry = library
-                .list()?
-                .entries
-                .into_iter()
-                .find(|entry| entry.id == id)
-                .ok_or("Saved scan is unavailable.")?;
-            format!("scan-{}.hahakigamiscan", entry.id)
-        };
-        let Some(file) = app
-            .dialog()
-            .file()
-            .add_filter("Hahakigami scan", &["hahakigamiscan"])
-            .set_file_name(filename)
-            .blocking_save_file()
-        else {
-            return Ok(false);
-        };
-        let path = file.into_path().map_err(|e| e.to_string())?;
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        progress(&on_progress, "export", "writing", 0);
-        let mut last_progress = Instant::now();
-        library.export_scan(&id, &path, |bytes| {
-            if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                progress(&on_progress, "export", "writing", bytes);
-                last_progress = Instant::now();
-            }
-        })?;
-        progress(&on_progress, "export", "done", 0);
-        Ok(true)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[tauri::command]
-async fn compare_saved_scans(
-    state: State<'_, AppState>,
-    before_id: String,
-    after_id: String,
-    on_progress: Channel<LibraryProgress>,
-) -> Result<comparison::Comparison, String> {
-    require_saved_scans()?;
-    if before_id == after_id {
-        return Err("Choose two different saved scans to compare.".into());
-    }
-    let activity = state.scans.idle_exclusive(
-        &state.activity,
-        "Cancel the running scan before comparing saved results.",
-    )?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        // Keep at most one decoded archive alongside the displayed session.
-        // The first tree is reduced to a path/metadata index before loading the second.
-        let baseline = {
-            progress(&on_progress, "compare", "readingBefore", 0);
-            let mut last_progress = Instant::now();
-            let (snapshot, _) = library.load(&before_id, |bytes| {
-                if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                    progress(&on_progress, "compare", "readingBefore", bytes);
-                    last_progress = Instant::now();
-                }
-            })?;
-            comparison::Baseline::from_snapshot(&snapshot)?
-        };
-        progress(&on_progress, "compare", "readingAfter", 0);
-        let mut last_progress = Instant::now();
-        let (snapshot, _) = library.load(&after_id, |bytes| {
-            if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                progress(&on_progress, "compare", "readingAfter", bytes);
-                last_progress = Instant::now();
-            }
-        })?;
-        progress(&on_progress, "compare", "comparing", 0);
-        let result = baseline.compare(&snapshot, before_id, after_id)?;
-        // Comparison never replaces a session, creates file authority, or changes startup selection.
-        progress(&on_progress, "compare", "done", 0);
-        Ok(result)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-// Compares an in-memory live scan with a saved scan; nothing is written to the library.
-#[tauri::command]
-async fn compare_current_scan(
-    state: State<'_, AppState>,
-    scan_id: String,
-    saved_id: String,
-    current_after: bool,
-    on_progress: Channel<LibraryProgress>,
-) -> Result<comparison::Comparison, String> {
-    require_saved_scans()?;
-    // Saved-scan comparison cannot overlap any running scan, not only the compared one.
-    let activity = state.scans.idle_exclusive(
-        &state.activity,
-        "Cancel the running scan before comparing saved results.",
-    )?;
-    let s = state.scans.find(&scan_id)?;
-    let library = state.library.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _activity = activity;
-        let held = s.hold(Need::LiveCompleted)?;
-        let current = held.completed_snapshot()?;
-        let guard = library.lock().unwrap();
-        let library = guard.as_ref().ok_or("Saved scan library is unavailable.")?;
-        let load_saved = |phase: &'static str| {
-            progress(&on_progress, "compare", phase, 0);
-            let mut last_progress = Instant::now();
-            library
-                .load(&saved_id, |bytes| {
-                    if last_progress.elapsed() >= std::time::Duration::from_millis(100) {
-                        progress(&on_progress, "compare", phase, bytes);
-                        last_progress = Instant::now();
-                    }
-                })
-                .map(|(snapshot, _)| snapshot)
-        };
-        // Keep at most one decoded archive alongside the displayed session, as for saved scans.
-        let result = if current_after {
-            let baseline = comparison::Baseline::from_snapshot(&load_saved("readingBefore")?)?;
-            progress(&on_progress, "compare", "readingAfter", 0);
-            progress(&on_progress, "compare", "comparing", 0);
-            baseline.compare(&current, saved_id.clone(), scan_id)?
-        } else {
-            progress(&on_progress, "compare", "readingBefore", 0);
-            let baseline = comparison::Baseline::from_snapshot(&current)?;
-            let after = load_saved("readingAfter")?;
-            progress(&on_progress, "compare", "comparing", 0);
-            baseline.compare(&after, scan_id, saved_id.clone())?
-        };
-        progress(&on_progress, "compare", "done", 0);
-        Ok(result)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ScanStart {
-    scan_id: String,
-    target: platform::Target,
-}
-#[tauri::command]
-async fn rescan_saved_scan<R: tauri::Runtime>(
-    state: State<'_, AppState>,
-    scan_id: String,
-    on_event: Channel<Summary>,
-    app: tauri::AppHandle<R>,
-) -> Result<ScanStart, String> {
-    require_saved_scans()?;
-    let _activity = Activity::begin(&state.activity)?;
-    quick_look::close(app.clone(), state.preview.clone()).await?;
-    state.access_setup.lock().unwrap().require_scan_allowed()?;
-    let s = state.scans.find(&scan_id)?;
-    if s.origin != SessionOrigin::Saved {
-        return Err("Choose a saved scan to rescan its location.".into());
-    }
-    let path = s.store.read().unwrap().root.clone();
-    let name = path
-        .file_name()
-        .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .into_owned();
-    // Historical identities never authorize current filesystem access. Register
-    // the location afresh and let the normal held-root scanner validate it.
-    let target = register(&state, platform::target(&path, name), path)?;
-    let scan_id = start_scan_impl(&state, target.id.clone(), on_event)?;
-    Ok(ScanStart { scan_id, target })
 }
 #[tauri::command]
 async fn start_scan<R: tauri::Runtime>(
@@ -1195,7 +705,7 @@ fn run_scan(
                 channel.report(s.summary());
                 let completed_at_ms = now_ms();
                 s.completed_at_ms.store(completed_at_ms, Ordering::Release);
-                library::ScanMetadata {
+                cache_store::ScanMetadata {
                     started_at_ms: s.started_at_ms,
                     completed_at_ms,
                     workers: s.actual_workers(),
@@ -2257,9 +1767,6 @@ pub fn run() {
                 explorer_preferences::Preferences::load(&config);
             app.state::<AppState>().baselines.configure(data.join("rescan-cache"));
             *app.state::<AppState>().cleanup_queue.lock().unwrap() = cleanup_queue::Queue::load(data.join("cleanup-queue"));
-            *app.state::<AppState>().library.lock().unwrap() = Some(library::Library::new(
-                data.join("saved-scans"),
-            ));
             *app.state::<AppState>().access_setup.lock().unwrap() =
                 access_setup::AccessSetup::new(&std::env::current_exe()?);
             *app.state::<AppState>().scan_settings.lock().unwrap() =
@@ -2281,18 +1788,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
-            saved_scans_enabled,
-            list_saved_scans,
-            import_saved_scan,
-            export_saved_scan,
-            save_scan,
-            begin_saved_open,
-            cancel_saved_open,
-            open_saved_scan,
-            delete_saved_scan,
-            compare_saved_scans,
-            compare_current_scan,
-            rescan_saved_scan,
             discover_targets,
             mounted_volumes,
             choose_folder,

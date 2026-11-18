@@ -433,8 +433,7 @@ main > .window-toolbar {
   font-size: var(--font-caption);
   font-weight: 400;
 }
-.details-strip .inspector-actions,
-.details-strip .inspector-actions.historical-actions {
+.details-strip .inspector-actions {
   padding: 0;
   border: 0;
   max-height: none;
@@ -461,8 +460,7 @@ main > .window-toolbar {
   margin-top: 0;
   min-height: 32px;
 }
-.inspector-actions,
-.inspector-actions.historical-actions {
+.inspector-actions {
   flex-shrink: 0;
   padding: 10px 20px 16px;
   max-height: none;
@@ -473,20 +471,6 @@ main > .window-toolbar {
   min-height: 32px;
   font-size: var(--font-secondary);
 }
-.historical-context > button {
-  margin-top: 10px;
-}
-.historical-context {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  margin: 0;
-}
-.inspector-actions .historical-context p {
-  margin: 0;
-  font-size: var(--font-secondary);
-  line-height: 1.5;
-}
 .queue-strip {
   margin: 0;
   padding: 10px 20px;
@@ -496,16 +480,9 @@ main > .window-toolbar {
   border-radius: 0;
   font-size: var(--font-secondary);
 }
-.saved-open-feedback,
 main > .error,
 .results-return-context {
   margin: 10px 20px;
-}
-.saved-open-feedback {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 @media (prefers-color-scheme: dark) {
   main > header {

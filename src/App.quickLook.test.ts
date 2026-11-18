@@ -10,7 +10,6 @@ const mock = vi.hoisted(() => ({
   listen: vi.fn(),
   unlisten: vi.fn(),
   callbacks: [] as ((event: { payload: QuickLookStatus }) => void)[],
-  origin: "live" as "live" | "saved",
   scanState: "completed" as ScanSummary["state"],
   revision: 0,
 }));
@@ -68,7 +67,6 @@ const excluded: NodeView = {
 };
 const summary = (): ScanSummary => ({
   scanId: "scan",
-  origin: mock.origin,
   rootId: 0,
   state: mock.scanState,
   entries: 6,
@@ -90,7 +88,6 @@ async function flush() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
-    await Promise.resolve(); // startup asks saved_scans_enabled before list_saved_scans
   });
 }
 function button(name: string) {
@@ -165,7 +162,7 @@ async function chooseSort(value: string) {
 async function mount() {
   await act(async () => root.render(App));
   await flush();
-  if (mock.origin === "live") await click("Scan location");
+  await click("Scan location");
 }
 async function event(value: QuickLookStatus) {
   mock.revision = Math.max(mock.revision, value.revision);
@@ -180,7 +177,6 @@ beforeEach(() => {
   mock.listen.mockReset();
   mock.unlisten.mockReset();
   mock.callbacks.length = 0;
-  mock.origin = "live";
   mock.scanState = "completed";
   mock.revision = 0;
   mock.listen.mockImplementation(
@@ -203,25 +199,6 @@ beforeEach(() => {
           return { sort: "sizeDescending", warning: null };
         case "set_explorer_sort":
           return { sort: args.sort, warning: null };
-        case "list_saved_scans":
-          return {
-            entries: ["saved", "other"].map((id) => ({
-              id,
-              name: id,
-              rootPath: "/fixture",
-              startedAtMs: 1000,
-              completedAtMs: 2000,
-              savedAtMs: 3000,
-              entries: 6,
-              logicalBytes: 100,
-              allocatedBytes: 100,
-              incomplete: true,
-              errors: 2,
-              excluded: 0,
-              fileBytes: 100,
-            })),
-            lastOpenedId: mock.origin === "saved" ? "saved" : null,
-          };
         case "full_disk_access_status":
           return {
             status: "on",
@@ -238,8 +215,6 @@ beforeEach(() => {
               freeBytes: null,
             },
           ];
-        case "open_saved_scan":
-          return summary();
         case "start_scan":
           return "scan";
         case "scan_summary":
@@ -329,31 +304,6 @@ it("offers Reveal in Finder and Quick Look as labelled icon-only buttons beside 
     'button[aria-label="Close Quick Look"]',
   )!;
   expect(close.title).toBe("Close Quick Look");
-});
-it("blocks historical, nonregular, excluded and multiple selections", async () => {
-  mock.origin = "saved";
-  await mount();
-  await select("report.pdf");
-  expect(
-    [...container.querySelectorAll("button")].some(
-      (button) => button.getAttribute("aria-label") === "Quick Look",
-    ),
-  ).toBe(false);
-  expect(
-    container
-      .querySelector("header .rescan-action")
-      ?.getAttribute("aria-label"),
-  ).toBe("Rescan Home");
-  expect(
-    container.querySelector<HTMLElement>("#selection-inspector")?.hidden,
-  ).toBe(false);
-  expect(
-    container.querySelector(".scan-status-line .status-chip")?.textContent,
-  ).toContain("Saved scan");
-  expect(container.textContent).not.toContain("Read-only");
-  expect(container.textContent).toContain("can't preview or queue files from a saved scan");
-  await space("report.pdf");
-  expect(calls("quick_look_node")).toHaveLength(0);
 });
 it.each(["running", "cancelled", "failed"] as const)(
   "blocks %s scans",
@@ -505,28 +455,9 @@ it("reports preview errors and permits recovery without resetting the scan", asy
   expect(button("Quick Look").disabled).toBe(false);
 });
 
-it("closes for comparison/removal/trash dialogs and native close failures are retryable", async () => {
+it("closes for the Trash dialog and native close failures are retryable", async () => {
   await mount();
   await select("report.pdf");
-  await click("Quick Look");
-  await click("Compare saved scans");
-  expect(container.querySelector('[aria-label="Close Quick Look"]')).toBeNull();
-  await click("Close comparison");
-  await click("Quick Look");
-  await act(() =>
-    container.querySelector<HTMLButtonElement>(".saved-menu-trigger")!.click(),
-  );
-  const remove = container.querySelector<HTMLButtonElement>(
-    'button[aria-label="Remove saved scan saved"]',
-  )!;
-  await act(async () => remove.click());
-  await flush();
-  expect(container.querySelector('[aria-label="Close Quick Look"]')).toBeNull();
-  const cancelRemove = container.querySelector<HTMLButtonElement>(
-    '[role="dialog"] button',
-  )!;
-  await act(async () => cancelRemove.click());
-  await flush();
   await click("Quick Look");
   await act(async () => menuItem("trash").click());
   await flush();
@@ -590,21 +521,6 @@ it("does not open another file after prior panel closure fails, and recovery pre
   await click("Quick Look");
   expect(calls("quick_look_node")).toHaveLength(2);
   expect(calls("quick_look_node").at(-1)?.[1].nodeId).toBe(2);
-});
-
-it("keeps legacy unknown-origin summaries read-only for preview while Space still selects", async () => {
-  const previous = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(
-    (command: string, args: Record<string, unknown>) =>
-      command === "scan_summary"
-        ? Promise.resolve({ ...summary(), origin: undefined })
-        : previous(command, args),
-  );
-  await mount();
-  await space("report.pdf");
-  expect(button("Quick Look").disabled).toBe(true);
-  expect(row("report.pdf").getAttribute("aria-selected")).toBe("true");
-  expect(calls("quick_look_node")).toHaveLength(0);
 });
 
 it("a second Space closes the same visible file without requesting another preview", async () => {

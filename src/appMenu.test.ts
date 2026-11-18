@@ -75,10 +75,6 @@ it("builds the documented menus, items and accelerators", async () => {
     "Rescan [CmdOrCtrl+R]",
     "Scan All Disks",
     "Stop Scan [CmdOrCtrl+.]",
-    "Save Scan [CmdOrCtrl+S]",
-    "Import Scan… [CmdOrCtrl+Shift+O]",
-    "Export Scan… [CmdOrCtrl+Shift+E]",
-    "Compare Scans…",
   ]);
   expect(layout("Edit")).toEqual([
     "Undo",
@@ -175,11 +171,11 @@ it("disables every app command when quiet but never the predefined items", async
 
 it("runs actions only while enabled, and ignores Go and Item commands in text fields", async () => {
   const { menu, commands } = await make();
-  menuItem("saveScan").click();
-  expect(commands.saveScan).not.toHaveBeenCalled();
+  menuItem("rescan").click();
+  expect(commands.rescan).not.toHaveBeenCalled();
   await menu.sync(state());
-  menuItem("saveScan").click();
-  expect(commands.saveScan).toHaveBeenCalledTimes(1);
+  menuItem("rescan").click();
+  expect(commands.rescan).toHaveBeenCalledTimes(1);
   const input = document.body.appendChild(document.createElement("input"));
   input.focus();
   for (const id of textFieldIds) {
@@ -187,9 +183,9 @@ it("runs actions only while enabled, and ignores Go and Item commands in text fi
     expect(commands[id], id).not.toHaveBeenCalled();
   }
   menuItem("find").click();
-  menuItem("saveScan").click();
+  menuItem("rescan").click();
   expect(commands.find).toHaveBeenCalled();
-  expect(commands.saveScan).toHaveBeenCalledTimes(2);
+  expect(commands.rescan).toHaveBeenCalledTimes(2);
   const editable = document.body.appendChild(document.createElement("div"));
   editable.setAttribute("contenteditable", "true");
   const inner = editable.appendChild(document.createElement("span"));

@@ -1436,7 +1436,7 @@ The corrected bare-scanner diagnostic (`benchmark-results/performance/candidates
 
 A separate fresh-process stack profile (`benchmark-results/performance/profile-native-home.json`, local only) is diagnostic only and excluded from acceptance timing. It recorded exact path capacities and substantial metadata-enumeration work. The first cohort's stale linked candidate builds, rejected rescan state preparation and intervention remain preserved rather than mixed into the corrected comparison.
 
-The normal development-signed bundle is `target/release/bundle/macos/Hahakigami.app`. It was built through `pnpm desktop:build` after a clean scanner rebuild, passed strict signature verification and has the same designated requirement as the frozen normal baseline. Delivery receipt (`benchmark-results/performance/delivery-receipt.json`, local only) records the executable and core-source hashes. It was not launched over the existing session. User preferences, saved scans, in-memory results, signing identity and privacy grants were preserved.
+The normal development-signed bundle is `target/release/bundle/macos/Hahakigami.app`. It was built through `pnpm desktop:build` after a clean scanner rebuild, passed strict signature verification and has the same designated requirement as the frozen normal baseline. Delivery receipt (`benchmark-results/performance/delivery-receipt.json`, local only) records the executable and core-source hashes. It was not launched over the existing session. User preferences, in-memory results, signing identity and privacy grants were preserved.
 
 ## Incremental replay follow-up (13 October 2026)
 
@@ -1551,7 +1551,7 @@ entries and reread one directory. The comparison uses each candidate layer's own
 full scan rather than claiming a win against only the older, slower baseline.
 
 The private optimization cache now encodes node records as a bounded, checksummed
-binary stream; historical saved-scan JSON archives are unchanged. App persisted
+binary stream. App persisted
 cache decoding fell from about 214 ms to 14 ms in this cohort. Index and cursor
 JSON reads are buffered inside their existing byte caps, following the
 [Serde JSON buffering guidance](https://docs.rs/serde_json/latest/serde_json/fn.from_reader.html).
@@ -1590,7 +1590,7 @@ The speed goal is met for this unchanged synthetic folder on this host. This is
 not a general claim for changed scopes, other directory shapes, Home/startup or
 other macOS versions. Speculation adds transient snapshot memory and cooperative
 cancellation delay; memory is not ranked because preparations and helper attribution
-have separate limitations. Historical library files, preferences and privacy grants
+have separate limitations. Preferences and privacy grants
 remain intact; old disposable optimization caches are rebuilt in the new format.
 
 
@@ -1672,7 +1672,7 @@ app timing ends at final Canvas CPU drawing.
 | Persisted / incremental | 5.760 s | 5.795 s |
 
 All 24 rescan requests were incremental with positive reuse and no fallback,
-reusing 865,211–868,145 entries (approximately 87%). Every timed/export scan had
+reusing 865,211–868,145 entries (approximately 87%). Every timed or exported scan had
 992,608 entries, zero errors/exclusions, complete coverage, 291,459,266,721 logical
 bytes and 248,295,698,432 allocated bytes. Repeated full exports and rescan exports
 matched exactly within each layer in raw paths, kind, own sizes, identity and size
@@ -1729,7 +1729,7 @@ cohort; speed comparisons below use this candidate's own full scans.
 Native reductions were 29.3% same-process and 29.7% persisted. All 24 rescan
 requests were actually incremental, reused 865,484–868,164 entries (approximately
 87%), and had no fallback or speculative-reconstruction span. The runner rejects
-that span if present, including on untimed coverage runs. Every timed/export scan
+that span if present, including on untimed coverage runs. Every timed or exported scan
 had 992,883 entries, zero errors/exclusions, complete coverage, 291,569,083,147
 logical bytes and 248,362,164,224 allocated bytes. Repeated full and rescan exports
 matched exactly within each layer; native/app full exports also matched. These
@@ -1769,7 +1769,7 @@ mixed cases, including root-wide changes, direct listings and file listing reque
 Max review found that duplicate directory paths could collide in staging and omit
 children. `valid_seed` now rejects all duplicate paths before the fast constructor;
 public duplicate-directory/disjoint-child and duplicate-file regressions require
-full fallback and exact fresh-scan parity. Historical archive formats are unchanged.
+full fallback and exact fresh-scan parity.
 
 Normal and isolated apps were rebuilt with `pnpm desktop:build`. Apple Development
 signatures verified, the normal designated requirement remained unchanged, and the
@@ -1795,7 +1795,7 @@ persisted; native reductions were approximately 45.2% and 44.8%. The relative
 persisted/memory ordering varies across five samples and does not mean decoding
 has no cost. All 24 rescan requests were incremental with positive reuse, no
 fallback and no speculative phase, reusing 868,165–868,182 entries (approximately
-87%). Every timed/export scan had 996,424 entries, zero errors/exclusions and
+87%). Every timed or exported scan had 996,424 entries, zero errors/exclusions and
 complete coverage. Logical and deduplicated allocated totals matched across all
 runs. Eight exports gave exact own-path/kind/size/identity parity within each layer
 and between native/app full references. Regression fixtures separately compare
@@ -1855,7 +1855,7 @@ candidate's own full scans, without pooling earlier cohorts.
 
 App reductions against full were approximately 44.6% same-process and 40.9%
 persisted. All 24 rescan requests were incremental with positive reuse, no fallback
-and no speculation. All timed/export scans had 999,110 entries, zero errors/exclusions,
+and no speculation. All timed or exported scans had 999,110 entries, zero errors/exclusions,
 complete coverage and matching logical/deduplicated allocated totals. Eight exports
 matched exactly within each layer and between native/app full references. All fresh
 open-attempt counts equaled processed directory tasks minus the held initial root.
@@ -1924,8 +1924,7 @@ report and worker probe: /private/tmp/hahakigami-github-concurrency-hr4u19wv/.
 ## Private cache encoding and publication (2026-10-13)
 
 Private caches now use lossless Zstd level -1 and a bounded 128 KiB input buffer,
-and omit the unused historical-selection write. Historical archives retain level 3
-and their selection/rollback behavior. The encoded node format, checksum validation,
+and omit the unused selection write. The encoded node format, checksum validation,
 node/decoded/compressed byte limits and archive/row/cursor publication order are
 unchanged. Archive frame completion, flush, file sync, atomic rename and directory
 sync remain inside scan timing. No work moved into deferred background publication.
@@ -2206,7 +2205,7 @@ validation or durability is omitted, and no work continues past save_cache retur
 The immutable Snapshot is borrowed without cloning. The validator takes no locks,
 files or callbacks. Encoding failure still joins, validator error/panic rejects the
 archive, and thread creation failure uses sequential validation before encoding.
-Historical archives, smaller caches and single-worker sessions retain sequential
+Smaller caches and single-worker sessions retain sequential
 behavior. Publication uses at most two threads, within the captured scan-worker
 count; scan traversal/pools/fresh opens/identity checks are unchanged.
 
