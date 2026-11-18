@@ -1,11 +1,11 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{ScanMetadata, Store};
+use crate::cache_store::{open, sync_dir, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs,
     io::{BufReader, Read},
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -93,21 +93,11 @@ impl Cache {
         self.root.starts_with(scope)
     }
     fn path(&self, id: &str) -> Result<PathBuf, String> {
-        let uuid = uuid::Uuid::parse_str(id).map_err(|_| "Invalid cache ID")?;
-        if uuid.to_string() != id {
-            return Err("Invalid cache ID".into());
-        }
-        Ok(self.root.join(format!("{id}.cursor")))
+        self.store.path(id, "cursor")
     }
     fn record(&self, id: &str) -> Result<Record, String> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(self.path(id)?)
-            .map_err(|e| e.to_string())?;
-        if !file.metadata().map_err(|e| e.to_string())?.is_file()
-            || file.metadata().map_err(|e| e.to_string())?.len() > 16 * 1024
-        {
+        let file = open(&self.path(id)?).map_err(|e| e.to_string())?;
+        if file.metadata().map_err(|e| e.to_string())?.len() > 16 * 1024 {
             return Err("Invalid cache record".into());
         }
         let r: Record = serde_json::from_reader(BufReader::new(file.take(16 * 1024)))
@@ -207,17 +197,8 @@ impl Cache {
             .transpose()
     }
     fn archive_bytes(&self, id: &str) -> Result<u64, String> {
-        self.path(id)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(self.root.join(format!("{id}.zst")))
-            .map_err(|e| e.to_string())?;
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file() {
-            return Err("Invalid cache archive".into());
-        }
-        Ok(metadata.len())
+        let file = open(&self.store.path(id, "zst")?).map_err(|e| e.to_string())?;
+        Ok(file.metadata().map_err(|e| e.to_string())?.len())
     }
     fn maintain(&self) -> Result<(), String> {
         let entries = self.store.list()?;
@@ -246,9 +227,7 @@ impl Cache {
                 fs::remove_file(&path).map_err(|e| e.to_string())?;
             }
         }
-        File::open(&self.root)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())
+        sync_dir(&self.root).map_err(|e| e.to_string())
     }
     fn remove(&self, id: &str) -> Result<(), String> {
         self.store.delete(id)?;

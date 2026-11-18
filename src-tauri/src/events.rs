@@ -279,22 +279,12 @@ pub fn boot_session() -> Option<String> {
     None
 }
 #[cfg(not(target_os = "macos"))]
-pub fn replay(_: &Path, _: u64, _: &AtomicBool) -> Result<Changes, String> {
-    Err("Filesystem event history is unsupported on this platform".into())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn replay_on_volume(_: &Path, _: &Path, _: u64, _: &AtomicBool) -> Result<Changes, String> {
-    Err("Filesystem event history is unsupported on this platform".into())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn replay_with_load_on_volume<T: Send>(
+pub fn replay_with_abortable_load_on_volume<T: Send>(
     _: &Path,
     _: &Path,
     _: u64,
     _: &AtomicBool,
-    _: impl FnOnce() -> Result<T, String> + Send,
+    _: impl FnOnce(&AtomicBool) -> Result<T, String> + Send,
 ) -> Result<(T, Changes), String> {
     Err("Filesystem event history is unsupported on this platform".into())
 }
@@ -789,14 +779,26 @@ mod native {
         replay_with_load_on_volume(root, volume, since, cancel, || Ok(()))
             .map(|(_, changes)| changes)
     }
-    /// Decode while one journal stream starts, then flush after decoding finishes.
-    /// Joining a loader is not interruptible, matching synchronous cache decoding.
+    #[cfg(test)]
     pub fn replay_with_load_on_volume<T: Send>(
         root: &Path,
         volume: &Path,
         since: u64,
         cancel: &AtomicBool,
         load: impl FnOnce() -> Result<T, String> + Send,
+    ) -> Result<(T, Changes), String> {
+        replay_with_abortable_load_on_volume(root, volume, since, cancel, |_| load())
+    }
+    /// Decode while one journal stream starts, then flush after decoding finishes.
+    /// Joining a loader is not interruptible, matching synchronous cache decoding, so
+    /// `load` gets a flag that is set once the replay has failed: its result is thrown
+    /// away, and it should stop instead of making the failure wait for it.
+    pub fn replay_with_abortable_load_on_volume<T: Send>(
+        root: &Path,
+        volume: &Path,
+        since: u64,
+        cancel: &AtomicBool,
+        load: impl FnOnce(&AtomicBool) -> Result<T, String> + Send,
     ) -> Result<(T, Changes), String> {
         validate_volume(root, volume)?;
         let volume_text = volume
@@ -821,8 +823,9 @@ mod native {
             collected: Mutex::new(Collected::default()),
             ready: Condvar::new(),
         });
+        let abort = AtomicBool::new(false);
         let loaded = std::thread::scope(|scope| {
-            let mut worker = Some(scope.spawn(load));
+            let mut worker = Some(scope.spawn(|| load(&abort)));
             let mut loaded = None;
             // Every early stream failure still joins the loader explicitly, so
             // loader panics become errors rather than escaping the scoped join.
@@ -905,6 +908,9 @@ mod native {
                 }
                 Ok(())
             })();
+            if replay_result.is_err() {
+                abort.store(true, Ordering::Relaxed);
+            }
             if let Some(worker) = worker {
                 loaded = Some(
                     worker
@@ -980,6 +986,34 @@ mod native {
                 &AtomicBool::new(false),
             )
             .unwrap();
+        }
+        #[test]
+        #[ignore = "opt-in native loader stop after a failed replay"]
+        fn a_failed_replay_tells_the_loader_to_stop() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let volume = volume_mount(&root).unwrap();
+            let cancel = AtomicBool::new(false);
+            let stopped = AtomicBool::new(false);
+            let error = replay_with_abortable_load_on_volume::<()>(
+                &root,
+                &volume,
+                current_id().unwrap(),
+                &cancel,
+                |abort| {
+                    // Fails the replay while this loader runs, then waits to be told to stop.
+                    cancel.store(true, Ordering::Relaxed);
+                    let give_up = Instant::now() + Duration::from_secs(10);
+                    while !abort.load(Ordering::Relaxed) && Instant::now() < give_up {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    stopped.store(abort.load(Ordering::Relaxed), Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "Filesystem event replay cancelled");
+            assert!(stopped.load(Ordering::Relaxed));
         }
         #[test]
         fn invalid_history_does_not_start_loader() {
@@ -1564,5 +1598,9 @@ mod native {
         }
     }
 }
+#[cfg(all(test, target_os = "macos"))]
+pub use native::replay_with_load_on_volume;
 #[cfg(target_os = "macos")]
-pub use native::{boot_session, current_id, journal_identity, replay_with_load_on_volume};
+pub use native::{
+    boot_session, current_id, journal_identity, replay_with_abortable_load_on_volume,
+};

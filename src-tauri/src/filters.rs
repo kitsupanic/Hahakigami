@@ -189,8 +189,9 @@ impl Cache {
             return Err("Unknown scope node".into());
         }
         let address = snapshot.storage_identity();
-        let completed = snapshot.state == ScanState::Completed;
-        let reuse = completed
+        // A cancelled or failed scan keeps its partial results unchanged, so they cache like a completed one.
+        let final_state = snapshot.state != ScanState::Running;
+        let reuse = final_state
             && self.entry.as_ref().is_some_and(|e| {
                 e.query == *query
                     && e.nodes_address == address
@@ -219,7 +220,7 @@ impl Cache {
                 );
             }
             sorting::sort_ids(snapshot, &mut ids, query.order)?;
-            if completed {
+            if final_state {
                 self.entry = Some(Entry {
                     query: query.clone(),
                     nodes_address: address,
@@ -232,7 +233,7 @@ impl Cache {
             }
         }
         Ok(page(
-            &self.entry.as_ref().expect("completed cache populated").ids,
+            &self.entry.as_ref().expect("cache populated").ids,
             offset,
             limit,
         ))
@@ -551,5 +552,21 @@ mod tests {
         );
         let rss = unsafe { usage.assume_init() }.ru_maxrss;
         eprintln!("filter_sort_profile: entries=1000000 peak_rss_native={rss}");
+    }
+
+    #[test]
+    fn cancelled_and_failed_scans_cache_like_completed_ones() {
+        for state in [ScanState::Cancelled, ScanState::Failed] {
+            let mut s = snapshot(vec![
+                node(0, "a", NodeKind::File, 1, 1),
+                node(1, "b", NodeKind::File, 2, 2),
+            ]);
+            s.state = state;
+            let q = query("all", None, None);
+            let mut cache = Cache::default();
+            cache.page(&s, &q, 0, 1).unwrap();
+            cache.page(&s, &q, 1, 1).unwrap();
+            assert_eq!(cache.builds, 1);
+        }
     }
 }

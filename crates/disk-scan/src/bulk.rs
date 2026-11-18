@@ -481,6 +481,18 @@ fn recover_listing(
                     }
                 }
             }
+            // The baseline lists the whole folder again and reports the same per-entry
+            // failures; keep one error per path.
+            let again: std::collections::HashSet<_> = baseline
+                .iter()
+                .filter_map(|e| e.as_ref().err().and_then(crate::entry_error_path))
+                .collect();
+            permanent.retain(|e| {
+                !e.as_ref()
+                    .err()
+                    .and_then(crate::entry_error_path)
+                    .is_some_and(|path| again.contains(path))
+            });
             permanent.append(&mut baseline);
             Ok(permanent)
         }
@@ -1724,6 +1736,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(permanent.len(), 2);
+        // The relisting reports the same failing entry again: one error per path, not two.
+        // A kept failure the relisting does not report (or one without a path) stays.
+        let at = |name: &str, code| {
+            Err(
+                crate::entry_result(Err(io::Error::from_raw_os_error(code)), || name.into())
+                    .unwrap_err(),
+            )
+        };
+        let mut warnings = Vec::new();
+        let result = recover_listing(
+            vec![at("both", libc::EACCES), at("only-first", libc::EIO)],
+            invalid(),
+            false,
+            &mut warnings,
+            |_| Ok(vec![at("both", libc::EACCES), Ok(entry())]),
+        )
+        .unwrap();
+        let paths: Vec<_> = result
+            .iter()
+            .map(|e| e.as_ref().err().and_then(crate::entry_error_path))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                Some(std::path::Path::new("only-first")),
+                Some(std::path::Path::new("both")),
+                None
+            ]
+        );
         let mut warnings = Vec::new();
         let unsupported = recover_listing(
             vec![Ok(entry())],

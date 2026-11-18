@@ -97,7 +97,7 @@ To browse results, add the MCP server to a client that supports local stdio serv
 }
 ```
 
-Tools: `scan`, `status`, `cancel`, `summary`, `node`, `children`, `search`, `issues`. One scan per session; results end with the session. Command mode does not inherit the app's Full Disk Access grant, so check `issues` for denied locations.
+Tools: `scan`, `status`, `cancel`, `summary`, `node`, `children`, `search`, `issues`. One scan per session; results end with the session. Responses carry a `scanId`; pass it as `scan_id` to `node`, `children` or `search` and an ID from an earlier scan is refused instead of read from the new one. Command mode does not inherit the app's Full Disk Access grant, so check `issues` for denied locations.
 
 ## Architecture
 

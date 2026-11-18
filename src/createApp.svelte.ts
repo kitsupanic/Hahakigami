@@ -91,6 +91,7 @@ export default function createApp() {
   let map = $derived(explorer.map);
   let mapColorMode = $state<"folder" | "fileType">("folder");
   const queryFileTypeMap = latestOnly();
+  const queryList = latestOnly();
   function changeMapColorMode(value: "folder" | "fileType") {
     mapColorMode = value;
   }
@@ -1175,38 +1176,39 @@ export default function createApp() {
         sort,
       };
       const nameQuery = debouncedQuery.trim();
-      const load = filtered
-        ? invoke<Page>("filter_nodes", {
-            ...common,
-            query: nameQuery,
-            ...filters,
-          })
+      const [command, args] = filtered
+        ? ["filter_nodes", { ...common, query: nameQuery, ...filters }]
         : nameQuery
-          ? invoke<Page>("search_nodes", { ...common, query: nameQuery })
-          : invoke<Page>("get_children", { ...common, nodeId: focus.id });
-      load
-        .then((result) => {
-          if (!current()) return;
-          const lastOffset = result.total
-            ? Math.floor((result.total - 1) / 150) * 150
-            : 0;
-          if (offset > lastOffset) {
-            // A growing directory can leave a maximum-size filter during a
-            // live refresh. Request the last valid page without an inverted range.
-            quickLook.dismiss();
-            ++listRequest.current;
-            setPage({ items: [], total: result.total });
-            setOffset(lastOffset);
-            return;
-          }
-          setPage(result);
-        })
-        .catch((failure) => {
-          if (current()) fail(failure);
-        })
-        .finally(() => {
-          if (current()) setListLoading(false);
-        });
+          ? ["search_nodes", { ...common, query: nameQuery }]
+          : ["get_children", { ...common, nodeId: focus.id }];
+      // One request at a time: overlapping searches would each hold the scan's
+      // read lock. A superseded job never starts, and the newest job ends loading.
+      queryList(async () => {
+        if (!current()) return;
+        await invoke<Page>(command, args)
+          .then((result) => {
+            if (!current()) return;
+            const lastOffset = result.total
+              ? Math.floor((result.total - 1) / 150) * 150
+              : 0;
+            if (offset > lastOffset) {
+              // A growing directory can leave a maximum-size filter during a
+              // live refresh. Request the last valid page without an inverted range.
+              quickLook.dismiss();
+              ++listRequest.current;
+              setPage({ items: [], total: result.total });
+              setOffset(lastOffset);
+              return;
+            }
+            setPage(result);
+          })
+          .catch((failure) => {
+            if (current()) fail(failure);
+          })
+          .finally(() => {
+            if (current()) setListLoading(false);
+          });
+      });
       return () => {
         ignore = true;
       };

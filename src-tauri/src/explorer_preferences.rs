@@ -1,8 +1,9 @@
 //! Small, independent explorer preferences; never changes scan settings.
+use crate::cache_store::sync_dir;
 use crate::sorting::Order;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Read,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -89,12 +90,11 @@ impl Preferences {
             file.sync_all()?;
             // Sync the directory before publication as well; a failure leaves the
             // previous preference untouched. Atomic rename is the commit point.
-            let directory = File::open(directory)?;
-            directory.sync_all()?;
+            sync_dir(directory)?;
             fs::rename(&temp, record)?;
             // Publication succeeded. A directory-sync failure is a durability
             // warning rather than a failed write which could falsely promise rollback.
-            self.warning = directory.sync_all().err().map(|e| {
+            self.warning = sync_dir(directory).err().map(|e| {
                 format!("Sort preference saved, but durability could not be confirmed: {e}")
             });
             Ok(())
