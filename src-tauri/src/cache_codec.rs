@@ -1,5 +1,5 @@
 //! Versioned wire format of the private rescan cache.
-use crate::cache_store::ScanMetadata;
+use crate::cache_store::{err, ScanMetadata};
 use disk_scan::{
     AccountingInfo, Identity, LegacyTreeBuilder, Node, NodeKind, ScanState, ScanStats, Snapshot,
     WorkerStats,
@@ -24,9 +24,6 @@ struct Header {
     finalization_us: u64,
     descriptor_limit: Option<usize>,
     descriptor_peak: Option<usize>,
-}
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
 }
 fn kind(k: &NodeKind) -> u8 {
     match k {

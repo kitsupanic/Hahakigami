@@ -752,9 +752,9 @@ fn start_scan_impl(
     target_id: String,
     on_event: impl Progress,
 ) -> Result<String, String> {
-    // Hold through session registration, so restart cannot race a scan.
-    let access = state.access_setup.lock().unwrap();
-    access.require_scan_allowed()?;
+    // Refuse before the target is touched (opening a protected folder can prompt). Checked again before
+    // registration, under the lock that registration holds.
+    state.access_setup.lock().unwrap().require_scan_allowed()?;
     let scheduling_conditions = platform::scheduling_conditions();
     let scan_settings = state
         .scan_settings
@@ -769,21 +769,22 @@ fn start_scan_impl(
             .ok_or("Choose a registered folder or volume first.")?;
         (target_id, root.clone(), target.volume)
     };
-    let (expected, root_ancestors) = {
-        let guards = state.target_guards.lock().unwrap();
-        let guard = guards
-            .get(&resolved_id)
-            .ok_or("Choose the scan target again.")?;
-        validate_target(guard)?;
-        (
-            disk_scan::Identity {
-                device: guard.identity.device,
-                inode: guard.identity.inode,
-                kind: NodeKind::Directory,
-            },
-            guard.ancestors.clone(),
-        )
+    // Cloned out so no lock is held while the disk is read: on a dead mount validate_target and
+    // ScanRoot::open stall, and would hold up every other start, discovery and setup call.
+    let guard = state
+        .target_guards
+        .lock()
+        .unwrap()
+        .get(&resolved_id)
+        .cloned()
+        .ok_or("Choose the scan target again.")?;
+    validate_target(&guard)?;
+    let expected = disk_scan::Identity {
+        device: guard.identity.device,
+        inode: guard.identity.inode,
+        kind: NodeKind::Directory,
     };
+    let root_ancestors = guard.ancestors;
     // Bind the selected object to a held no-follow descriptor BEFORE the worker
     // handoff. A later rename can never authorize a different root object.
     let authorized_root =
@@ -798,6 +799,9 @@ fn start_scan_impl(
         .lock()
         .unwrap()
         .resolve_scan_workers(auto_scope, scheduling_conditions);
+    // Hold through session registration, so restart cannot race a scan.
+    let access = state.access_setup.lock().unwrap();
+    access.require_scan_allowed()?;
     // Only this scan's own slot is replaced and used as the rescan baseline; other disks keep theirs.
     let key = if disk {
         Slot::Disk(root.clone())
@@ -822,16 +826,25 @@ fn start_scan_impl(
     )?;
     let baselines = state.baselines.clone();
     let id = s.id.clone();
-    std::thread::spawn(move || {
-        let (session, events) = (s.clone(), on_event.clone());
-        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_scan(s, authorized_root, previous, baselines, on_event, grant)
-        }));
-        // The grant went back as the closure unwound.
-        if ended.is_err() {
-            end_panicked_scan(&session, &events);
-        }
-    });
+    let (unstarted, unstarted_events) = (s.clone(), on_event.clone());
+    std::thread::Builder::new()
+        .name("scan".into())
+        .spawn(move || {
+            let (session, events) = (s.clone(), on_event.clone());
+            let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_scan(s, authorized_root, previous, baselines, on_event, grant)
+            }));
+            // The grant went back as the closure unwound.
+            if ended.is_err() {
+                end_panicked_scan(&session, &events);
+            }
+        })
+        .map_err(|e| {
+            // The OS refused the thread. The session is already registered as running and nothing else would
+            // end it; the refused closure was dropped, which returned the grant.
+            end_panicked_scan(&unstarted, &unstarted_events);
+            format!("Could not start the scan: {e}")
+        })?;
     Ok(id)
 }
 #[tauri::command]

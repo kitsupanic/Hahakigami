@@ -56,15 +56,25 @@ async fn stdio_initializes_and_lists_metadata_tools() {
         );
         let scan = tools.iter().find(|tool| tool.name == "scan").unwrap();
         assert_eq!(scan.input_schema["properties"]["path"]["type"], "string");
+        // Only tools that take node IDs accept the optional scan_id.
         for tool in &tools {
-            assert!(
-                tool.input_schema
-                    .get("properties")
-                    .and_then(|properties| properties.get("scan_id"))
-                    .is_none(),
+            let takes = tool
+                .input_schema
+                .get("properties")
+                .is_some_and(|properties| properties.get("scan_id").is_some());
+            assert_eq!(
+                takes,
+                ["node", "children", "search"].contains(&tool.name.as_ref()),
                 "{}",
                 tool.name
             );
+            assert!(!tool.input_schema.get("required").is_some_and(|required| {
+                required
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|name| name == "scan_id")
+            }));
         }
         client.cancel().await.unwrap();
     })
@@ -90,16 +100,16 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_eq!(scanned["incomplete"], false);
         assert!(scanned.get("accounting").is_some());
         assert!(scanned.get("coverage").is_some());
-        assert!(scanned.get("scanId").is_none());
+        let scan_id = scanned["scanId"].as_u64().unwrap();
         let found = value(&client, "search", json!({"query": "needle"})).await;
         assert_eq!(found["total"], 1);
         assert_eq!(found["items"][0]["name"], "needle.txt");
-        assert!(found.get("scanId").is_none());
+        assert_eq!(found["scanId"], scan_id);
         let node_id = found["items"][0]["id"].as_u64().unwrap();
         let node = value(&client, "node", json!({"node_id": node_id})).await;
         assert!(node.get("logicalBytes").is_none());
         assert!(node.get("allocatedBytes").is_some());
-        assert!(node.get("scanId").is_none());
+        assert_eq!(node["scanId"], scan_id);
         let first = value(&client, "children", json!({"node_id": 0, "limit": 1})).await;
         let second = value(
             &client,
@@ -113,7 +123,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
         let issues = value(&client, "issues", json!({})).await;
         assert_eq!(issues["total"], 0);
-        assert!(issues.get("scanId").is_none());
+        assert_eq!(issues["scanId"], scan_id);
         let summary = value(&client, "summary", json!({})).await;
         assert!(summary.get("logicalBytes").is_none());
         assert_eq!(summary["allocatedBytes"], scanned["allocatedBytes"]);
@@ -122,6 +132,9 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             ("node", json!({"node_id": u32::MAX})),
             ("issues", json!({"limit": 0})),
             ("search", json!({"query": ""})),
+            // An ID from another scan is refused, and a file has no children.
+            ("node", json!({"node_id": 0, "scan_id": scan_id + 1})),
+            ("children", json!({"node_id": node_id, "scan_id": scan_id})),
             ("scan", json!({"path": fixture.path().join("missing")})),
         ] {
             let result = call(&client, name, args).await;
@@ -141,7 +154,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             call(&client, "scan", json!({"path": 42})).await.is_error,
             Some(true)
         );
-        // The scan_id input no longer exists.
+        // A scan_id is a number, not a name.
         assert_eq!(
             call(
                 &client,

@@ -31,14 +31,15 @@ pub(crate) trait Journal: Sync {
     fn history(&self, root: &disk_scan::ScanRoot) -> Option<History>;
     /// The journal cursor now.
     fn cursor(&self) -> Option<u64>;
-    /// Replays the changes since `since` while `load` runs.
+    /// Replays the changes since `since` while `load` runs. `load` gets a flag the journal sets
+    /// once the replay has failed, so it can stop work whose result is no longer used.
     fn replay<T: Send>(
         &self,
         root: &Path,
         history: &History,
         since: u64,
         cancel: &AtomicBool,
-        load: impl FnOnce() -> Result<T, String> + Send,
+        load: impl FnOnce(&AtomicBool) -> Result<T, String> + Send,
     ) -> Result<(T, events::Changes), String>;
 }
 
@@ -62,9 +63,9 @@ impl Journal for Fsevents {
         history: &History,
         since: u64,
         cancel: &AtomicBool,
-        load: impl FnOnce() -> Result<T, String> + Send,
+        load: impl FnOnce(&AtomicBool) -> Result<T, String> + Send,
     ) -> Result<(T, events::Changes), String> {
-        events::replay_with_load_on_volume(root, &history.volume, since, cancel, load)
+        events::replay_with_abortable_load_on_volume(root, &history.volume, since, cancel, load)
     }
 }
 
@@ -312,7 +313,7 @@ impl Baselines {
         let loaded = span!(
             timing,
             "journal_replay",
-            journal.replay(root.path(), history, since, cancel, || {
+            journal.replay(root.path(), history, since, cancel, |abort| {
                 let cached = match source {
                     Source::Memory(cached) => *cached,
                     Source::Disk(candidate) => {
@@ -337,6 +338,7 @@ impl Baselines {
                 Ok(prepare_rescan(
                     root,
                     cancel,
+                    abort,
                     options,
                     #[cfg(feature = "performance-benchmark")]
                     timing,
@@ -454,9 +456,12 @@ fn choose_prepared(
 // external directory event can dirty every link group, making speculation wasteful.
 // Other scopes keep private reconstruction while the live journal finishes; dirty
 // history discards it before reconciliation against the original validated baseline.
+// `abort` is set when the journal replay failed: the walk is then pure waste, because the
+// scan runs in full anyway, so it stops like a cancelled scan and prepares nothing.
 fn prepare_rescan(
     root: &disk_scan::ScanRoot,
     scan_cancel: &AtomicBool,
+    abort: &AtomicBool,
     options: disk_scan::ScanOptions,
     #[cfg(feature = "performance-benchmark")] timing: Timing<'_>,
     cached: Taken,
@@ -470,7 +475,8 @@ fn prepare_rescan(
         return (cached, None);
     };
     let store = Arc::new(RwLock::new(Snapshot::empty(cached.snapshot.root.clone())));
-    let cancel = Arc::new(AtomicBool::new(scan_cancel.load(Ordering::Relaxed)));
+    let stopped = || scan_cancel.load(Ordering::Relaxed) || abort.load(Ordering::Relaxed);
+    let cancel = Arc::new(AtomicBool::new(stopped()));
     let result = span!(
         timing,
         "speculative_reconcile",
@@ -480,7 +486,7 @@ fn prepare_rescan(
             cancel.clone(),
             store.clone(),
             |_| {
-                if scan_cancel.load(Ordering::Relaxed) {
+                if stopped() {
                     cancel.store(true, Ordering::Relaxed);
                 }
             },
@@ -499,7 +505,7 @@ fn prepare_rescan(
             (snapshot.state == ScanState::Completed
                 && !snapshot.stats.incomplete
                 && snapshot.incremental_accounting_eligible()
-                && !scan_cancel.load(Ordering::Relaxed))
+                && !stopped())
             .then_some(PreparedRescan { snapshot, stats })
         });
     (cached, prepared)
@@ -534,6 +540,7 @@ mod tests {
         cursor: Mutex<Option<u64>>,
         changes: Mutex<Option<Result<events::Changes, String>>>,
         during: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        abort_load: AtomicBool,
         since: Mutex<Vec<u64>>,
         log: Mutex<Vec<&'static str>>,
     }
@@ -545,6 +552,7 @@ mod tests {
                 cursor: Mutex::new(Some(cursor)),
                 changes: Mutex::default(),
                 during: Mutex::default(),
+                abort_load: AtomicBool::new(false),
                 since: Mutex::default(),
                 log: Mutex::default(),
             }
@@ -565,6 +573,10 @@ mod tests {
         }
         fn during_load(&self, action: impl FnOnce() + Send + 'static) {
             *self.during.lock().unwrap() = Some(Box::new(action));
+        }
+        /// The journal tells the loader to stop, as it does when the replay fails.
+        fn abort_loader(&self) {
+            self.abort_load.store(true, Ordering::SeqCst);
         }
         fn replayed_since(&self) -> Vec<u64> {
             self.since.lock().unwrap().clone()
@@ -587,12 +599,13 @@ mod tests {
             _: &History,
             since: u64,
             _: &AtomicBool,
-            load: impl FnOnce() -> Result<T, String> + Send,
+            load: impl FnOnce(&AtomicBool) -> Result<T, String> + Send,
         ) -> Result<(T, events::Changes), String> {
             self.log("replay");
             self.since.lock().unwrap().push(since);
             // The real journal loads on another thread while its stream starts.
-            let loaded = std::thread::scope(|scope| scope.spawn(load).join().unwrap())?;
+            let abort = AtomicBool::new(self.abort_load.load(Ordering::SeqCst));
+            let loaded = std::thread::scope(|scope| scope.spawn(|| load(&abort)).join().unwrap())?;
             if let Some(action) = self.during.lock().unwrap().take() {
                 action();
             }
@@ -1201,6 +1214,26 @@ mod tests {
     }
 
     #[test]
+    fn a_loader_told_to_stop_prepares_nothing() {
+        let rig = Rig::new();
+        let tree = rig.tree();
+        let root = open(&tree);
+        let t = ago(1000);
+        let previous = || {
+            Some(Taken {
+                snapshot: tree.clone(),
+                token: token(7, t),
+            })
+        };
+        let (start, _) = rig.acquire(&root, previous(), t);
+        prepared(start);
+        // The journal reports a failed replay: the walk stops and yields no prepared result.
+        rig.journal.abort_loader();
+        let (start, _) = rig.acquire(&root, previous(), t);
+        seed(start);
+    }
+
+    #[test]
     fn a_scan_that_failed_was_cancelled_or_is_not_clean_publishes_nothing() {
         let rig = Rig::new();
         let tree = rig.tree();
@@ -1334,11 +1367,16 @@ mod tests {
             epoch: "native-fixture".into(),
             full_scan_at_ms: now_ms(),
         };
-        let ((cached, prepared), changes) =
-            events::replay_with_load_on_volume(&root, &volume, since, &s.cancel, || {
+        let ((cached, prepared), changes) = events::replay_with_abortable_load_on_volume(
+            &root,
+            &volume,
+            since,
+            &s.cancel,
+            |abort| {
                 let (cached, prepared) = prepare_rescan(
                     &authority,
                     &s.cancel,
+                    abort,
                     disk_scan::ScanOptions::default(),
                     #[cfg(feature = "performance-benchmark")]
                     &NO_TIMING,
@@ -1371,8 +1409,9 @@ mod tests {
                 // The live event stream must include this write after private construction.
                 std::fs::write(&file, b"larger content written after private preparation").unwrap();
                 Ok((cached, prepared))
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         let changes = changes.resolve(&cached.snapshot).unwrap();
         assert!(
             !changes.paths.is_empty() || !changes.directories.is_empty(),

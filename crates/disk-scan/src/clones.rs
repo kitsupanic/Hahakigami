@@ -222,10 +222,7 @@ fn prepare_core(
 pub(crate) fn commit(s: &mut Snapshot, id: u32, result: std::io::Result<Option<CloneMetadata>>) {
     match result {
         Err(e) => {
-            s.accounting.checks_complete = false;
-            if s.accounting.warnings.len() < 32 {
-                s.accounting.warnings.push(e.to_string());
-            }
+            s.accounting.warn(e.to_string());
         }
         Ok(Some(m)) => {
             s.accounting.shared |= m.may_share_blocks || m.reference_count > 1;
@@ -708,10 +705,7 @@ mod native {
         }
     }
     fn warning(info: &mut crate::AccountingInfo, e: io::Error) {
-        info.checks_complete = false;
-        if info.warnings.len() < 32 {
-            info.warnings.push(e.to_string());
-        }
+        info.warn(e.to_string());
     }
     fn same_observation(a: &CloneMetadata, b: &CloneMetadata) -> bool {
         a.clone_id == b.clone_id

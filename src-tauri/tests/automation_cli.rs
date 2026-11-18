@@ -31,7 +31,8 @@ fn scans_and_prints_metadata_without_the_gui() {
     assert!(summary["allocatedBytes"].is_u64());
     assert_eq!(summary["entries"], 3);
     assert_eq!(summary["incomplete"], false);
-    assert!(summary.get("scanId").is_none());
+    // The automation scan counter, so MCP clients can tell which scan a node ID came from.
+    assert!(summary["scanId"].is_u64());
     assert!(summary.get("accounting").is_some());
     assert!(summary.get("coverage").is_some());
 }

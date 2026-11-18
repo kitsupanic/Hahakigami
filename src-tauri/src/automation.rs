@@ -14,6 +14,10 @@ use std::{
 struct Session {
     current: Option<Arc<RwLock<Snapshot>>>,
     active: bool,
+    /// True from the start of a scan until its store is installed; `current` is still the previous scan then.
+    starting: bool,
+    /// Counts installed scans, so a node ID from an earlier scan can be told apart from the current one.
+    scan_id: u64,
     cancel: Arc<AtomicBool>,
     progress: Option<Progress>,
     error: Option<String>,
@@ -60,6 +64,7 @@ impl Service {
             }
             // Active before the path is resolved, so a cancel during setup is kept: the scanner starts cancelled.
             session.active = true;
+            session.starting = true;
             session.cancel = cancel.clone();
         }
         // Clears `active` on every exit, including a scanner panic or an early `?`, so later scans are not refused.
@@ -83,6 +88,7 @@ impl Service {
             *session = Session {
                 current: Some(store.clone()),
                 active: true,
+                scan_id: session.scan_id + 1,
                 cancel: cancel.clone(),
                 ..Session::default()
             };
@@ -117,7 +123,11 @@ impl Service {
             .map_err(|_| "Automation session lock poisoned")?;
         session.active = false;
         match result {
-            Ok(()) => Ok(summary(&snapshot)),
+            Ok(()) => {
+                let mut value = summary(&snapshot);
+                value["scanId"] = json!(session.scan_id);
+                Ok(value)
+            }
             Err(error) => {
                 let error = error.to_string();
                 session.error = Some(error.clone());
@@ -127,7 +137,7 @@ impl Service {
     }
 
     pub(crate) fn status(&self) -> Result<Value, String> {
-        let (store, active, progress, error) = {
+        let (store, active, starting, scan_id, progress, error) = {
             let session = self
                 .session
                 .lock()
@@ -135,10 +145,16 @@ impl Service {
             (
                 session.current.clone(),
                 session.active,
+                session.starting,
+                session.scan_id,
                 session.progress.clone(),
                 session.error.clone(),
             )
         };
+        // `store` is still the previous scan's, or none for a session's first scan; neither describes the new one.
+        if starting {
+            return Ok(json!({"state": "starting", "running": true, "error": null}));
+        }
         let Some(store) = store else {
             return Ok(json!({"state": "idle", "running": false}));
         };
@@ -152,6 +168,7 @@ impl Service {
                 return Err("Automation snapshot lock poisoned".into())
             }
         };
+        value["scanId"] = json!(scan_id);
         value["running"] = json!(active);
         value["error"] = json!(error);
         Ok(value)
@@ -169,11 +186,13 @@ impl Service {
     }
 
     /// Runs `operation` on the session's latest scan, also passing that scan's caches.
+    /// A `scan_id` from an earlier scan is refused; the result carries the current one.
     fn with_caches(
         &self,
+        scan_id: Option<u64>,
         operation: impl FnOnce(&Snapshot, &mut Caches) -> Result<Value, String>,
     ) -> Result<Value, String> {
-        let (store, caches) = {
+        let (store, caches, current) = {
             let session = self
                 .session
                 .lock()
@@ -184,30 +203,37 @@ impl Service {
                     .clone()
                     .ok_or("No scan yet; start a scan first.")?,
                 session.caches.clone(),
+                session.scan_id,
             )
         };
+        if scan_id.is_some_and(|id| id != current) {
+            return Err("This node ID belongs to an earlier scan. Call summary again.".into());
+        }
         let snapshot = store
             .read()
             .map_err(|_| "Automation snapshot lock poisoned")?;
         let mut caches = caches
             .lock()
             .map_err(|_| "Automation cache lock poisoned")?;
-        operation(&snapshot, &mut caches)
+        let mut value = operation(&snapshot, &mut caches)?;
+        value["scanId"] = json!(current);
+        Ok(value)
     }
 
     fn with_snapshot(
         &self,
+        scan_id: Option<u64>,
         operation: impl FnOnce(&Snapshot) -> Result<Value, String>,
     ) -> Result<Value, String> {
-        self.with_caches(|snapshot, _| operation(snapshot))
+        self.with_caches(scan_id, |snapshot, _| operation(snapshot))
     }
 
     pub(crate) fn summary(&self) -> Result<Value, String> {
-        self.with_snapshot(|snapshot| Ok(summary(snapshot)))
+        self.with_snapshot(None, |snapshot| Ok(summary(snapshot)))
     }
 
-    pub(crate) fn node(&self, node_id: u32) -> Result<Value, String> {
-        self.with_snapshot(|snapshot| {
+    pub(crate) fn node(&self, node_id: u32, scan_id: Option<u64>) -> Result<Value, String> {
+        self.with_snapshot(scan_id, |snapshot| {
             let paths = issue_paths(snapshot);
             let mut value = serde_json::to_value(crate::view(
                 &snapshot.node(node_id).ok_or("Unknown node ID")?,
@@ -222,11 +248,18 @@ impl Service {
     pub(crate) fn children(
         &self,
         node_id: u32,
+        scan_id: Option<u64>,
         offset: usize,
         limit: usize,
     ) -> Result<Value, String> {
         validate_page(limit)?;
-        self.with_caches(|snapshot, caches| {
+        self.with_caches(scan_id, |snapshot, caches| {
+            if snapshot
+                .node(node_id)
+                .is_some_and(|node| !node.is_directory)
+            {
+                return Err("Not a directory".into());
+            }
             let (ids, total) = page_of(offset, limit, |offset, limit| {
                 let order = sorting::Order::SizeDescending;
                 caches.sorts.page(snapshot, node_id, order, offset, limit)
@@ -235,13 +268,21 @@ impl Service {
         })
     }
 
-    pub(crate) fn search(&self, query: &str, offset: usize, limit: usize) -> Result<Value, String> {
+    pub(crate) fn search(
+        &self,
+        query: &str,
+        scan_id: Option<u64>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value, String> {
         validate_page(limit)?;
-        if query.trim().is_empty() || query.len() > 1024 {
+        // Match the trimmed text, as the GUI does, so padding never changes what is found.
+        let query = query.trim();
+        if query.is_empty() || query.len() > 1024 {
             return Err("Filename query must contain 1 to 1024 bytes.".into());
         }
         let query = filters::Query::search(query.into(), sorting::Order::SizeDescending)?;
-        self.with_caches(|snapshot, caches| {
+        self.with_caches(scan_id, |snapshot, caches| {
             let (ids, total) = page_of(offset, limit, |offset, limit| {
                 caches.filters.page(snapshot, &query, offset, limit)
             })?;
@@ -251,7 +292,7 @@ impl Service {
 
     pub(crate) fn issues(&self, offset: usize, limit: usize) -> Result<Value, String> {
         validate_page(limit)?;
-        self.with_snapshot(|snapshot| {
+        self.with_snapshot(None, |snapshot| {
             let total = snapshot.errors.len().saturating_add(snapshot.exclusions.len());
             let items: Vec<_> = snapshot.errors.iter().map(|issue| ("error", issue))
                 .chain(snapshot.exclusions.iter().map(|issue| ("exclusion", issue)))
@@ -267,7 +308,9 @@ impl Service {
 struct ActiveGuard<'a>(&'a Mutex<Session>);
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).active = false;
+        let mut session = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        session.active = false;
+        session.starting = false;
     }
 }
 
@@ -385,16 +428,99 @@ mod tests {
                 .collect()
         };
         service.scan(root.clone()).unwrap();
-        assert_eq!(names(service.children(0, 0, 1).unwrap()), ["large"]);
-        assert_eq!(names(service.children(0, 1, 1).unwrap()), ["small"]);
+        assert_eq!(names(service.children(0, None, 0, 1).unwrap()), ["large"]);
+        assert_eq!(names(service.children(0, None, 1, 1).unwrap()), ["small"]);
         let first = service.session.lock().unwrap().caches.clone();
         std::fs::write(root.join("largest"), vec![1; 1_000_000]).unwrap();
         service.scan(root.clone()).unwrap();
-        assert_eq!(names(service.children(0, 0, 1).unwrap()), ["largest"]);
+        assert_eq!(names(service.children(0, None, 0, 1).unwrap()), ["largest"]);
         assert!(
             !Arc::ptr_eq(&first, &service.session.lock().unwrap().caches),
             "a new scan starts with empty caches"
         );
+    }
+
+    #[test]
+    fn node_ids_from_an_earlier_scan_are_refused() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let service = Service::new();
+        let first = service.scan(root.clone()).unwrap()["scanId"].clone();
+        assert_eq!(service.status().unwrap()["scanId"], first);
+        let id = first.as_u64();
+        assert_eq!(service.node(0, id).unwrap()["scanId"], first);
+        // A failed start keeps the previous scan, so its counter stays valid.
+        assert!(service.scan(root.join("missing")).is_err());
+        assert!(service.node(0, id).is_ok());
+        let second = service.scan(root).unwrap()["scanId"].as_u64();
+        assert_ne!(second, id);
+        for result in [
+            service.node(0, id),
+            service.children(0, id, 0, 1),
+            service.search("x", id, 0, 1),
+        ] {
+            assert!(result.unwrap_err().contains("earlier scan"));
+        }
+        assert!(service.node(0, second).is_ok());
+        assert!(service.node(0, None).is_ok());
+    }
+
+    #[test]
+    fn children_of_a_file_is_an_error_and_unknown_ids_keep_theirs() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("file"), [1; 10]).unwrap();
+        let service = Service::new();
+        service.scan(root).unwrap();
+        let file = service.search("file", None, 0, 1).unwrap()["items"][0]["id"]
+            .as_u64()
+            .unwrap() as u32;
+        assert_eq!(
+            service.children(file, None, 0, 1).unwrap_err(),
+            "Not a directory"
+        );
+        assert_ne!(
+            service.children(u32::MAX, None, 0, 1).unwrap_err(),
+            "Not a directory"
+        );
+    }
+
+    #[test]
+    fn search_matches_the_trimmed_query() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("needle.txt"), [1; 10]).unwrap();
+        let service = Service::new();
+        service.scan(root).unwrap();
+        assert_eq!(
+            service.search("  needle ", None, 0, 10).unwrap()["total"],
+            1
+        );
+    }
+
+    #[test]
+    fn status_reports_starting_without_the_previous_scans_totals() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let service = Service::new();
+        let start = |service: &Service| {
+            let mut session = service.session.lock().unwrap();
+            session.active = true;
+            session.starting = true;
+        };
+        // A session's first scan, with no previous results, is starting too, not idle.
+        start(&service);
+        assert_eq!(service.status().unwrap()["state"], "starting");
+        drop(ActiveGuard(&service.session));
+        service.scan(root).unwrap();
+        start(&service);
+        let status = service.status().unwrap();
+        assert_eq!(status["state"], "starting");
+        assert_eq!(status["running"], true);
+        assert!(status.get("allocatedBytes").is_none());
+        // A start that fails clears the state and the previous results are served again.
+        drop(ActiveGuard(&service.session));
+        assert_eq!(service.status().unwrap()["state"], "completed");
     }
 
     #[test]

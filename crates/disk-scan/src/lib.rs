@@ -120,6 +120,16 @@ pub struct AccountingInfo {
     /// Validation worker wall time; revalidation_us sums worker activity.
     pub revalidation_wall_us: u64,
 }
+impl AccountingInfo {
+    /// The one way to record an accounting uncertainty: it also makes the scan unfit as a
+    /// rescan baseline. The cap matches what `accounting_warnings` accepts on decode.
+    pub(crate) fn warn(&mut self, message: String) {
+        self.checks_complete = false;
+        if self.warnings.len() < 32 {
+            self.warnings.push(message);
+        }
+    }
+}
 fn accounting_warnings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     struct Warnings;
     impl<'de> serde::de::Visitor<'de> for Warnings {
@@ -456,6 +466,12 @@ impl std::error::Error for EntryMetadataError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.error)
     }
+}
+fn entry_error_path(error: &std::io::Error) -> Option<&Path> {
+    error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<EntryMetadataError>())
+        .map(|context| context.path.as_path())
 }
 fn native_entry_error(error: &std::io::Error) -> &std::io::Error {
     error
@@ -827,6 +843,14 @@ fn vanished(error: &std::io::Error) -> bool {
         Some(libc::ENOENT | libc::ENOTDIR)
     )
 }
+#[cfg(unix)]
+fn replaced(error: &std::io::Error) -> bool {
+    descriptor::is_replaced(error)
+}
+#[cfg(not(unix))]
+fn replaced(_: &std::io::Error) -> bool {
+    false
+}
 pub fn scan(
     root: PathBuf,
     options: ScanOptions,
@@ -1165,8 +1189,9 @@ fn scan_live_internal_reuse(
                         let first_child = s.node_count();
                         let mut added_allocated = 0u64;
                         match listing {
-                            // The root is held by descriptor; only a child directory can vanish.
-                            Err(e) if fresh && id != 0 && vanished(&e) => {}
+                            // The root is held by descriptor; only a child directory can vanish
+                            // or be replaced by a new one (not part of what was enumerated).
+                            Err(e) if fresh && id != 0 && (vanished(&e) || replaced(&e)) => {}
                             // `retry::interrupted` reports cancellation as EINTR; that is not a scan error.
                             Err(e)
                                 if e.kind() == std::io::ErrorKind::Interrupted
@@ -1478,22 +1503,15 @@ fn record_slow_listing(slow: &mut Vec<(u64, u64, u64, usize)>, listing: (u64, u6
 }
 #[cfg(unix)]
 fn accounting_listing_warnings(s: &mut Snapshot, warnings: Vec<String>) {
-    if !warnings.is_empty() {
-        s.accounting.checks_complete = false;
-        let remaining = 32usize.saturating_sub(s.accounting.warnings.len());
-        s.accounting
-            .warnings
-            .extend(warnings.into_iter().take(remaining));
+    for warning in warnings {
+        s.accounting.warn(warning);
     }
 }
 pub fn aggregate(s: &mut Snapshot) {
     let plan = match clones::internal_allocation_plan(s) {
         Ok(plan) => plan,
         Err(error) => {
-            s.accounting.checks_complete = false;
-            if s.accounting.warnings.len() < 32 {
-                s.accounting.warnings.push(error);
-            }
+            s.accounting.warn(error);
             s.tree.clones.clear();
             clones::internal_allocation_plan(s).expect("scanner hardlinks")
         }

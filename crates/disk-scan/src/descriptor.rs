@@ -119,9 +119,7 @@ pub(crate) fn open(path: &Path, expected: &Identity) -> io::Result<OwnedFd> {
         }
     }
     if identity_fd(&fd)? != *expected {
-        return Err(io::Error::other(
-            "directory identity changed since enumeration",
-        ));
+        return Err(replaced());
     }
     Ok(fd)
 }
@@ -419,6 +417,18 @@ impl Drop for OpenPermit<'_> {
         self.0.released.notify_one();
     }
 }
+/// The directory at a path is no longer the one enumerated (deleted and recreated). Callers still
+/// refuse to descend; the kind lets a fresh listing record it as a vanish, and survives the
+/// error rebuilds in the walk. A real ESTALE carries an errno, which `is_replaced` excludes.
+fn replaced() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::StaleNetworkFileHandle,
+        "directory identity changed since enumeration",
+    )
+}
+pub(crate) fn is_replaced(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::StaleNetworkFileHandle && error.raw_os_error().is_none()
+}
 fn open_at(
     parent: &OwnedFd,
     name: &CStr,
@@ -436,9 +446,7 @@ fn open_at(
     drop(permit);
     let fd = unsafe { OwnedFd::from_raw_fd(raw?) };
     if identity_fd(&fd)? != *expected {
-        return Err(io::Error::other(
-            "directory identity changed since enumeration",
-        ));
+        return Err(replaced());
     }
     Ok(fd)
 }
@@ -573,6 +581,12 @@ mod tests {
         std::fs::rename(p.join("renamed/child"), p.join("original-child")).unwrap();
         std::os::unix::fs::symlink(&outside, p.join("renamed/child")).unwrap();
         assert!(open_child(&fd, std::ffi::OsStr::new("child"), &expected).is_err());
+        // A real directory in its place is "replaced", which fresh listings treat as a vanish.
+        std::fs::remove_file(p.join("renamed/child")).unwrap();
+        std::fs::create_dir(p.join("renamed/child")).unwrap();
+        let error = open_child(&fd, std::ffi::OsStr::new("child"), &expected).unwrap_err();
+        assert!(is_replaced(&error));
+        assert!(!is_replaced(&io::Error::from_raw_os_error(libc::ESTALE)));
         std::fs::remove_dir_all(p).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
     }

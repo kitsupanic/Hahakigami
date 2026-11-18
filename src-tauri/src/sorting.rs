@@ -28,7 +28,23 @@ impl Order {
 fn group(a: &NodeRef<'_>, b: &NodeRef<'_>) -> Ordering {
     (b.identity.kind == NodeKind::Directory).cmp(&(a.identity.kind == NodeKind::Directory))
 }
-fn tie(snapshot: &Snapshot, a: u32, b: u32, left: &mut PathBuf, right: &mut PathBuf) -> Ordering {
+fn tie(
+    snapshot: &Snapshot,
+    a: &NodeRef<'_>,
+    b: &NodeRef<'_>,
+    left: &mut PathBuf,
+    right: &mut PathBuf,
+) -> Ordering {
+    // Siblings share a path prefix, so their path order is their name order. A path override
+    // can break that, so with any override present every pair builds both paths.
+    if a.parent == b.parent && !snapshot.has_path_overrides() {
+        return a
+            .native_name()
+            .as_bytes()
+            .cmp(b.native_name().as_bytes())
+            .then(a.id.cmp(&b.id));
+    }
+    let (a, b) = (a.id, b.id);
     // Every selected path is checked before sorting; the immutable snapshot
     // cannot change between that pass and this comparator.
     snapshot.path_into(a, left).expect("prevalidated sort path");
@@ -96,7 +112,7 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
             };
             group(&a, &b)
                 .then(sizes)
-                .then_with(|| tie(snapshot, a.id, b.id, &mut left, &mut right))
+                .then_with(|| tie(snapshot, &a, &b, &mut left, &mut right))
         }),
         Order::NameAscending | Order::NameDescending => {
             // Keep keys only for the selected IDs, not for every node in the snapshot.
@@ -125,7 +141,7 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
                     } else {
                         names
                     })
-                    .then_with(|| tie(snapshot, a.id, b.id, &mut left, &mut right))
+                    .then_with(|| tie(snapshot, &a, &b, &mut left, &mut right))
             });
             for (slot, (id, _)) in ids.iter_mut().zip(keyed) {
                 *slot = id;
@@ -175,9 +191,10 @@ impl Cache {
             .node(node_id)
             .filter(|n| n.id == node_id)
             .ok_or("Unknown node ID")?;
-        let completed = snapshot.state == ScanState::Completed;
+        // A cancelled or failed scan keeps its partial results unchanged, so they cache like a completed one.
+        let final_state = snapshot.state != ScanState::Running;
         let address = snapshot.storage_identity();
-        let reuse = completed
+        let reuse = final_state
             && self.entry.as_ref().is_some_and(|e| {
                 e.node_id == node_id
                     && e.order == order
@@ -199,7 +216,7 @@ impl Cache {
                 return Err("Invalid child node ID".into());
             }
             sort_ids(snapshot, &mut ids, order)?;
-            if completed {
+            if final_state {
                 self.entry = Some(Entry {
                     node_id,
                     order,
@@ -213,7 +230,7 @@ impl Cache {
             }
         }
         Ok(page(
-            &self.entry.as_ref().expect("completed cache populated").ids,
+            &self.entry.as_ref().expect("cache populated").ids,
             offset,
             limit,
         ))
@@ -453,5 +470,103 @@ mod tests {
         let other = fixture();
         cache.page(&other, 0, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 8);
+    }
+    /// The pre-shortcut order: size, then full native path bytes, then id.
+    fn reference_size_order(snapshot: &Snapshot, ids: &[u32], order: Order) -> Vec<u32> {
+        let path = |id| snapshot.path(id).unwrap();
+        let mut sorted = ids.to_vec();
+        sorted.sort_by(|&a, &b| {
+            let (na, nb) = (snapshot.node(a).unwrap(), snapshot.node(b).unwrap());
+            let sizes = if order == Order::SizeDescending {
+                nb.allocated_size.cmp(&na.allocated_size)
+            } else {
+                na.allocated_size.cmp(&nb.allocated_size)
+            };
+            group(&na, &nb)
+                .then(sizes)
+                .then_with(|| {
+                    path(a)
+                        .as_os_str()
+                        .as_bytes()
+                        .cmp(path(b).as_os_str().as_bytes())
+                })
+                .then(a.cmp(&b))
+        });
+        sorted
+    }
+    #[test]
+    fn size_ties_keep_full_path_order_for_siblings_and_other_folders() {
+        let mut s = Snapshot::empty(PathBuf::from("/tie"));
+        // (name, parent, is_directory): equal sizes, ids deliberately out of name order.
+        let nodes = [
+            ("root", None, true),
+            ("b", Some(0), true),
+            ("a", Some(0), true),
+            ("z", Some(1), false),
+            ("m", Some(1), false),
+            ("z", Some(2), false),
+            ("a", Some(2), false),
+            ("a", Some(0), false),
+            ("b.txt", Some(0), false),
+        ];
+        for (id, (name, parent, dir)) in nodes.into_iter().enumerate() {
+            let id = id as u32;
+            s.append_legacy_node(Node {
+                id,
+                parent,
+                children: vec![],
+                name: name.into(),
+                path: parent.map_or(s.root.clone(), |p| {
+                    s.legacy_node(p).unwrap().path.join(name)
+                }),
+                identity: Identity {
+                    device: 1,
+                    inode: u64::from(id),
+                    kind: if dir {
+                        NodeKind::Directory
+                    } else {
+                        NodeKind::File
+                    },
+                },
+                allocated_size: 4096,
+                length: 0,
+                own_allocated_size: 4096,
+                is_directory: dir,
+                hard_link: false,
+                clone_metadata: None,
+                excluded: false,
+            })
+            .unwrap();
+        }
+        s.set_children(0, &[1, 2, 7, 8]).unwrap();
+        s.set_children(1, &[3, 4]).unwrap();
+        s.set_children(2, &[5, 6]).unwrap();
+        let all: Vec<u32> = (1..9).collect();
+        for order in [Order::SizeDescending, Order::SizeAscending] {
+            for ids in [all.clone(), vec![8, 7, 2, 1], vec![4, 3], vec![6, 5]] {
+                let mut sorted = ids.clone();
+                sort_ids(&s, &mut sorted, order).unwrap();
+                assert_eq!(sorted, reference_size_order(&s, &ids, order));
+            }
+        }
+        // The fixture has path overrides, which must not be shortcut by name.
+        let overridden = fixture();
+        let ids: Vec<u32> = (1..=10).collect();
+        for order in [Order::SizeDescending, Order::SizeAscending] {
+            let mut sorted = ids.clone();
+            sort_ids(&overridden, &mut sorted, order).unwrap();
+            assert_eq!(sorted, reference_size_order(&overridden, &ids, order));
+        }
+    }
+    #[test]
+    fn cancelled_and_failed_scans_cache_like_completed_ones() {
+        for state in [ScanState::Cancelled, ScanState::Failed] {
+            let mut s = fixture();
+            s.state = state;
+            let mut cache = Cache::default();
+            cache.page(&s, 0, Order::NameAscending, 0, 2).unwrap();
+            cache.page(&s, 0, Order::NameAscending, 2, 2).unwrap();
+            assert_eq!(cache.builds, 1);
+        }
     }
 }

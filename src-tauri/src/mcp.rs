@@ -38,12 +38,16 @@ struct PageInput {
 #[serde(deny_unknown_fields)]
 struct NodeInput {
     node_id: u32,
+    /// The `scanId` the ID came from; refused if a newer scan has replaced it.
+    scan_id: Option<u64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ChildrenInput {
     node_id: u32,
+    /// The `scanId` the ID came from; refused if a newer scan has replaced it.
+    scan_id: Option<u64>,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_limit")]
@@ -55,6 +59,8 @@ struct ChildrenInput {
 #[serde(deny_unknown_fields)]
 struct SearchInput {
     query: String,
+    /// Refused if a newer scan has replaced the scan with this `scanId`.
+    scan_id: Option<u64>,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_limit")]
@@ -129,22 +135,26 @@ impl Mcp {
 
     #[tool(description = "Read a node's metadata, native path representation and allocated size.")]
     async fn node(&self, Parameters(input): Parameters<NodeInput>) -> CallToolResult {
-        self.execute(move |service| service.node(input.node_id))
+        self.execute(move |service| service.node(input.node_id, input.scan_id))
             .await
     }
 
     #[tool(description = "Read a directory node's children from a metadata snapshot, paginated.")]
     async fn children(&self, Parameters(input): Parameters<ChildrenInput>) -> CallToolResult {
-        self.execute(move |service| service.children(input.node_id, input.offset, input.limit))
-            .await
+        self.execute(move |service| {
+            service.children(input.node_id, input.scan_id, input.offset, input.limit)
+        })
+        .await
     }
 
     #[tool(
         description = "Search filenames in a metadata snapshot, paginated. Does not read file contents."
     )]
     async fn search(&self, Parameters(input): Parameters<SearchInput>) -> CallToolResult {
-        self.execute(move |service| service.search(&input.query, input.offset, input.limit))
-            .await
+        self.execute(move |service| {
+            service.search(&input.query, input.scan_id, input.offset, input.limit)
+        })
+        .await
     }
 
     #[tool(description = "Read scan issues explaining incomplete coverage, paginated.")]

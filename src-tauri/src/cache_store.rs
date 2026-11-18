@@ -54,10 +54,10 @@ pub(crate) struct Store {
     node_limit: usize,
     byte_limit: u64,
 }
-fn err(e: impl fmt::Display) -> String {
+pub(crate) fn err(e: impl fmt::Display) -> String {
     e.to_string()
 }
-fn open(path: &Path) -> io::Result<File> {
+pub(crate) fn open(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -69,6 +69,10 @@ fn open(path: &Path) -> io::Result<File> {
                 Err(io::Error::other("cache file is not regular"))
             }
         })
+}
+/// Persist directory entries (renames, removals) to disk.
+pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
+    File::open(path).and_then(|d| d.sync_all())
 }
 fn now_ms() -> Result<u64, String> {
     Ok(SystemTime::now()
@@ -94,7 +98,7 @@ impl Store {
         }
         fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700)).map_err(err)
     }
-    fn path(&self, id: &str, suffix: &str) -> Result<PathBuf, String> {
+    pub(crate) fn path(&self, id: &str, suffix: &str) -> Result<PathBuf, String> {
         let uuid = uuid::Uuid::parse_str(id).map_err(|_| "Invalid cache ID")?;
         if uuid.to_string() != id {
             return Err("Invalid cache ID".into());
@@ -121,9 +125,7 @@ impl Store {
         let result = (|| {
             write(f)?;
             fs::rename(&temp, path).map_err(err)?;
-            File::open(&self.root)
-                .and_then(|d| d.sync_all())
-                .map_err(err)
+            sync_dir(&self.root).map_err(err)
         })();
         if result.is_err() {
             let _ = fs::remove_file(temp);
@@ -283,9 +285,7 @@ impl Store {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Err(e) => return Err(err(e)),
             }
-            File::open(&self.root)
-                .and_then(|f| f.sync_all())
-                .map_err(err)?;
+            sync_dir(&self.root).map_err(err)?;
         }
         Ok(())
     }
