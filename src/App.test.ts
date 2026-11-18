@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import App from "./App.svelte";
 import { menuItem } from "./fakeMenu";
 import type createApp from "./createApp.svelte";
@@ -34,7 +33,6 @@ const rootNode: NodeView = {
   name: "Home",
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 2,
   incomplete: false,
@@ -59,7 +57,6 @@ const summary = (
   rootId: 0,
   state,
   entries: 2,
-  logicalBytes: 100,
   allocatedBytes: 100,
   elapsedMs: 1000,
   errors: 0,
@@ -116,7 +113,6 @@ async function chooseFolderFromHome() {
   await flush();
 }
 beforeEach(async () => {
-  setShowLogicalSize(true);
   mock.channels.length = 0;
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(
@@ -740,7 +736,6 @@ it("shows only the Full Disk Access prompt when a scan is blocked", async () => 
   );
   expect(dialog.querySelector("section")).toBeNull();
   expect(dialogText()).not.toContain("Display");
-  expect(dialogText()).not.toContain("Show logical size");
   expect(dialog.querySelector(".theme-swatch")).toBeNull();
   expect(dialogButtons()).toEqual([
     "Scan Anyway",
@@ -768,17 +763,13 @@ it("opens Settings from the sidebar row with Done, never Scan Anyway or Cancel",
   expect(container.querySelector('[role="dialog"]')).toBeNull();
   expect(calls("start_scan")).toHaveLength(0);
 });
-it("lists the Display rows as Theme, Appearance, Show logical size", async () => {
+it("lists the Display rows as Theme, Appearance", async () => {
   await remountWithAccess("on");
   await click("Settings");
   const rows = [...container.querySelectorAll(".settings-row > span")].map(
     (row) => row.textContent?.trim(),
   );
-  expect(rows).toEqual([
-    "Theme",
-    "Appearance",
-    "Show logical size",
-  ]);
+  expect(rows).toEqual(["Theme", "Appearance"]);
 });
 it("Scan Anyway sets the override then runs the remembered scan", async () => {
   await remountWithAccess("off");
@@ -966,7 +957,6 @@ it("describes an excluded directory as outside scope instead of empty and blocks
     kind: "directory",
     path: "/Volumes/Other",
     excluded: true,
-    logicalBytes: 0,
     allocatedBytes: 0,
     childrenCount: 0,
   };
@@ -1401,24 +1391,6 @@ it("keeps pending Trash confirmation open when Escape is pressed", async () => {
   expect(container.querySelector(".cleanup-modal")).not.toBeNull();
 });
 
-it("keeps the inspector size following the selected unit when switching metrics", async () => {
-  const original = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation(async (command, args) => {
-    if (command === "get_node" && args.nodeId === 0)
-      return { ...rootNode, allocatedBytes: 128, logicalBytes: 64 };
-    return original(command, args);
-  });
-  await click("Scan location");
-  const size = () =>
-    container
-      .querySelector<HTMLElement>(".details-size")!
-      .textContent?.replace(/\s+/g, " ")
-      .trim();
-  expect(size()).toBe("128 B on disk");
-  await click("Logical");
-  expect(size()).toBe("64 B logical");
-});
-
 it("shows combined sizes and action scope for a multi-selection instead of the last file", async () => {
   const original = mock.invoke.getMockImplementation()!;
   const second = {
@@ -1427,7 +1399,6 @@ it("shows combined sizes and action scope for a multi-selection instead of the l
     name: "second.dat",
     path: "/fixture/second.dat",
     allocatedBytes: 64,
-    logicalBytes: 32,
   };
   mock.invoke.mockImplementation(async (command, args) =>
     command === "get_children"

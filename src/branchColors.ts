@@ -8,7 +8,7 @@ export const guardianNeutralColor = "#8a8270";
 export const neutralColor = () =>
   theme.guardian ? guardianNeutralColor : neutralBranchColor;
 /** Rank the focused root's real branches by on-disk size, independently of the
- * displayed metric and native scan IDs. Aggregates never consume a color slot.
+ * native scan IDs. Aggregates never consume a color slot.
  */
 export function createBranchPalette(
   nodes: readonly NodeView[],

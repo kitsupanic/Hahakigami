@@ -145,7 +145,7 @@ def _run(executable, request, timeout):
                     raise ValueError('Child report must be a JSON object')
                 record.update(raw=raw, exit_code=process.returncode)
                 record['success'] = record.get('error') != 'timeout' and process.returncode == 0 and raw.get('success', True) is True and str(raw.get('state', 'completed')).lower() == 'completed'
-                for key in ('elapsed_ms', 'entries', 'logical_bytes', 'allocated_bytes', 'errors', 'peak_rss_bytes', 'workers', 'workers_measurement', 'rendered', 'render_completion', 'preparation', 'launch_ms', 'cache_mode', 'reused_entries', 'rescanned_directories', 'requested_mode', 'phases', 'power', 'thermal', 'scheduling', 'coverage_limits', 'coverage_limitations', 'accounting_policy', 'mount_policy', 'coverage_complete', 'fallback', 'measurements', 'storage', 'scratch', 'query_storage', 'intervened'):
+                for key in ('elapsed_ms', 'entries', 'allocated_bytes', 'errors', 'peak_rss_bytes', 'workers', 'workers_measurement', 'rendered', 'render_completion', 'preparation', 'launch_ms', 'cache_mode', 'reused_entries', 'rescanned_directories', 'requested_mode', 'phases', 'power', 'thermal', 'scheduling', 'coverage_limits', 'coverage_limitations', 'accounting_policy', 'mount_policy', 'coverage_complete', 'fallback', 'measurements', 'storage', 'scratch', 'query_storage', 'intervened'):
                     record[key] = raw.get(key)
                 # Optional candidate contract catches stale linked scanner dependencies.
                 if executable.get('expect_exact_path_capacity') and request.get('mode') == 'full':

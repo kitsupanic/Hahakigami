@@ -12,7 +12,7 @@ from benchmark import ROOT, file_hash, scanner_fingerprints
 from worker_diagnostics_trial import analysis
 
 MODES = ('automatic', 'userInitiated', 'background')
-COVERAGE = ('entries', 'directories', 'errors', 'logical_bytes', 'allocated_bytes')
+COVERAGE = ('entries', 'directories', 'errors', 'allocated_bytes')
 
 
 def rotated_order(number, modes=MODES):

@@ -68,7 +68,7 @@ The frozen five-round comparison completed 72 timings/12 exports/910 stable fing
 
 ## Packaged memory and healthy-host scheduling — 14 October 2026
 
-Chart keys/cache IDs exclude zero-selected-size nodes without changing visible map order, equal-key fallback, aggregates or list/search membership. Canvas backing dimensions change only with actual pixel dimensions; absolute transforms preserve selection, resize and DPR redraws. Split sparse probe queues retain the original observation allocation and the exact visited cancellation prefix. No clone eligibility, raw/logical/native accounting, ancestry/identity check, archive/cache authority or cleanup rule changes.
+Chart keys/cache IDs exclude zero-selected-size nodes without changing visible map order, equal-key fallback, aggregates or list/search membership. Canvas backing dimensions change only with actual pixel dimensions; absolute transforms preserve selection, resize and DPR redraws. Split sparse probe queues retain the original observation allocation and the exact visited cancellation prefix. No clone eligibility, raw/native accounting, ancestry/identity check, archive/cache authority or cleanup rule changes.
 
 Folder worker selection uses the existing five-worker upper bound only with known active CPU>=12, sufficient hardware threads, nominal thermal state and no low-power mode. Unknown evidence and pressure limits remain conservative; all current bounds and descriptor checks remain. One independent Max-review finding (M1) required explicit active-CPU evidence; the missing-reading regression now selects 3. Corrected workspace tests passed **342 Rust tests**, 22 ignored; **154 frontend** and **104 Python** tests passed, along with strict workspace all-target performance-feature Clippy, fmt/diff, Svelte checks and production frontend build. Focused tests cover map JSON/order/cutoff parity, invalid-native/repeated-key ties, 32K zero-child scratch, canvas assignment/transform counts and queue allocation/order/cancellation prefixes. Real APFS tests ran. Non-macOS/Intel/other CPU hardware were not executed.
 
@@ -80,7 +80,7 @@ The first measurement attempt is explicitly incomplete (37 timings/6 exports) an
 
 ## Singleton-pruned clone validation — 14 October 2026
 
-After all-file hard-link alias consistency checks, a group with one distinct in-scope inode retains raw allocation and unverified metadata without a final query. It cannot authorize a clone deduction or verified owner attribution. Every path/alias in a multi-inode group still receives the prior ancestry/file/clone checks, with whole-group failure and cancellation handling. Nonempty clone metadata independently prohibits incremental reuse; raw singleton archives round-trip without deduction or owner attribution. Stable owners, raw/logical/native data, historical accounting models and cleanup authority remain unchanged.
+After all-file hard-link alias consistency checks, a group with one distinct in-scope inode retains raw allocation and unverified metadata without a final query. It cannot authorize a clone deduction or verified owner attribution. Every path/alias in a multi-inode group still receives the prior ancestry/file/clone checks, with whole-group failure and cancellation handling. Nonempty clone metadata independently prohibits incremental reuse; raw singleton archives round-trip without deduction or owner attribution. Stable owners, raw/native data, historical accounting models and cleanup authority remain unchanged.
 
 **338 Rust tests passed** (159 scanner + 179 app), 22 opt-in tests ignored; 153 frontend and 104 Python tests passed. Host APFS tests include four-to-seven-member dense groups, outside-scope clone plus hard links, no-query singleton/repeated aggregation/cancellation, separate-device IDs, late alias replacement, scratch reuse after ancestry failure, and unverified singleton v2 archive round-trip. Strict workspace all-target performance-feature Clippy, formatting/diff checks, Svelte checks and production frontend build passed.
 
@@ -124,7 +124,7 @@ Final checks passed: **312 Rust tests** (22 opt-in tests ignored), **153 fronten
 
 The final isolated signed app rendered clone-aware results and verified all nine non-destructive explorer interaction phases. Its 100,001-entry fixture showed 4,096 bytes of clone deductions with no accounting warnings. The normal app was built with `pnpm desktop:build`; deep/strict verification passed and its designated requirement exactly matched the pre-change bundle. Neither the normal application nor its in-memory results were relaunched; no TCC, keychain, permission or certificate configuration was changed.
 
-The frozen final comparison completed 48 successful timing observations and eight complete native exports with unchanged fingerprints and all raw path/identity/size repeat/overlap checks matching. GitHub retained 1,046,304 entries and identical logical sizes while removing 22,643,912,704 bytes of duplicate data attribution. Full-clone accounting remains materially more expensive: **20.840 s native / 20.799 s packaged**, versus **5.395 s / 5.829 s** baseline warm medians, with higher GitHub RSS. The earlier slow candidate is retained separately. [Measured costs and limitations](BENCHMARKS.md#apfs-full-clone-accounting-cost--14-october-2026), portable summary (`benchmark-results-clone-accounting-summary.json`, removed).
+The frozen final comparison completed 48 successful timing observations and eight complete native exports with unchanged fingerprints and all raw path/identity/size repeat/overlap checks matching. GitHub retained 1,046,304 entries while removing 22,643,912,704 bytes of duplicate data attribution. Full-clone accounting remains materially more expensive: **20.840 s native / 20.799 s packaged**, versus **5.395 s / 5.829 s** baseline warm medians, with higher GitHub RSS. The earlier slow candidate is retained separately. [Measured costs and limitations](BENCHMARKS.md#apfs-full-clone-accounting-cost--14-october-2026), portable summary (`benchmark-results-clone-accounting-summary.json`, removed).
 
 ## Compact-tree verification — 14 October 2026
 
@@ -217,7 +217,7 @@ The benchmark CLI reports the production scanner's effective worker bound, preve
 Added Explorer/Settings navigation and a persistent worker selector. Rust validates the desktop range against available CPU threads and a shared scanner maximum of 16; the recommended default stays 8 (capped to fewer available threads). The setting is captured per session, included in every scan summary, and cannot alter a running scan. Settings saves block new scans and cleanup until their result is known; cleanup reviews/operations block settings saves so automatic rescanning cannot be skipped.
 
 - Native workspace tests: **40 passed**, two unrelated opt-in tests ignored. Preferences tests cover persistence, CPU/hard caps, invalid/oversized/corrupt records, failed-save rollback and temporary-file cleanup. Native command integration saved a new choice during a running session, preserved that session's worker count, then completed a disposable scan with the saved count.
-- Expanded scanner fixture: worker counts 1, 2, 4, 8, 12 and 16 passed with both Portable and Auto enumeration, preserving entries and logical totals without errors.
+- Expanded scanner fixture: worker counts 1, 2, 4, 8, 12 and 16 passed with both Portable and Auto enumeration, preserving entries without errors.
 - Frontend tests: **34 passed**. New tests cover selection/save/reload, recommended reset, loading/write failures, browser guidance, tab state, immutable active-scan count, pending-save scan blocking, and cleanup/save serialization with successful post-Trash rescan.
 - Formatting, Clippy with warnings denied, TypeScript/Vite production build and local `.app` bundle build passed.
 - Independent review found R6, a save/cleanup race that could suppress automatic rescan. Handler guards and disabled controls now serialize both operations; the deferred-save/Trash/rescan regression passes. Final review disposition: **approved, no remaining blockers in this scope**.
@@ -312,9 +312,9 @@ Final corrected release probes passed on startup and GitHub using one unchanged 
 
 ## Treemap size labels (11 October 2026)
 
-Roomy terminal treemap blocks display the selected allocated/logical size beneath the existing name in bold 16 px text, with one decimal for scaled units (for example, 56.0 GB). Labels require sufficient height and measured text width; small blocks and expanded parent rectangles do not gain overlapping labels. Changing the metric repaints the values even before the worker returns a new layout. Existing formatting outside the map keeps its prior precision.
+Roomy terminal treemap blocks display the allocated size beneath the existing name in bold 16 px text, with one decimal for scaled units (for example, 56.0 GB). Labels require sufficient height and measured text width; small blocks and expanded parent rectangles do not gain overlapping labels. Existing formatting outside the map keeps its prior precision.
 
-All **47 frontend tests passed**, including metric changes with unchanged shapes, bold label drawing, short/narrow block suppression, expanded-parent suppression and sunburst behavior. TypeScript/Vite production build passed. A browser-only fixture using the real DiskMap component showed 56.0 GB in Allocated and 64.0 GB in Logical, with fitting labels and uncluttered small cells. Synthetic data involved no native commands or user preferences; the temporary tab and dev server were closed. The host .app was rebuilt without relaunching over the user's existing scan.
+All **47 frontend tests passed**, including bold label drawing, short/narrow block suppression, expanded-parent suppression and sunburst behavior. TypeScript/Vite production build passed. A browser-only fixture using the real DiskMap component showed 56.0 GB, with fitting labels and uncluttered small cells. Synthetic data involved no native commands or user preferences; the temporary tab and dev server were closed. The host .app was rebuilt without relaunching over the user's existing scan.
 
 ## Hardware-based Auto workers (11 October 2026)
 
@@ -450,7 +450,7 @@ A pure macOS classifier requires both native PermissionDenied kind and EPERM/EAC
 
 ScanStats counts every restricted-system event before applying the 10,000-detail retention limit, while preserving the original all-error count, incomplete flag, original records and scan coverage. No directory is newly pre-excluded and no warning is discarded. Native summary exposes the restricted count and only promotes the first retained non-restricted failure. Grouped read-only detail queries accept restricted/other as additive categories with filtered retained counts and full category totals; the existing errors category remains ALL failures for Copy errors. Pages remain bounded to 100, and authority/stale scan handling is unchanged. Copied records include additive category metadata.
 
-The interface shows a neutral “Restricted system locations” notice and quiet completion heading for system-only restrictions, explicitly explaining unavailable data and incomplete totals. Other failures remain prominent. Details separate other issues, system restrictions and intentional exclusions. Copy errors retains every stored failure across all categories. Existing node incompleteness, cleanup protection, worker diagnostics and reported allocated/logical accounting remain unchanged.
+The interface shows a neutral “Restricted system locations” notice and quiet completion heading for system-only restrictions, explicitly explaining unavailable data and incomplete totals. Other failures remain prominent. Details separate other issues, system restrictions and intentional exclusions. Copy errors retains every stored failure across all categories. Existing node incompleteness, cleanup protection, worker diagnostics and reported allocated accounting remain unchanged.
 
 - **113 workspace Rust tests passed** (65 core, 48 native), with three existing opt-in checks ignored. Two CLI checks also passed during scanner development. Tests cover conservative path/kind/code matching, aliases/lookalikes/user locations, full counters past retention, serde defaults, filtered pagination, full vs retained category totals, ALL-error export compatibility, prominent unknown/private failures and restriction-only incomplete summaries.
 - **53 frontend tests passed** across eight files; formatting, strict workspace/all-target Clippy and TypeScript/Vite production build passed.
@@ -501,7 +501,7 @@ Final `pnpm desktop:build` passed for the frozen filter candidate. The helper ve
 
 ## Persistent list sorting (11 October 2026)
 
-Added sizeDescending/sizeAscending/nameAscending/nameDescending to folder browsing, expanded branches, normal global search and filtered results. Folders remain first in every list regardless of direction. Size ordering uses recorded logical/allocated values; name keys use Unicode lowercase and natural ASCII numeric runs without integer parsing, with fewer leading zeros preferred in ascending order. Raw native path bytes and IDs break remaining ties deterministically. Public list commands accept an optional validated sort argument defaulting to largest first. Membership, metrics, coverage and page caps are retained; map ordering/cache and comparison rankings are independent.
+Added sizeDescending/sizeAscending/nameAscending/nameDescending to folder browsing, expanded branches, normal global search and filtered results. Folders remain first in every list regardless of direction. Size ordering uses recorded allocated values; name keys use Unicode lowercase and natural ASCII numeric runs without integer parsing, with fewer leading zeros preferred in ascending order. Raw native path bytes and IDs break remaining ties deterministically. Public list commands accept an optional validated sort argument defaulting to largest first. Membership, metrics, coverage and page caps are retained; map ordering/cache and comparison rankings are independent.
 
 All list sorting runs on blocking workers without snapshot cloning. Completed sessions retain one last-folder ID cache and one global search/filter ID cache keyed by order and metric; pages copy only their bounded ID slice. Running snapshots recompute. Native tests directly compare all four list orders across the three command contexts and verify map JSON remains unchanged. Historical and stale-session action guards remain in force.
 
@@ -711,8 +711,7 @@ were preserved.
 The whole-GitHub cohort completed 36 timed observations and 8 coverage exports with
 unchanged source/binary fingerprints. All 24 rescan requests were incremental with
 868,165–868,182 reused entries, no fallback and no speculation. All scans had
-996,424 entries, zero errors/exclusions, complete coverage and matching logical/
-deduplicated allocated totals. Exact within/cross-layer own metadata comparisons
+996,424 entries, zero errors/exclusions, complete coverage and matching deduplicated allocated totals. Exact within/cross-layer own metadata comparisons
 passed. App warm medians: 5.601 s full, 2.949 s same-process, 2.740 s persisted.
 See BENCHMARKS.md and benchmark-results-github-reconciliation-summary.json for
 measurement scope, diagnostic residual estimates and limits.
@@ -803,7 +802,7 @@ Both signed builds verified with unchanged normal designated requirement, preser
 user sessions/privacy grants. Final whole-GitHub cohort has 36 timed observations,
 all 24 rescans incremental, and eight exact coverage exports matching within/across
 executables. Source/binary fingerprints stayed unchanged. Every scan had 1,003,125
-entries, zero errors/exclusions and matching logical/deduplicated allocated totals.
+entries, zero errors/exclusions and matching deduplicated allocated totals.
 Fresh non-root opens and actual worker reporting were verified. App medians:
 5.709 s full, 3.120 s memory cache, 3.217 s persisted; rescan cache publication:
 324.710/330.069 ms. The controlled encoding probe improves 204.461 to 179.653 ms
@@ -838,7 +837,7 @@ Three-warm medians improved memory rescans 2.709→2.384 seconds and persisted r
 3.178→2.509 seconds; summed worker queue waits fell to 6–7 ms. Final candidate
 cohort: 36 timed observations, all 24 rescans incremental, eight exact coverage
 exports matching within/across executables. All scans had 1,004,020 entries, no
-errors/exclusions and matching logical/deduplicated allocated totals. Every non-root
+errors/exclusions and matching deduplicated allocated totals. Every non-root
 directory retained its fresh open and actual counts matched worker rows. Source/
 binary fingerprints remained unchanged. App medians: 5.591 s full, 2.376 s memory
 cache and 2.506 s persisted cache. BENCHMARKS.md and the portable tail summary
@@ -876,7 +875,7 @@ probe: 103.300→56.036 ms warm median.
 
 Final cohort: 36 timed observations, all 24 rescans incremental; eight exact exports
 matching within/across native and signed app. Every scan had 1,005,627 entries,
-zero errors/exclusions and matching logical/deduplicated allocated totals. All fresh
+zero errors/exclusions and matching deduplicated allocated totals. All fresh
 non-root open attempts and actual pool reporting were verified. Source/binary hashes
 stayed unchanged. App medians: 5.615 s full, 2.226 s memory cache, 2.309 s persisted.
 BENCHMARKS.md and benchmark-results-github-seed-summary.json record probe scope,
@@ -1349,8 +1348,8 @@ installation verification are recorded in its delivery and installation receipts
 
 The final Apple Development-signed build passed deep/strict verification and
 retained the installed designated requirement. The updated installed app was
-opened and visually checked with the 5,322,099-entry Macintosh HD archive, with
-Logical view restored. A rollback copy of the previous bundle was retained.
+opened and visually checked with the 5,322,099-entry Macintosh HD archive.
+A rollback copy of the previous bundle was retained.
 
 ## Map label insets and corners (2026-10-16)
 

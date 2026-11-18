@@ -13,7 +13,6 @@ const node = (id: number, path: string, parentId = 0): NodeView => ({
   name: path.split("/").at(-1)!,
   kind: "file",
   allocatedBytes: 100,
-  logicalBytes: 100,
   childrenCount: 0,
   incomplete: false,
 });
@@ -33,7 +32,6 @@ it("identifies same-named global results by parent path and keeps branch colors"
   const props = {
     items: [first, second],
     selection: [],
-    metric: "allocated" as const,
     running: false,
     onSelect: selected,
     onOpen: vi.fn(),
@@ -81,7 +79,6 @@ it("virtualizes two-line result rows through the last item", async () => {
       root.render(FileRows, {
         items,
         selection: [],
-        metric: "allocated",
         running: false,
         showParentPaths: true,
         onSelect: vi.fn(),
@@ -118,7 +115,6 @@ it("links a nested hover to its closest visible row without selecting or scrolli
   const props = {
     items: [folder, node(3, "/Other")],
     selection: [3],
-    metric: "allocated" as const,
     running: false,
     onSelect,
     onOpen: vi.fn(),
@@ -178,7 +174,6 @@ it("publishes expanded child ancestry and does not scroll offscreen rows into ho
   const props = {
     items,
     selection: [],
-    metric: "allocated" as const,
     running: false,
     onSelect: vi.fn(),
     onOpen: vi.fn(),

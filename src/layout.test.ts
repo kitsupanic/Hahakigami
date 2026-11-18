@@ -12,7 +12,6 @@ const node = (
   name: String(id),
   path: "/",
   kind: "file",
-  logicalBytes: value,
   allocatedBytes: value,
   childrenCount: 0,
   incomplete: false,
@@ -26,7 +25,7 @@ describe("disk layouts", () => {
       node(4, 1, 50),
       node(5, 1, 30),
     ];
-    const radial = layout(nodes, 0, "allocated", 800, 800, "sunburst");
+    const radial = layout(nodes, 0, 800, 800, "sunburst");
     const roots = radial.filter((shape) => shape.depth === 0);
     expect(roots.map((shape) => shape.id)).toEqual([2, 3, 1]);
     expect(roots[0].start).toBe(-Math.PI / 2);
@@ -35,7 +34,7 @@ describe("disk layouts", () => {
       radial.filter((shape) => shape.depth === 1).map((shape) => shape.id),
     ).toEqual([4, 5]);
     expect(
-      layout(nodes, 0, "allocated", 800, 800, "treemap")
+      layout(nodes, 0, 800, 800, "treemap")
         .filter((shape) => shape.depth === 0)
         .map((shape) => shape.id),
     ).toEqual([1, 2, 3]);
@@ -44,7 +43,6 @@ describe("disk layouts", () => {
     const shapes = layout(
       [node(0, null, 100), node(1, 0, 60), node(2, 0, 30), node(3, 0, 10)],
       0,
-      "allocated",
       600,
       400,
       "treemap",
@@ -62,7 +60,6 @@ describe("disk layouts", () => {
       layout(
         [node(1, 0, 0), node(2, 99, 10)],
         0,
-        "logical",
         600,
         400,
         "treemap",
@@ -73,7 +70,6 @@ describe("disk layouts", () => {
     const shapes = layout(
       [node(1, 0, 100), node(2, 1, 50), node(3, 1, 50)],
       0,
-      "allocated",
       400,
       400,
       "sunburst",
@@ -88,7 +84,7 @@ describe("disk layouts", () => {
   });
   it("distributes outer rings across actual depth and keeps the center outside hit regions", () => {
     const nodes = [node(1, 0, 100), node(2, 1, 100), node(3, 2, 100)];
-    const shapes = layout(nodes, 0, "logical", 600, 400, "sunburst");
+    const shapes = layout(nodes, 0, 600, 400, "sunburst");
     expect(shapes[1].inner).toBe(shapes[0].outer);
     expect(shapes[2].inner).toBe(shapes[1].outer);
     expect(shapes[1].outer - shapes[1].inner).toBeCloseTo(
@@ -100,7 +96,6 @@ describe("disk layouts", () => {
     const shallow = layout(
       nodes.slice(0, 1),
       0,
-      "logical",
       600,
       400,
       "sunburst",
@@ -111,7 +106,6 @@ describe("disk layouts", () => {
     const shapes = layout(
       Array.from({ length: 5000 }, (_, i) => node(i + 1, 0, i + 1)),
       0,
-      "allocated",
       1000,
       800,
       "treemap",
@@ -130,7 +124,7 @@ it("keeps dominant directory areas proportional and their headers selectable abo
     node(2, 0, 13),
     ...Array.from({ length: 100 }, (_, i) => node(i + 3, 1, 0.87)),
   ];
-  const shapes = layout(nodes, 0, "allocated", 1000, 400, "treemap");
+  const shapes = layout(nodes, 0, 1000, 400, "treemap");
   const folder = shapes.find((s) => s.id === 1)!;
   expect(folder.width * folder.height).toBeCloseTo(1000 * 400 * 0.87);
   expect(folder.headerHeight).toBe(64);
@@ -171,7 +165,7 @@ it("keeps dominant directory areas proportional and their headers selectable abo
       child.y + child.height / 2,
     )?.id,
   ).toBe(child.id);
-  const focused = layout(nodes, 1, "logical", 1000, 400, "treemap");
+  const focused = layout(nodes, 1, 1000, 400, "treemap");
   expect(focused.some((s) => s.id === 1)).toBe(false);
   expect(focused.every((s) => s.groupId === s.id)).toBe(true);
 });
@@ -191,7 +185,7 @@ it("reserves two-line headers for roomy nested folders while keeping narrow head
     [150, 180, 56],
     [128, 600, 28],
   ]) {
-    const shapes = layout(nodes, 0, "allocated", width, height, "treemap");
+    const shapes = layout(nodes, 0, width, height, "treemap");
     const nested = shapes.find((shape) => shape.id === 2)!;
     expect(nested.headerHeight).toBe(header);
     for (const id of [4, 5]) {
@@ -221,7 +215,6 @@ it("keeps a usable child body in short directory tiles", () => {
       node(2, 1, 100),
     ],
     0,
-    "allocated",
     180,
     90,
     "treemap",
@@ -242,14 +235,13 @@ it("leaves folder layouts unchanged by default and preserves colored leaf area t
     { ...node(-1, 5, 70), kind: "aggregate", fileType: "mov", fileCount: 100 },
     { ...node(-2, 5, 30), kind: "aggregate", fileType: "png", fileCount: 20 },
   );
-  const normal = layout(nodes, 0, "allocated", 800, 500, "treemap");
+  const normal = layout(nodes, 0, 800, 500, "treemap");
   expect(normal).toEqual(
-    layout(nodes, 0, "allocated", 800, 500, "treemap", "folder"),
+    layout(nodes, 0, 800, 500, "treemap", "folder"),
   );
   const compact = layout(
     nodes,
     0,
-    "allocated",
     800,
     500,
     "treemap",
@@ -270,8 +262,8 @@ it("leaves folder layouts unchanged by default and preserves colored leaf area t
       (s) => s.width > 0 && s.height > 0 && Number.isFinite(s.x + s.y),
     ),
   ).toBe(true);
-  expect(layout(nodes, 0, "logical", 800, 500, "sunburst", "fileType")).toEqual(
-    layout(nodes, 0, "logical", 800, 500, "sunburst"),
+  expect(layout(nodes, 0, 800, 500, "sunburst", "fileType")).toEqual(
+    layout(nodes, 0, 800, 500, "sunburst"),
   );
 });
 
@@ -279,7 +271,6 @@ it("reserves no compact directory band when the visible body would be too small"
   const shapes = layout(
     [{ ...node(1, 0, 100), kind: "directory" }, node(2, 1, 100)],
     0,
-    "allocated",
     100,
     70,
     "treemap",

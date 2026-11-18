@@ -1,17 +1,16 @@
-import { size, type Metric, type NodeView } from "./types";
+import { type NodeView } from "./types";
 
 /** Read-only geometry evidence captured after the current completed map draw. */
 export function canvasEvidence(
   nodes: NodeView[],
   rootId: number,
-  metric: Metric,
 ) {
   const canvas = document.querySelector<HTMLCanvasElement>(".map-wrap canvas");
   const bounds = canvas?.getBoundingClientRect();
   return {
     expected_positive_nodes: nodes.reduce(
       (count, node) =>
-        count + Number(node.id !== rootId && size(node, metric) > 0),
+        count + Number(node.id !== rootId && node.allocatedBytes > 0),
       0,
     ),
     backing_width: canvas?.width ?? 0,
@@ -39,7 +38,6 @@ interface NativeViewState {
   sort: string;
   mode: string | null;
   mapReady: boolean;
-  metric: string;
   selectedCount: number;
   scrollTop: number;
   scrollExtent: number;
@@ -60,7 +58,6 @@ function viewState(): NativeViewState {
     mode: document.querySelector<HTMLElement>('[data-native-map-mode]')?.dataset.nativeMapMode ?? null,
     scrollTop: document.querySelector<HTMLElement>('[role="tree"]')?.scrollTop ?? 0,
     scrollExtent: (() => { const tree=document.querySelector<HTMLElement>('[role="tree"]'); return tree ? tree.scrollHeight-tree.clientHeight : 0; })(),
-    metric: Array.from(document.querySelectorAll('button.chosen')).some((node) => node.textContent?.trim()==='Logical') ? 'logical' : 'allocated',
     selectedCount: document.querySelectorAll('[role="treeitem"][aria-selected="true"]').length,
     mapReady: document.querySelector<HTMLElement>('[data-native-map-ready]')?.dataset.nativeMapReady === 'true',
   };
@@ -231,7 +228,6 @@ export async function runNativeInteractions(): Promise<NativeInteractionReport> 
       const crumbs = required<HTMLElement>('nav[aria-label="Folder breadcrumbs"]'); const roots = crumbs.querySelectorAll<HTMLButtonElement>('button');
       if (roots.length < 2) throw new Error('Directory navigation did not update breadcrumbs'); roots[0].click(); await ready(); const after=viewState(); sameRows(before,after); if(JSON.stringify(before.breadcrumbs)!==JSON.stringify(after.breadcrumbs)) throw new Error('Breadcrumb root did not restore'); return 'directory navigation and exact root restoration verified';
     });
-    await phase('size-metric', async (observe) => { button('Logical').click(); await ready(); observe(); if (!button('Logical').classList.contains('chosen')) throw new Error('Logical metric did not commit'); button('On disk').click(); await ready(); if (!button('On disk').classList.contains('chosen')) throw new Error('Allocated metric did not commit'); return 'logical and allocated metrics rendered'; });
     await phase('map-switch', async (observe) => { button('Sunburst').click(); await ready(); observe(); if (required<HTMLElement>('[data-native-map-mode]').dataset.nativeMapMode !== 'sunburst') throw new Error('Sunburst did not commit'); button('Treemap').click(); await ready(); if (required<HTMLElement>('[data-native-map-mode]').dataset.nativeMapMode !== 'treemap') throw new Error('Treemap did not commit'); return 'both map modes rendered'; });
     return { success: true, elapsedMs: performance.now() - started, phases };
   } catch (error) {

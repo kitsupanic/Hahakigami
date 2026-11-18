@@ -42,9 +42,8 @@ fn main() {
                         NodeKind::File
                     },
                 },
-                logical_size: 0,
                 allocated_size: 0,
-                own_logical_size: if directory { 0 } else { 1024 },
+                length: if directory { 0 } else { 1024 },
                 own_allocated_size: if directory { 0 } else { 4096 },
                 is_directory: directory,
                 hard_link: false,

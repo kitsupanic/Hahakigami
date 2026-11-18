@@ -11,7 +11,7 @@ from speed_trial import summarize, run, requested_workers, manifest_record
 def record(variant, number, elapsed=100):
     return dict(variant=variant, scope='fixture', phase='warm', round=number, elapsed_ms=elapsed,
                 state='completed', success=True, entries=10, directories=2, errors=0,
-                logical_bytes=100, allocated_bytes=200, peak_rss_bytes=1000)
+                allocated_bytes=200, peak_rss_bytes=1000)
 
 
 class SummaryTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(len(summary['initial_runs']), 1)
 
     def test_failure_incomplete_missing_pair_and_coverage_drift_fail_gate(self):
-        for mutation in ({'success': False}, {'state': 'cancelled'}, {'errors': 1}, {'allocated_bytes': 201}, {'directories': 3}, {'logical_bytes': None}):
+        for mutation in ({'success': False}, {'state': 'cancelled'}, {'errors': 1}, {'allocated_bytes': 201}, {'directories': 3}):
             with self.subTest(mutation=mutation):
                 runs = self.runs()
                 runs[-1].update(mutation)

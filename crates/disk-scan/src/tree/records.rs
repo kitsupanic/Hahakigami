@@ -79,9 +79,8 @@ mod tests {
         Record {
             device: 1,
             inode,
-            logical_size: 2,
             allocated_size: 3,
-            own_logical_size: 2,
+            length: 2,
             own_allocated_size: 3,
             name_offset: 0,
             children_offset: 0,

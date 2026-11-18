@@ -68,7 +68,6 @@
             elapsedMs: summary.elapsedMs,
             entries: summary.entries,
             errors: summary.errors,
-            logicalBytes: summary.logicalBytes,
             allocatedBytes: summary.allocatedBytes,
             finalizationUs: summary.finalizationUs,
             descriptorLimit: summary.descriptorLimit,

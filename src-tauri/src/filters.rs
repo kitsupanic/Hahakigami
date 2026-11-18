@@ -11,7 +11,6 @@ pub(crate) struct Query {
     category: String,
     min: Option<u64>,
     max: Option<u64>,
-    allocated: bool,
     order: Order,
     search: bool,
     extension: Option<String>,
@@ -24,23 +23,14 @@ impl Query {
         category: String,
         min_bytes: Option<u64>,
         max_bytes: Option<u64>,
-        metric: String,
     ) -> Result<Self, String> {
-        Self::with_order(
-            query,
-            category,
-            min_bytes,
-            max_bytes,
-            metric,
-            Order::default(),
-        )
+        Self::with_order(query, category, min_bytes, max_bytes, Order::default())
     }
     pub(crate) fn with_order(
         query: String,
         category: String,
         min_bytes: Option<u64>,
         max_bytes: Option<u64>,
-        metric: String,
         order: Order,
     ) -> Result<Self, String> {
         if !matches!(
@@ -59,25 +49,19 @@ impl Query {
         if min_bytes.zip(max_bytes).is_some_and(|(min, max)| min > max) {
             return Err("Minimum size must not exceed maximum size".into());
         }
-        let allocated = match metric.as_str() {
-            "allocated" => true,
-            "logical" => false,
-            _ => return Err("Unknown size metric".into()),
-        };
         Ok(Self {
             text: query.to_lowercase(),
             category,
             min: min_bytes,
             max: max_bytes,
-            allocated,
             order,
             search: false,
             extension: None,
             scope_id: None,
         })
     }
-    pub(crate) fn search(query: String, metric: String, order: Order) -> Result<Self, String> {
-        let mut result = Self::with_order(query, "all".into(), None, None, metric, order)?;
+    pub(crate) fn search(query: String, order: Order) -> Result<Self, String> {
+        let mut result = Self::with_order(query, "all".into(), None, None, order)?;
         result.search = true;
         Ok(result)
     }
@@ -89,13 +73,6 @@ impl Query {
         self.extension = extension.map(|value| value.to_lowercase());
         self.scope_id = scope_id;
         self
-    }
-    fn size(&self, node: &NodeRef<'_>) -> u64 {
-        if self.allocated {
-            node.allocated_size
-        } else {
-            node.logical_size
-        }
     }
     fn matches(&self, node: &NodeRef<'_>) -> bool {
         if self.search {
@@ -112,7 +89,7 @@ impl Query {
         {
             return false;
         }
-        let size = self.size(node);
+        let size = node.allocated_size;
         (self.text.is_empty() || node.display_name().to_lowercase().contains(&self.text))
             && self.min.is_none_or(|min| size >= min)
             && self.max.is_none_or(|max| size <= max)
@@ -241,7 +218,7 @@ impl Cache {
                         .map(|n| n.id),
                 );
             }
-            sorting::sort_ids(snapshot, &mut ids, query.order, query.allocated)?;
+            sorting::sort_ids(snapshot, &mut ids, query.order)?;
             if completed {
                 self.entry = Some(Entry {
                     query: query.clone(),
@@ -272,7 +249,7 @@ mod tests {
     use super::*;
     use disk_scan::Identity;
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
-    fn node(id: u32, name: &str, kind: NodeKind, logical: u64, allocated: u64) -> Node {
+    fn node(id: u32, name: &str, kind: NodeKind, length: u64, allocated: u64) -> Node {
         Node {
             id,
             parent: Some(0),
@@ -284,9 +261,8 @@ mod tests {
                 inode: u64::from(id),
                 kind,
             },
-            logical_size: logical,
             allocated_size: allocated,
-            own_logical_size: logical,
+            length,
             own_allocated_size: allocated,
             is_directory: kind == NodeKind::Directory,
             hard_link: false,
@@ -328,14 +304,14 @@ mod tests {
         let snapshot = predicate_snapshot(node);
         category(&snapshot.node(node.id).unwrap())
     }
-    fn query(category: &str, min: Option<u64>, max: Option<u64>, metric: &str) -> Query {
-        Query::new(String::new(), category.into(), min, max, metric.into()).unwrap()
+    fn query(category: &str, min: Option<u64>, max: Option<u64>) -> Query {
+        Query::new(String::new(), category.into(), min, max).unwrap()
     }
     #[test]
     fn extension_and_scope_are_exact_and_distinct_cache_keys() {
         let snapshot = crate::file_types::tests::fixture();
         let mut cache = Cache::default();
-        let base = query("all", None, None, "logical");
+        let base = query("all", None, None);
         let scoped = base.clone().with_file_type(Some("JPG".into()), Some(1));
         let (mut ids, total) = cache.page(&snapshot, &scoped, 0, 500).unwrap();
         ids.sort_unstable();
@@ -362,7 +338,7 @@ mod tests {
         let mut snapshot = snapshot(vec![node(0, "needle", NodeKind::File, 1, 1)]);
         let mut cache = Cache::default();
         let text = "needle".repeat(100);
-        let query = Query::search(text.clone(), "logical".into(), Order::default()).unwrap();
+        let query = Query::search(text.clone(), Order::default()).unwrap();
         cache.page(&snapshot, &query, 0, 1).unwrap();
         let storage = cache.retained_buffer_storage();
         assert!(storage.length_bytes >= snapshot.root.as_os_str().len() + text.len() + 3);
@@ -382,12 +358,12 @@ mod tests {
         ] {
             for extension in extensions.split_whitespace() {
                 let mut n = node(1,&format!("file.{}",extension.to_uppercase()),NodeKind::File,0,0);
-                assert!(query(expected,None,None,"logical").matches_legacy(&n), "{extension}");
+                assert!(query(expected,None,None).matches_legacy(&n), "{extension}");
                 n.path = PathBuf::from("/fixture").join(OsString::from_vec([vec![0xff,b'.'],extension.as_bytes().to_vec()].concat()));
                 assert_eq!(category_legacy(&n),Some(expected));
                 n.identity.kind = NodeKind::Symlink;
                 assert_eq!(category_legacy(&n),None);
-                assert!(query("all",None,None,"allocated").matches_legacy(&n));
+                assert!(query("all",None,None).matches_legacy(&n));
             }
         }
         for name in ["unknown.xyz", "no-extension", ".png", "regular.app"] {
@@ -408,45 +384,27 @@ mod tests {
     fn predicates_bounds_metrics_and_exclusions() {
         let mut n = node(1, "Holiday.PNG", NodeKind::File, 1_000_000, 4096);
         n.hard_link = true;
-        let q = Query::new(
-            "HOLI".into(),
-            "images".into(),
-            Some(4096),
-            Some(4096),
-            "allocated".into(),
-        )
-        .unwrap();
+        let q = Query::new("HOLI".into(), "images".into(), Some(4096), Some(4096)).unwrap();
         assert!(q.matches_legacy(&n));
-        assert!(!query("images", Some(4096), Some(4096), "logical").matches_legacy(&n));
-        assert!(!Query::new(
-            "absent".into(),
-            "images".into(),
-            None,
-            None,
-            "allocated".into()
-        )
-        .unwrap()
-        .matches_legacy(&n));
+        assert!(!Query::new("absent".into(), "images".into(), None, None,)
+            .unwrap()
+            .matches_legacy(&n));
         n.allocated_size = 0;
-        assert!(query("images", Some(0), Some(0), "allocated").matches_legacy(&n));
+        assert!(query("images", Some(0), Some(0)).matches_legacy(&n));
         n.excluded = true;
-        assert!(!query("all", None, None, "logical").matches_legacy(&n));
+        assert!(!query("all", None, None).matches_legacy(&n));
         n.excluded = false;
         n.parent = None;
-        assert!(!query("all", None, None, "logical").matches_legacy(&n));
-        assert!(Query::new("".into(), "bad".into(), None, None, "logical".into()).is_err());
-        assert!(Query::new("".into(), "all".into(), None, None, "bad".into()).is_err());
-        assert!(Query::new("".into(), "all".into(), Some(2), Some(1), "logical".into()).is_err());
+        assert!(!query("all", None, None).matches_legacy(&n));
+        assert!(Query::new("".into(), "bad".into(), None, None).is_err());
+        assert!(Query::new("".into(), "all".into(), Some(2), Some(1),).is_err());
         let folder = node(2, "Folder", NodeKind::Directory, 9999, 8888);
-        assert!(query("all", Some(9999), Some(9999), "logical").matches_legacy(&folder));
-        assert!(!query("other", None, None, "logical").matches_legacy(&folder));
+        assert!(query("all", Some(8888), Some(8888)).matches_legacy(&folder));
+        assert!(!query("other", None, None).matches_legacy(&folder));
     }
     #[test]
-    fn real_sparse_hard_links_and_folder_aggregates() {
+    fn real_hard_links_and_symlink_classification() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("folder")).unwrap();
-        let file = std::fs::File::create(dir.path().join("folder/sparse.bin")).unwrap();
-        file.set_len(16 * 1024 * 1024).unwrap();
         std::fs::write(dir.path().join("photo.png"), b"photo").unwrap();
         std::fs::hard_link(dir.path().join("photo.png"), dir.path().join("alias.png")).unwrap();
         std::os::unix::fs::symlink("photo.png", dir.path().join("link.png")).unwrap();
@@ -457,19 +415,12 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        let q = query("all", Some(16 * 1024 * 1024), None, "logical");
-        let (ids, total) = Cache::default().page(&s, &q, 0, 500).unwrap();
-        assert_eq!(total, 2);
-        assert!(ids.iter().all(|&id| matches!(
-            s.node(id).unwrap().display_name().as_ref(),
-            "folder" | "sparse.bin"
-        )));
         let (_, images) = Cache::default()
-            .page(&s, &query("images", None, None, "allocated"), 0, 500)
+            .page(&s, &query("images", None, None), 0, 500)
             .unwrap();
         assert_eq!(images, 2); // The symlink's suffix must not classify it as a regular image.
         let (_, zero_images) = Cache::default()
-            .page(&s, &query("images", Some(0), Some(0), "allocated"), 0, 500)
+            .page(&s, &query("images", Some(0), Some(0)), 0, 500)
             .unwrap();
         assert_eq!(zero_images, 1); // Only one path owns the hard-link allocation.
     }
@@ -484,10 +435,10 @@ mod tests {
         ];
         nodes.extend((4..608).map(|id| node(id, &format!("x{id}"), NodeKind::File, 0, 0)));
         let mut s = snapshot(nodes);
-        let q = query("all", None, None, "logical");
+        let q = query("all", None, None);
         let mut cache = Cache::default();
-        assert_eq!(cache.page(&s, &q, 0, 2).unwrap().0, vec![0, 2]);
-        assert_eq!(cache.page(&s, &q, 2, 2).unwrap().0, vec![3, 1]);
+        assert_eq!(cache.page(&s, &q, 0, 2).unwrap().0, vec![2, 3]);
+        assert_eq!(cache.page(&s, &q, 2, 2).unwrap().0, vec![1, 0]);
         assert_eq!(cache.builds, 1);
         let empty = cache.page(&s, &q, 0, 0).unwrap();
         assert!(empty.0.is_empty());
@@ -495,25 +446,19 @@ mod tests {
         assert_eq!(cache.builds, 1);
         assert_eq!(cache.page(&s, &q, 0, usize::MAX).unwrap().0.len(), 500);
         assert!(cache.page(&s, &q, usize::MAX, 500).unwrap().0.is_empty());
-        let allocated = query("all", None, None, "allocated");
-        assert_eq!(
-            cache.page(&s, &allocated, 0, 4).unwrap().0,
-            vec![2, 3, 1, 0]
-        );
-        assert_eq!(cache.builds, 2);
-        assert!(cache.entry.as_ref().is_some_and(|e| e.query == allocated));
+        assert!(cache.entry.as_ref().is_some_and(|e| e.query == q));
         s.state = ScanState::Running;
         cache.page(&s, &q, 0, 1).unwrap();
         cache.page(&s, &q, 0, 1).unwrap();
-        assert_eq!(cache.builds, 4);
+        assert_eq!(cache.builds, 3);
         assert!(cache.entry.is_none());
-        s.update_node(0, |node| node.logical_size = 0).unwrap();
+        s.update_node(0, |node| node.allocated_size = 0).unwrap();
         s.state = ScanState::Completed;
         assert_eq!(cache.page(&s, &q, 0, 1).unwrap().0, vec![2]);
-        assert_eq!(cache.builds, 5);
+        assert_eq!(cache.builds, 4);
         let other = snapshot(vec![node(0, "different", NodeKind::File, 1, 1)]);
         assert_eq!(cache.page(&other, &q, 0, 10).unwrap(), (vec![0], 1));
-        assert_eq!(cache.builds, 6);
+        assert_eq!(cache.builds, 5);
     }
     #[test]
     fn search_membership_and_sort_orders_share_one_cache() {
@@ -532,12 +477,11 @@ mod tests {
             "all".into(),
             None,
             None,
-            "logical".into(),
             Order::NameAscending,
         )
         .unwrap();
         assert_eq!(cache.page(&s, &filter, 0, 500).unwrap(), (vec![2, 1], 2));
-        let search = Query::search("IMAGE".into(), "logical".into(), Order::NameAscending).unwrap();
+        let search = Query::search("IMAGE".into(), Order::NameAscending).unwrap();
         assert_eq!(
             cache.page(&s, &search, 0, 500).unwrap(),
             (vec![0, 2, 3, 1], 4)
@@ -546,16 +490,15 @@ mod tests {
         assert!(cache.entry.as_ref().unwrap().query.search);
         assert_eq!(cache.page(&s, &search, 1, 1).unwrap().0, vec![2]);
         assert_eq!(cache.builds, 2);
-        let desc = Query::search("image".into(), "logical".into(), Order::NameDescending).unwrap();
+        let desc = Query::search("image".into(), Order::NameDescending).unwrap();
         assert_eq!(cache.page(&s, &desc, 0, 500).unwrap().0, vec![0, 1, 3, 2]);
-        let size =
-            Query::search("image".into(), "allocated".into(), Order::SizeDescending).unwrap();
+        let size = Query::search("image".into(), Order::SizeDescending).unwrap();
         assert_eq!(cache.page(&s, &size, 0, 500).unwrap().0, vec![0, 2, 1, 3]);
         assert_eq!(cache.builds, 4);
         assert!(cache
             .page(
                 &s,
-                &Query::search("".into(), "logical".into(), Order::default()).unwrap(),
+                &Query::search("".into(), Order::default()).unwrap(),
                 0,
                 500
             )
@@ -589,15 +532,7 @@ mod tests {
         );
         let mut cache = Cache::default();
         for order in [Order::SizeDescending, Order::NameAscending] {
-            let q = Query::with_order(
-                "".into(),
-                "images".into(),
-                None,
-                None,
-                "allocated".into(),
-                order,
-            )
-            .unwrap();
+            let q = Query::with_order("".into(), "images".into(), None, None, order).unwrap();
             let start = std::time::Instant::now();
             let first = cache.page(&s, &q, 0, 500).unwrap();
             let first_us = start.elapsed().as_micros();

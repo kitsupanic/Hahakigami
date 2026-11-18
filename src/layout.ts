@@ -1,4 +1,4 @@
-import { size, type Metric, type NodeView } from "./types";
+import { type NodeView } from "./types";
 export interface Shape {
   id: number;
   x: number;
@@ -68,7 +68,6 @@ function rectangles(
 export function layout(
   nodes: NodeView[],
   rootId: number,
-  metric: Metric,
   width: number,
   height: number,
   mode: "treemap" | "sunburst",
@@ -77,13 +76,13 @@ export function layout(
   if (width <= 0 || height <= 0) return [];
   const children = new Map<number, NodeView[]>();
   for (const n of nodes)
-    if (n.id !== rootId && n.parentId !== null && size(n, metric) > 0) {
+    if (n.id !== rootId && n.parentId !== null && n.allocatedBytes > 0) {
       const a = children.get(n.parentId) || [];
       a.push(n);
       children.set(n.parentId, a);
     }
   for (const a of children.values())
-    a.sort((a, b) => size(b, metric) - size(a, metric));
+    a.sort((a, b) => b.allocatedBytes - a.allocatedBytes);
   const rootChildren = children.get(rootId);
   if (mode === "sunburst" && rootChildren && rootChildren.length > 1)
     rootChildren.push(rootChildren.shift()!);
@@ -105,7 +104,7 @@ export function layout(
     visited.add(id);
     const list = children.get(id) || [];
     if (!list.length) return;
-    const values = list.map((n) => size(n, metric)),
+    const values = list.map((n) => n.allocatedBytes),
       sum = values.reduce((s, n) => s + n, 0),
       rects = mode === "treemap" ? rectangles(values, x, y, w, h) : [];
     let cursor = 0;

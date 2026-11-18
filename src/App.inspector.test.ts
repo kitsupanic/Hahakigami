@@ -32,7 +32,6 @@ const folder: NodeView = {
   path: "/fixture/Photos",
   kind: "directory",
   allocatedBytes: 100,
-  logicalBytes: 200,
   childrenCount: 2,
   incomplete: false,
 };
@@ -67,7 +66,6 @@ const summary = (scanId = "live"): ScanSummary => ({
   finalizationUs: 0,
   entries: 4,
   allocatedBytes: 100,
-  logicalBytes: 200,
   elapsedMs: 1000,
   errors: 0,
 });
@@ -432,7 +430,6 @@ it("refreshes selected folder sizes and contents during scanning and at completi
   current = {
     ...current,
     allocatedBytes: 4096,
-    logicalBytes: 8192,
     childrenCount: 7,
   };
   await act(() => app().setSummary({ ...app().summary!, state: "completed" }));
@@ -445,8 +442,8 @@ it("refreshes selected folder sizes and contents during scanning and at completi
 
 it("refreshes every selected file before calculating completed selection totals", async () => {
   let completed = false;
-  const freshImage = { ...image, allocatedBytes: 0, logicalBytes: 300 };
-  const freshOther = { ...other, allocatedBytes: 4096, logicalBytes: 500 };
+  const freshImage = { ...image, allocatedBytes: 0 };
+  const freshOther = { ...other, allocatedBytes: 4096 };
   const standard = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command, args) => {
     if (completed && command === "get_node") {

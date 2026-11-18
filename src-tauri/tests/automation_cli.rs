@@ -27,7 +27,8 @@ fn scans_and_prints_metadata_without_the_gui() {
     let summary = json(command(&["scan", root.to_str().unwrap()]));
     assert_eq!(summary["state"], "completed");
     assert_eq!(summary["rootId"], 0);
-    assert_eq!(summary["logicalBytes"], 3 + 8192);
+    assert!(summary.get("logicalBytes").is_none());
+    assert!(summary["allocatedBytes"].is_u64());
     assert_eq!(summary["entries"], 3);
     assert_eq!(summary["incomplete"], false);
     assert!(summary.get("scanId").is_none());

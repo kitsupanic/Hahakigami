@@ -44,11 +44,10 @@ def compare(left, right):
                                 excluded['count'] += 1
                                 if len(excluded['path_samples_base64']) < 20:
                                     excluded['path_samples_base64'].append(base64.b64encode(raw).decode())
-                            fields = {key: row.get(key) for key in ('kind', 'logical_bytes', 'allocated_bytes', 'identity', 'summary')}
+                            fields = {key: row.get(key) for key in ('kind', 'allocated_bytes', 'identity', 'summary')}
                             fields['size_scope'] = row.get('size_scope', header.get('size_scope'))
-                            for key in ('logical_bytes', 'allocated_bytes'):
-                                if fields[key] is not None and (type(fields[key]) is not int or fields[key] < 0):
-                                    raise ValueError('Invalid recorded size')
+                            if fields['allocated_bytes'] is not None and (type(fields['allocated_bytes']) is not int or fields['allocated_bytes'] < 0):
+                                raise ValueError('Invalid recorded size')
                             try:
                                 db.execute(f'INSERT INTO p{side} VALUES (?,?)', (raw, json.dumps(fields, sort_keys=True)))
                             except sqlite3.IntegrityError as error:
@@ -78,7 +77,7 @@ def compare(left, right):
                 query = f'SELECT a.path FROM p{side} a LEFT JOIN p{1-side} b USING(path) WHERE b.path IS NULL'
                 counts[f'only_{side}'] = db.execute(f'SELECT COUNT(*) FROM ({query})').fetchone()[0]
                 samples[f'only_{side}'] = [base64.b64encode(row[0]).decode() for row in db.execute(query + ' LIMIT 20')]
-            mismatches = {key: 0 for key in ('kind', 'logical_bytes', 'allocated_bytes', 'identity', 'summary', 'size_scope')}
+            mismatches = {key: 0 for key in ('kind', 'allocated_bytes', 'identity', 'summary', 'size_scope')}
             unknown, mismatch_samples = 0, []
             for raw, a, b in db.execute('SELECT a.path,a.value,b.value FROM p0 a JOIN p1 b USING(path)'):
                 a, b = json.loads(a), json.loads(b)
@@ -86,7 +85,7 @@ def compare(left, right):
                 for key in mismatches:
                     if key == 'identity' and (a[key] is None or b[key] is None):
                         continue
-                    if key in ('logical_bytes', 'allocated_bytes', 'kind', 'size_scope') and (a[key] is None or b[key] is None):
+                    if key in ('allocated_bytes', 'kind', 'size_scope') and (a[key] is None or b[key] is None):
                         unknown += 1
                     if a[key] != b[key]:
                         mismatches[key] += 1

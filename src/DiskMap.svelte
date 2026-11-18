@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { Metric, NodeView } from "./types";
-  import { size } from "./types";
+  import type { NodeView } from "./types";
   import { fileExtension, fileTypeColor, fileTypeLabel } from "./fileTypes";
   import type { Shape } from "./layout";
   import { createQueueMarker, type QueuePath } from "./queueMarkers";
@@ -24,7 +23,6 @@
     nodes,
     rootId,
     scanId = "",
-    metric,
     mode,
     selected,
     onSelect,
@@ -54,7 +52,6 @@
     nodes: NodeView[];
     rootId: number;
     scanId?: string;
-    metric: Metric;
     mode: "treemap" | "sunburst";
     selected: number[];
     onSelect: (n: NodeView, multi: boolean) => void;
@@ -115,7 +112,6 @@
   let clickCapture: {
     scanId: string;
     rootId: number;
-    metric: Metric;
     mode: "treemap" | "sunburst";
     colorMode: "folder" | "fileType";
     target: Pick<
@@ -135,7 +131,6 @@
     if (
       clickCapture.scanId !== scanId ||
       clickCapture.rootId !== rootId ||
-      clickCapture.metric !== metric ||
       clickCapture.mode !== mode ||
       clickCapture.colorMode !== colorMode ||
       folder?.id !== clickCapture.folder?.id ||
@@ -162,7 +157,6 @@
     // Invalidate even if a context changes away and back between pointer events.
     scanId;
     rootId;
-    metric;
     mode;
     colorMode;
     byId;
@@ -214,7 +208,6 @@
   let layoutInput = $derived({
     nodes,
     rootId,
-    metric,
     mode,
     colorMode,
     ...dimensions,
@@ -225,7 +218,6 @@
       !!completedLayout &&
       completedLayout.nodes === nodes &&
       completedLayout.rootId === rootId &&
-      completedLayout.metric === metric &&
       completedLayout.mode === mode &&
       completedLayout.colorMode === colorMode &&
       completedLayout.width === dimensions.width &&
@@ -301,8 +293,8 @@
   let legendExpanded = $state(false);
   let legendNodes = $derived.by(() =>
     nodes
-      .filter((n) => n.parentId === rootId && size(n, metric) > 0)
-      .sort((a, b) => size(b, metric) - size(a, metric) || a.id - b.id),
+      .filter((n) => n.parentId === rootId && n.allocatedBytes > 0)
+      .sort((a, b) => b.allocatedBytes - a.allocatedBytes || a.id - b.id),
   );
   let legendVisible = $derived(
     legendExpanded ? legendNodes : legendNodes.slice(0, 6),
@@ -331,7 +323,7 @@
   const selectionKey = $derived(selected.join(","));
   // One primitive key shields the effect from props whose identity changes per scan tick.
   const summaryKey = $derived(
-    [scanId, rootId, mode, metric, scanComplete, selectionKey, hasLegendNodes].join(
+    [scanId, rootId, mode, scanComplete, selectionKey, hasLegendNodes].join(
       "|",
     ),
   );
@@ -342,16 +334,15 @@
     // when the scan completes, never on every scan tick.
     summaryKey;
     untrack(() => {
-      const unit = metric === "allocated" ? "on disk" : "logical size";
       const top = legendNodes
         .slice(0, 3)
-        .map((n) => `${n.name} ${compactBytes(size(n, metric))}`);
+        .map((n) => `${n.name} ${compactBytes(n.allocatedBytes)}`);
       const picked = selected.map((id) => byId.get(id)).filter((n) => !!n);
       summaryText = [
-        `${mode === "treemap" ? "Treemap" : "Sunburst"} of ${centerNode?.name ?? "this scan"}${centerNode ? `, ${compactBytes(size(centerNode, metric))} ${unit}` : ""}.`,
+        `${mode === "treemap" ? "Treemap" : "Sunburst"} of ${centerNode?.name ?? "this scan"}${centerNode ? `, ${compactBytes(centerNode.allocatedBytes)} on disk` : ""}.`,
         top.length ? `Largest items: ${top.join(", ")}.` : "No sized items yet.",
         picked.length === 1
-          ? `Selected: ${picked[0].name}, ${compactBytes(size(picked[0], metric))}.`
+          ? `Selected: ${picked[0].name}, ${compactBytes(picked[0].allocatedBytes)}.`
           : picked.length > 1
             ? `${picked.length} items selected.`
             : "",
@@ -407,7 +398,6 @@
     | {
         nodes: NodeView[];
         rootId: number;
-        metric: Metric;
         mode: "treemap" | "sunburst";
         colorMode: "folder" | "fileType";
         width: number;
@@ -421,7 +411,6 @@
       previousLayout &&
       previousLayout.nodes === next.nodes &&
       previousLayout.rootId === next.rootId &&
-      previousLayout.metric === next.metric &&
       previousLayout.mode === next.mode &&
       previousLayout.colorMode === next.colorMode &&
       previousLayout.width === next.width &&
@@ -611,12 +600,12 @@
           s.outer / (1 + Math.sin(Math.min(span / 2, Math.PI / 2))),
         );
         if (s.outer - s.inner > halfHeight * 2 + 10) {
-          const total = centerNode ? size(centerNode, metric) : 0;
+          const total = centerNode ? centerNode.allocatedBytes : 0;
           const lines = [
             typedGroup(n) ? `${fileTypeLabel(n.fileType!)} files` : n.name,
-            compactBytes(size(n, metric), 1),
+            compactBytes(n.allocatedBytes, 1),
             ...(total > 0
-              ? [`${((size(n, metric) / total) * 100).toFixed(1)}%`]
+              ? [`${((n.allocatedBytes / total) * 100).toFixed(1)}%`]
               : []),
           ];
           ctx.save();
@@ -732,8 +721,8 @@
         paintLabel(name, s.y + Math.min(topLevel ? 24 : 22, labelHeight - 6));
         if (n && labelHeight >= (topLevel ? 53 : 49)) {
           const label = typedGroup(n)
-            ? `${compactBytes(size(n, metric), 1)} · ${countLabel(n.fileCount ?? 0, "file")}`
-            : compactBytes(size(n, metric), 1);
+            ? `${compactBytes(n.allocatedBytes, 1)} · ${countLabel(n.fileCount ?? 0, "file")}`
+            : compactBytes(n.allocatedBytes, 1);
           ctx.font = `600 ${topLevel ? 18 : 15}px ${mapFont}`;
           if (ctx.measureText(label).width <= available)
             paintLabel(label, s.y + (topLevel ? 47 : 43));
@@ -912,7 +901,6 @@
         clickCapture = {
           scanId,
           rootId,
-          metric,
           mode,
           colorMode,
           x: e.clientX,
@@ -952,8 +940,8 @@
       style:width={`${holeRadius * 1.8}px`}
       style:font-size={`${Math.min(28, holeRadius * 0.28)}px`}
     >
-      <strong>{compactBytes(size(centerNode, metric), 1)}</strong>
-      <span>{metric === "allocated" ? "On disk" : "Logical size"}</span>
+      <strong>{compactBytes(centerNode.allocatedBytes, 1)}</strong>
+      <span>On disk</span>
     </div>
   {/if}
   {#if !shapes.length}<div class="map-empty">
@@ -966,7 +954,7 @@
   {#if captionNode}
     <div class="map-caption" title={captionNode.path || undefined}>
       <span class="map-help"
-          >{`${captionName} · ${compactBytes(size(captionNode, metric))}${typedGroup(captionNode) ? ` · ${countLabel(captionNode.fileCount ?? 0, "file")} grouped by type` : captionNode.kind === "aggregate" ? " · grouped small items" : ""}${queueMarks.get(captionNode.id) === "queued" ? " · Queued" : queueMarks.get(captionNode.id) === "contains" ? " · Contains queued items" : ""}${hoverId !== captionNode.id ? ` · Map shows ${byId.get(hoverId!)?.name ?? "parent folder"}` : ""}`}</span
+          >{`${captionName} · ${compactBytes(captionNode.allocatedBytes)}${typedGroup(captionNode) ? ` · ${countLabel(captionNode.fileCount ?? 0, "file")} grouped by type` : captionNode.kind === "aggregate" ? " · grouped small items" : ""}${queueMarks.get(captionNode.id) === "queued" ? " · Queued" : queueMarks.get(captionNode.id) === "contains" ? " · Contains queued items" : ""}${hoverId !== captionNode.id ? ` · Map shows ${byId.get(hoverId!)?.name ?? "parent folder"}` : ""}`}</span
       >
     </div>
   {/if}
@@ -996,7 +984,7 @@
         <li
           class:linked-hover={hoverId !== null &&
             (hoverGroup === node.id || activeTarget?.lineage.includes(node.id))}
-          title={`${node.name} · ${compactBytes(size(node, metric))}`}
+          title={`${node.name} · ${compactBytes(node.allocatedBytes)}`}
         >
           <span
             class="legend-dot"
@@ -1004,7 +992,7 @@
             aria-hidden="true"
           ></span>
           <span class="legend-name">{node.name}</span>
-          <span class="legend-size">{compactBytes(size(node, metric), 1)}</span>
+          <span class="legend-size">{compactBytes(node.allocatedBytes, 1)}</span>
         </li>
       {/each}
     </ul>

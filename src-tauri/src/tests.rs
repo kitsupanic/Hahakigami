@@ -379,9 +379,8 @@ fn synthetic(count: u32) -> Snapshot {
                     NodeKind::File
                 },
             },
-            logical_size: if directory { count as u64 * 4096 } else { 4096 },
             allocated_size: if directory { count as u64 * 4096 } else { 4096 },
-            own_logical_size: if directory { 0 } else { 4096 },
+            length: if directory { 0 } else { 4096 },
             own_allocated_size: if directory { 0 } else { 4096 },
             is_directory: directory,
             hard_link: false,
@@ -401,16 +400,9 @@ fn bounded_map_preserves_sizes_and_pagination() {
         let app = app(AppState::default());
         let state = app.state::<AppState>();
         install(&state, synthetic(6000));
-        let map = get_map(
-            app.state(),
-            "fixture".into(),
-            0,
-            "allocated".into(),
-            usize::MAX,
-            None,
-        )
-        .await
-        .unwrap();
+        let map = get_map(app.state(), "fixture".into(), 0, usize::MAX, None)
+            .await
+            .unwrap();
         assert_eq!(map.nodes.len(), 5000);
         assert_eq!(
             map.nodes
@@ -423,26 +415,13 @@ fn bounded_map_preserves_sizes_and_pagination() {
         let aggregate = map.nodes.last().unwrap();
         assert_eq!(aggregate.kind, "aggregate");
         assert!(aggregate.id >= 0x80000000);
-        let page = get_children(
-            app.state(),
-            "fixture".into(),
-            0,
-            500,
-            1000,
-            "allocated".into(),
-            None,
-        )
-        .await
-        .unwrap();
+        let page = get_children(app.state(), "fixture".into(), 0, 500, 1000, None)
+            .await
+            .unwrap();
         assert_eq!(page.items.len(), 500);
         assert_eq!(page.total, 6000);
         assert_eq!(page.items[0].name, "item-00000501");
         assert!(get_node(app.state(), "stale".into(), 0).await.is_err());
-        assert!(
-            get_children(app.state(), "fixture".into(), 0, 0, 1, "bad".into(), None)
-                .await
-                .is_err()
-        );
     });
 }
 // Oracle consumes the original owned DTO and preserves the previous display
@@ -453,7 +432,7 @@ fn legacy_node_view_json(node: &Node, issues: &[PathBuf]) -> serde_json::Value {
         "path":node.path.to_string_lossy(),
         "pathKey":path_key(&node.path),
         "kind":match node.identity.kind {NodeKind::Directory=>"directory",NodeKind::File=>"file",NodeKind::Symlink=>"symlink",NodeKind::Other=>"other"},
-        "logicalBytes":node.logical_size,"allocatedBytes":node.allocated_size,
+        "allocatedBytes":node.allocated_size,
         "rawAllocatedBytes":node.own_allocated_size,"verifiedClone":false,
         "cloneDeductionBytes":0,"cloneOwner":null,
         "childrenCount":node.children.len(),
@@ -478,9 +457,8 @@ fn view_dto(id: u32, path: PathBuf, name: &str) -> Node {
                 NodeKind::File
             },
         },
-        logical_size: 11,
         allocated_size: 4096,
-        own_logical_size: if root { 0 } else { 11 },
+        length: if root { 0 } else { 11 },
         own_allocated_size: if root { 0 } else { 4096 },
         is_directory: root,
         hard_link: false,
@@ -508,7 +486,7 @@ fn clone_view_distinguishes_raw_allocation_from_attributed_data() {
             node.clone_metadata = Some(disk_scan::CloneMetadata {
                 clone_id: 42,
                 data_allocated_size: 64,
-                data_logical_size: 11,
+                data_length: 11,
                 reference_count: 2,
                 may_share_blocks: true,
                 verified: true,
@@ -629,18 +607,12 @@ fn native_path_keys_preserve_components_without_display_collisions() {
 
 // Frozen map ordering oracle uses the original owned DTO fields, including
 // sorting u32 IDs directly with no directory or ID tie-breaker.
-fn legacy_map_order(nodes: &[Node], children: &[u32], allocated: bool) -> Vec<u32> {
+fn legacy_map_order(nodes: &[Node], children: &[u32]) -> Vec<u32> {
     let mut ids = children.to_vec();
     ids.sort_unstable_by(|&a, &b| {
-        let metric = |node: &Node| {
-            if allocated {
-                node.allocated_size
-            } else {
-                node.logical_size
-            }
-        };
-        metric(&nodes[b as usize])
-            .cmp(&metric(&nodes[a as usize]))
+        nodes[b as usize]
+            .allocated_size
+            .cmp(&nodes[a as usize].allocated_size)
             .then_with(|| nodes[a as usize].name.cmp(&nodes[b as usize].name))
     });
     ids
@@ -678,11 +650,6 @@ fn map_key_fixture(count: u32, all_identical: bool) -> (Snapshot, Vec<Node>, Vec
             node.identity.kind = NodeKind::Directory;
             node.is_directory = true;
         }
-        node.logical_size = if all_identical {
-            10
-        } else {
-            u64::from(id % 3) * 50
-        };
         node.allocated_size = if all_identical {
             20
         } else {
@@ -708,20 +675,14 @@ fn map_key_fixture(count: u32, all_identical: bool) -> (Snapshot, Vec<Node>, Vec
 fn map_display_keys_match_legacy_unstable_order_for_large_collisions() {
     for all_identical in [false, true] {
         let (snapshot, nodes, children) = map_key_fixture(2048, all_identical);
-        for allocated in [false, true] {
-            let actual = sort_map_children(&snapshot, &children, allocated).unwrap();
-            assert_eq!(
-                actual.ids,
-                legacy_map_order(&nodes, &children, allocated)
-                    .into_iter()
-                    .filter(|&id| if allocated {
-                        nodes[id as usize].allocated_size > 0
-                    } else {
-                        nodes[id as usize].logical_size > 0
-                    })
-                    .collect::<Vec<_>>()
-            );
-        }
+        let actual = sort_map_children(&snapshot, &children).unwrap();
+        assert_eq!(
+            actual.ids,
+            legacy_map_order(&nodes, &children)
+                .into_iter()
+                .filter(|&id| nodes[id as usize].allocated_size > 0)
+                .collect::<Vec<_>>()
+        );
     }
 }
 #[test]
@@ -731,40 +692,29 @@ fn positive_map_filter_preserves_full_legacy_output_and_aggregate_sizes() {
         let app = app(AppState::default());
         let state = app.state::<AppState>();
         let session = install(&state, snapshot);
-        for allocated in [false, true] {
-            let metric = if allocated { "allocated" } else { "logical" };
-            for limit in [2, 17, 5000] {
-                session.sorts.lock().unwrap().clear();
-                let actual = get_map(app.state(), "fixture".into(), 0, metric.into(), limit, None)
-                    .await
-                    .unwrap();
-                {
-                    let mut cache = session.sorts.lock().unwrap();
-                    cache.clear();
-                    for node in &nodes {
-                        let ids = legacy_map_order(&nodes, &node.children, allocated)
-                            .into_iter()
-                            .filter(|&id| {
-                                let child = &nodes[id as usize];
-                                if allocated {
-                                    child.allocated_size > 0
-                                } else {
-                                    child.logical_size > 0
-                                }
-                            })
-                            .collect();
-                        cache.insert((node.id, allocated), ids);
-                    }
+        for limit in [2, 17, 5000] {
+            session.sorts.lock().unwrap().clear();
+            let actual = get_map(app.state(), "fixture".into(), 0, limit, None)
+                .await
+                .unwrap();
+            {
+                let mut cache = session.sorts.lock().unwrap();
+                cache.clear();
+                for node in &nodes {
+                    let ids = legacy_map_order(&nodes, &node.children)
+                        .into_iter()
+                        .filter(|&id| nodes[id as usize].allocated_size > 0)
+                        .collect();
+                    cache.insert(node.id, ids);
                 }
-                let expected =
-                    get_map(app.state(), "fixture".into(), 0, metric.into(), limit, None)
-                        .await
-                        .unwrap();
-                assert_eq!(
-                    serde_json::to_value(actual).unwrap(),
-                    serde_json::to_value(expected).unwrap()
-                );
             }
+            let expected = get_map(app.state(), "fixture".into(), 0, limit, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
         }
     });
 }
@@ -778,7 +728,6 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             app.state(),
             current.id.clone(),
             0,
-            "logical".into(),
             3,
             Some("fileType".into()),
         )
@@ -791,25 +740,17 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             .find(|n| n.file_type.as_deref() == Some(""))
             .unwrap();
         assert_eq!(group.file_count, Some(100));
-        assert_eq!(group.logical_bytes, 409600);
+        assert_eq!(group.allocated_bytes, 409600);
         assert!(get_node(app.state(), current.id.clone(), group.id)
             .await
             .is_err());
-        let default = get_map(
-            app.state(),
-            current.id.clone(),
-            0,
-            "logical".into(),
-            20,
-            None,
-        )
-        .await
-        .unwrap();
+        let default = get_map(app.state(), current.id.clone(), 0, 20, None)
+            .await
+            .unwrap();
         let explicit = get_map(
             app.state(),
             current.id.clone(),
             0,
-            "logical".into(),
             20,
             Some("folder".into()),
         )
@@ -824,23 +765,17 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             app.state(),
             current.id.clone(),
             0,
-            "logical".into(),
             5000,
             Some("fileType".into()),
         )
         .await
         .unwrap();
         assert_eq!(*current.sorts.lock().unwrap(), original_cache);
-        for (scope, metric, mode) in [
-            (999, "logical", "fileType"),
-            (0, "invalid", "fileType"),
-            (0, "logical", "invalid"),
-        ] {
+        for (scope, mode) in [(999, "fileType"), (0, "invalid")] {
             assert!(get_map(
                 app.state(),
                 current.id.clone(),
                 scope,
-                metric.into(),
                 5000,
                 Some(mode.into())
             )
@@ -851,7 +786,6 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             app.state(),
             "stale".into(),
             0,
-            "logical".into(),
             5000,
             Some("fileType".into())
         )
@@ -862,13 +796,11 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             snapshot.state = ScanState::Running;
             snapshot
                 .update_node(1, |node| {
-                    node.logical_size += 4096;
                     node.allocated_size += 4096;
                 })
                 .unwrap();
             snapshot
                 .update_node(0, |node| {
-                    node.logical_size += 4096;
                     node.allocated_size += 4096;
                 })
                 .unwrap();
@@ -877,7 +809,6 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             app.state(),
             current.id.clone(),
             0,
-            "logical".into(),
             3,
             Some("fileType".into()),
         )
@@ -888,14 +819,13 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
             .iter()
             .find(|n| n.file_type.is_some())
             .unwrap();
-        assert_eq!(group.logical_bytes, 413696);
+        assert_eq!(group.allocated_bytes, 413696);
         assert_eq!(*current.sorts.lock().unwrap(), original_cache);
         current.invalidate();
         assert!(get_map(
             app.state(),
             current.id.clone(),
             0,
-            "logical".into(),
             5000,
             Some("fileType".into())
         )
@@ -909,12 +839,11 @@ fn file_type_map_commands_preserve_folder_cache_and_reject_invalid_requests() {
 fn sparse_positive_map_keys_only_allocate_for_visible_children() {
     let (_, mut nodes, children) = map_key_fixture(512, false);
     for node in nodes.iter_mut().skip(1) {
-        node.logical_size = if node.id % 7 == 0 {
-            u64::from(node.id)
+        node.allocated_size = if node.id % 7 == 0 {
+            u64::from(node.id) * 4096
         } else {
             0
         };
-        node.allocated_size = node.logical_size * 4096;
     }
     // Repeated child IDs must be absent to exercise the collision-free path.
     let children: Vec<_> = children.into_iter().take(512).collect();
@@ -922,49 +851,44 @@ fn sparse_positive_map_keys_only_allocate_for_visible_children() {
     for node in &nodes {
         snapshot.append_legacy_node(node.clone()).unwrap();
     }
-    for allocated in [false, true] {
-        let actual = sort_map_children(&snapshot, &children, allocated).unwrap();
-        let expected: Vec<_> = legacy_map_order(&nodes, &children, allocated)
-            .into_iter()
-            .filter(|&id| nodes[id as usize].logical_size > 0)
-            .collect();
-        assert_eq!(actual.ids, expected);
-        assert_eq!(actual.ids.capacity(), expected.len());
-        assert_eq!(
-            actual.scratch.key_vector.length_bytes,
-            expected.len() * std::mem::size_of::<MapSortKey<'_>>()
-        );
-        assert_eq!(
-            actual.scratch.temporary_ids.capacity_bytes,
-            expected.len() * std::mem::size_of::<u32>()
-        );
-    }
+    let actual = sort_map_children(&snapshot, &children).unwrap();
+    let expected: Vec<_> = legacy_map_order(&nodes, &children)
+        .into_iter()
+        .filter(|&id| nodes[id as usize].allocated_size > 0)
+        .collect();
+    assert_eq!(actual.ids, expected);
+    assert_eq!(actual.ids.capacity(), expected.len());
+    assert_eq!(
+        actual.scratch.key_vector.length_bytes,
+        expected.len() * std::mem::size_of::<MapSortKey<'_>>()
+    );
+    assert_eq!(
+        actual.scratch.temporary_ids.capacity_bytes,
+        expected.len() * std::mem::size_of::<u32>()
+    );
 }
 #[test]
 fn zero_sized_map_children_do_not_allocate_keys_or_cache_ids() {
     let (_, mut nodes, children) = map_key_fixture(32768, false);
     for node in nodes.iter_mut().skip(1) {
         node.allocated_size = 0;
-        node.logical_size = 0;
     }
     let mut snapshot = Snapshot::empty(PathBuf::from("/map"));
     for node in &nodes {
         snapshot.append_legacy_node(node.clone()).unwrap();
     }
     snapshot.state = ScanState::Completed;
-    for allocated in [false, true] {
-        let order = sort_map_children(&snapshot, &children, allocated).unwrap();
-        assert!(order.ids.is_empty());
-        assert_eq!(order.ids.capacity(), 0);
-        assert_eq!(order.scratch.key_vector.capacity_bytes, 0);
-        assert_eq!(order.scratch.owned_lossy_names.capacity_bytes, 0);
-        assert_eq!(order.scratch.temporary_ids.capacity_bytes, 0);
-    }
+    let order = sort_map_children(&snapshot, &children).unwrap();
+    assert!(order.ids.is_empty());
+    assert_eq!(order.ids.capacity(), 0);
+    assert_eq!(order.scratch.key_vector.capacity_bytes, 0);
+    assert_eq!(order.scratch.owned_lossy_names.capacity_bytes, 0);
+    assert_eq!(order.scratch.temporary_ids.capacity_bytes, 0);
 }
 #[test]
 fn map_display_key_scratch_counts_only_vector_and_owned_lossy_buffers() {
     let (snapshot, _nodes, children) = map_key_fixture(512, false);
-    let actual = sort_map_children(&snapshot, &children, true).unwrap();
+    let actual = sort_map_children(&snapshot, &children).unwrap();
     assert_eq!(
         actual.scratch.key_vector.length_bytes,
         children.len() * std::mem::size_of::<MapSortKey<'_>>()
@@ -984,7 +908,7 @@ fn map_display_key_scratch_counts_only_vector_and_owned_lossy_buffers() {
     assert_eq!(actual.scratch.owned_lossy_names.length_bytes, lossy_bytes);
     assert!(actual.scratch.owned_lossy_names.capacity_bytes >= lossy_bytes);
     let keys = vec![MapSortKey {
-        selected_size: 1,
+        size: 1,
         display_name: std::borrow::Cow::Borrowed("large borrowed snapshot label"),
     }];
     assert_eq!(
@@ -993,7 +917,7 @@ fn map_display_key_scratch_counts_only_vector_and_owned_lossy_buffers() {
             .capacity_bytes,
         0
     );
-    assert!(sort_map_children(&snapshot, &[u32::MAX], true).is_err());
+    assert!(sort_map_children(&snapshot, &[u32::MAX]).is_err());
     #[cfg(feature = "performance-benchmark")]
     {
         let state = AppState::default();
@@ -1004,7 +928,7 @@ fn map_display_key_scratch_counts_only_vector_and_owned_lossy_buffers() {
             .unwrap()
             .map_sort_scratch
             .is_none());
-        let ids = sorted_children(&session, &snapshot, 0, true).unwrap();
+        let ids = sorted_children(&session, &snapshot, 0).unwrap();
         let sample = session
             .scan_details
             .lock()
@@ -1015,13 +939,11 @@ fn map_display_key_scratch_counts_only_vector_and_owned_lossy_buffers() {
             sample.key_vector.capacity_bytes,
             actual.scratch.key_vector.capacity_bytes
         );
-        assert_eq!(sorted_children(&session, &snapshot, 0, true).unwrap(), ids);
+        assert_eq!(sorted_children(&session, &snapshot, 0).unwrap(), ids);
         let cached = session.sorts.lock().unwrap();
-        assert_eq!(cached[&(0, true)], ids); // Persistent cache remains ID buffers only.
+        assert_eq!(cached[&0], ids); // Persistent cache remains ID buffers only.
         drop(cached);
-        assert!(sorted_children(&session, &snapshot, 5, true)
-            .unwrap()
-            .is_empty());
+        assert!(sorted_children(&session, &snapshot, 5).unwrap().is_empty());
         assert_eq!(
             serde_json::to_value(
                 session
@@ -1301,7 +1223,7 @@ fn reselecting_replaced_folder_uses_exact_new_target_guard() {
         .is_err());
         let (id, events) = start_recorded(&app.state(), &new, Recorder::default()).unwrap();
         events.wait_end();
-        let page = get_children(app.state(), id, 0, 0, 150, "allocated".into(), None)
+        let page = get_children(app.state(), id, 0, 0, 150, None)
             .await
             .unwrap();
         assert_eq!(page.items[0].name, "new");
@@ -1317,57 +1239,26 @@ fn million_node_query_latency() {
         install(&app.state(), synthetic(1_000_000));
         let construct_ms = started.elapsed().as_millis();
         let started = Instant::now();
-        let page = get_children(
-            app.state(),
-            "fixture".into(),
-            0,
-            0,
-            150,
-            "allocated".into(),
-            None,
-        )
-        .await
-        .unwrap();
+        let page = get_children(app.state(), "fixture".into(), 0, 0, 150, None)
+            .await
+            .unwrap();
         let first_page_ms = started.elapsed().as_millis();
         assert_eq!(page.total, 1_000_000);
         let started = Instant::now();
-        get_children(
-            app.state(),
-            "fixture".into(),
-            0,
-            999850,
-            150,
-            "allocated".into(),
-            None,
-        )
-        .await
-        .unwrap();
+        get_children(app.state(), "fixture".into(), 0, 999850, 150, None)
+            .await
+            .unwrap();
         let cached_page_ms = started.elapsed().as_millis();
         let started = Instant::now();
-        let map = get_map(
-            app.state(),
-            "fixture".into(),
-            0,
-            "allocated".into(),
-            5000,
-            None,
-        )
-        .await
-        .unwrap();
+        let map = get_map(app.state(), "fixture".into(), 0, 5000, None)
+            .await
+            .unwrap();
         let map_ms = started.elapsed().as_millis();
         assert_eq!(map.nodes.len(), 5000);
         let started = Instant::now();
-        let search = search_nodes(
-            app.state(),
-            "fixture".into(),
-            "999999".into(),
-            0,
-            150,
-            "allocated".into(),
-            None,
-        )
-        .await
-        .unwrap();
+        let search = search_nodes(app.state(), "fixture".into(), "999999".into(), 0, 150, None)
+            .await
+            .unwrap();
         let search_ms = started.elapsed().as_millis();
         assert_eq!(search.total, 1);
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -1518,17 +1409,9 @@ fn exclusion_summary_and_node_flags_do_not_claim_read_failures() {
                 .unwrap()
                 .excluded
         );
-        let page = get_children(
-            app.state(),
-            "fixture".into(),
-            0,
-            0,
-            10,
-            "logical".into(),
-            None,
-        )
-        .await
-        .unwrap();
+        let page = get_children(app.state(), "fixture".into(), 0, 0, 10, None)
+            .await
+            .unwrap();
         assert!(page.items.iter().find(|n| n.id == 1).unwrap().excluded);
         assert!(!page.items.iter().find(|n| n.id == 2).unwrap().excluded);
     });
@@ -1901,9 +1784,8 @@ fn native_rescan_cache_parity() {
                         n.path().unwrap(),
                         (
                             n.identity.clone(),
-                            n.own_logical_size,
+                            n.length,
                             n.own_allocated_size,
-                            n.logical_size,
                             n.allocated_size,
                             n.excluded,
                             n.hard_link,
@@ -2002,9 +1884,8 @@ fn native_existing_folder_cache_reuse() {
                         n.path().unwrap(),
                         (
                             n.identity.clone(),
-                            n.own_logical_size,
+                            n.length,
                             n.own_allocated_size,
-                            n.logical_size,
                             n.allocated_size,
                             n.excluded,
                         ),
@@ -2139,9 +2020,8 @@ fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
             live.id.clone(),
             "PHOTO".into(),
             "images".into(),
-            Some(2048),
-            Some(2048),
-            "logical".into(),
+            None,
+            None,
             0,
             150,
             None,
@@ -2152,12 +2032,7 @@ fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
         .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].name, "photo.JPG");
-        assert_eq!(page.items[0].logical_bytes, 2048);
-        for (category, min, max, metric) in [
-            ("invalid", None, None, "logical"),
-            ("all", Some(2), Some(1), "logical"),
-            ("all", None, None, "invalid"),
-        ] {
+        for (category, min, max) in [("invalid", None, None), ("all", Some(2), Some(1))] {
             assert!(filter_nodes(
                 app.state(),
                 live.id.clone(),
@@ -2165,7 +2040,6 @@ fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
                 category.into(),
                 min,
                 max,
-                metric.into(),
                 0,
                 150,
                 None,
@@ -2182,7 +2056,6 @@ fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
             "all".into(),
             Some(0),
             Some(0),
-            "logical".into(),
             0,
             150,
             None,
@@ -2200,7 +2073,6 @@ fn filtered_native_pages_validate_requests_and_reject_stale_sessions() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             0,
             150,
             None,
@@ -2227,7 +2099,6 @@ fn filtered_native_page_limits_and_running_refresh() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             0,
             usize::MAX,
             None,
@@ -2244,7 +2115,6 @@ fn filtered_native_page_limits_and_running_refresh() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             500,
             500,
             None,
@@ -2265,7 +2135,6 @@ fn filtered_native_page_limits_and_running_refresh() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             usize::MAX,
             500,
             None,
@@ -2290,7 +2159,6 @@ fn filtered_native_page_limits_and_running_refresh() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             0,
             150,
             None,
@@ -2313,7 +2181,6 @@ fn filtered_native_page_limits_and_running_refresh() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             0,
             150,
             None,
@@ -2330,17 +2197,17 @@ fn filtered_native_page_limits_and_running_refresh() {
 fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
     tauri::async_runtime::block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        for (name, count) in [("item-folder2", 5), ("item-folder10", 50)] {
+        for (name, count) in [("item-folder2", 8192), ("item-folder10", 65536)] {
             let folder = dir.path().join(name);
             std::fs::create_dir(&folder).unwrap();
             std::fs::write(folder.join("payload"), vec![0; count]).unwrap();
         }
-        std::fs::write(dir.path().join("item2"), vec![0; 300]).unwrap();
-        std::fs::write(dir.path().join("item10"), vec![0; 100]).unwrap();
+        std::fs::write(dir.path().join("item2"), vec![0; 131072]).unwrap();
+        std::fs::write(dir.path().join("item10"), vec![0; 16384]).unwrap();
         let app = app(AppState::default());
         let s = install(&app.state(), snapshot(dir.path().to_path_buf()));
         let before_map = serde_json::to_value(
-            get_map(app.state(), s.id.clone(), 0, "logical".into(), 5000, None)
+            get_map(app.state(), s.id.clone(), 0, 5000, None)
                 .await
                 .unwrap(),
         )
@@ -2363,17 +2230,9 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
                 vec!["item-folder10", "item-folder2", "item10", "item2"],
             ),
         ] {
-            let children = get_children(
-                app.state(),
-                s.id.clone(),
-                0,
-                0,
-                150,
-                "logical".into(),
-                Some(order.into()),
-            )
-            .await
-            .unwrap();
+            let children = get_children(app.state(), s.id.clone(), 0, 0, 150, Some(order.into()))
+                .await
+                .unwrap();
             assert_eq!(
                 children
                     .items
@@ -2388,7 +2247,6 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
                 "item".into(),
                 0,
                 150,
-                "logical".into(),
                 Some(order.into()),
             )
             .await
@@ -2408,7 +2266,6 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
                 "all".into(),
                 None,
                 None,
-                "logical".into(),
                 0,
                 150,
                 Some(order.into()),
@@ -2425,17 +2282,9 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
                     .collect::<Vec<_>>(),
                 names
             );
-            let next = get_children(
-                app.state(),
-                s.id.clone(),
-                0,
-                2,
-                2,
-                "logical".into(),
-                Some(order.into()),
-            )
-            .await
-            .unwrap();
+            let next = get_children(app.state(), s.id.clone(), 0, 2, 2, Some(order.into()))
+                .await
+                .unwrap();
             assert_eq!(
                 next.items
                     .iter()
@@ -2445,32 +2294,25 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
             );
         }
         let after_map = serde_json::to_value(
-            get_map(app.state(), s.id.clone(), 0, "logical".into(), 5000, None)
+            get_map(app.state(), s.id.clone(), 0, 5000, None)
                 .await
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(before_map, after_map);
-        assert!(get_children(
-            app.state(),
-            s.id.clone(),
-            0,
-            0,
-            150,
-            "logical".into(),
-            Some("invalid".into())
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("sort"));
+        assert!(
+            get_children(app.state(), s.id.clone(), 0, 0, 150, Some("invalid".into()))
+                .await
+                .err()
+                .unwrap()
+                .contains("sort")
+        );
         assert!(search_nodes(
             app.state(),
             s.id.clone(),
             "item".into(),
             0,
             150,
-            "logical".into(),
             Some("invalid".into())
         )
         .await
@@ -2482,7 +2324,6 @@ fn list_sort_orders_cover_browsing_search_filters_without_changing_maps() {
             "all".into(),
             None,
             None,
-            "logical".into(),
             0,
             150,
             Some("invalid".into()),
@@ -2527,7 +2368,6 @@ fn explorer_sort_commands_restore_and_preserve_preferences() {
             0,
             0,
             150,
-            "logical".into(),
             Some("nameDescending".into()),
         )
         .await
@@ -2545,7 +2385,6 @@ fn explorer_sort_commands_restore_and_preserve_preferences() {
             "file".into(),
             0,
             150,
-            "logical".into(),
             Some("nameAscending".into())
         )
         .await
@@ -2741,7 +2580,7 @@ fn native_validation_worker_sweep() {
     }
     fn totals(s: &Snapshot) -> serde_json::Value {
         serde_json::json!({"entries": s.stats.entries, "directories": s.stats.directories,
-            "logical_bytes": s.stats.logical_bytes, "allocated_bytes": s.stats.allocated_bytes})
+            "allocated_bytes": s.stats.allocated_bytes})
     }
     let input =
         PathBuf::from(std::env::var_os("HAH_VALIDATION_SWEEP_ROOT").expect("root required"));
@@ -3907,7 +3746,6 @@ fn a_queue_scan_of_a_disk_root_gets_a_disk_target_and_a_folder_does_not() {
                 ancestors: vec![guard("/")],
                 root: guard("/"),
                 root_ancestors: vec![],
-                logical_bytes: 1,
                 allocated_bytes: 1,
                 last_error: None,
                 volume: None,
@@ -4088,7 +3926,6 @@ fn recorded_entry(item: &str, item_kind: u8) -> cleanup_queue::Candidate {
         ],
         root: guard("/Volumes/X/dir", 1),
         root_ancestors: vec![guard("/Volumes/X", 1), guard("/Volumes", 1), guard("/", 1)],
-        logical_bytes: 0,
         allocated_bytes: 0,
         last_error: None,
         volume: None,
@@ -4317,9 +4154,8 @@ fn an_excluded_mount_in_a_disk_scan_does_not_vouch_for_a_queued_item() {
             inode: 7,
             kind: NodeKind::Directory,
         },
-        logical_size: 0,
         allocated_size: 0,
-        own_logical_size: 0,
+        length: 0,
         own_allocated_size: 0,
         is_directory: true,
         hard_link: false,

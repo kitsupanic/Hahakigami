@@ -10,11 +10,9 @@ const stats: FileTypeStats = {
     extension: `rare${String(index).padStart(5, "0")}`,
     files: 1,
     allocatedBytes: count - index,
-    logicalBytes: index + 1,
   })),
   files: count,
   allocatedBytes: (count * (count + 1)) / 2,
-  logicalBytes: (count * (count + 1)) / 2,
   incomplete: false,
 };
 let element: HTMLDivElement, root: Root;
@@ -29,7 +27,6 @@ async function mount() {
   const onSelect = vi.fn();
   const props = {
     stats,
-    metric: "allocated" as const,
     scope: "scan" as const,
     selectedExtension: null as string | null,
     scopePath: "/fixture",
@@ -63,7 +60,7 @@ it("bounds mounted rows for 18,185 types and searches the entire list", async ()
   await act(() => rows[0].click());
   expect(f.onSelect).toHaveBeenCalledExactlyOnceWith("rare18184");
 });
-it("scrolls to the end while maintaining bounded rows and logical list positions", async () => {
+it("scrolls to the end while maintaining bounded rows and list positions", async () => {
   const f = await mount();
   await act(() => {
     f.list.scrollTop = (count - 5) * 64;
@@ -105,7 +102,7 @@ it("supports keyboard navigation to offscreen types without selecting them", asy
   expect(document.activeElement?.getAttribute("data-type-index")).toBe("0");
   expect(element.querySelectorAll(".file-type-row").length).toBeLessThan(30);
 });
-it("resets the window for a new size order and keeps an offscreen selection summary", async () => {
+it("resets the window for a new scope and keeps an offscreen selection summary", async () => {
   const f = await mount();
   await act(() => {
     f.list.scrollTop = (count - 5) * 64;
@@ -114,7 +111,14 @@ it("resets the window for a new size order and keeps an offscreen selection summ
   await act(() =>
     root.render(FileTypes, {
       ...f.props,
-      metric: "logical",
+      scope: "folder",
+      stats: {
+        ...stats,
+        items: stats.items.map((item) => ({
+          ...item,
+          allocatedBytes: item.files + count - item.allocatedBytes,
+        })),
+      },
       selectedExtension: "rare00000",
     }),
   );

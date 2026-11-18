@@ -148,6 +148,6 @@ mod tests {
     fn short_names_keep_the_existing_entry_layout() {
         assert_eq!(std::mem::size_of::<EntryPath>(), 24);
         assert_eq!(std::mem::size_of::<std::io::Result<crate::Entry>>(), 64);
-        assert_eq!(std::mem::size_of::<crate::ScannedNode>(), 104);
+        assert_eq!(std::mem::size_of::<crate::ScannedNode>(), 96);
     }
 }

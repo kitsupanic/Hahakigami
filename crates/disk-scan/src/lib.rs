@@ -147,7 +147,7 @@ fn accounting_warnings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Str
 pub struct CloneMetadata {
     pub clone_id: u64,
     pub data_allocated_size: u64,
-    pub data_logical_size: u64,
+    pub data_length: u64,
     pub reference_count: u32,
     pub may_share_blocks: bool,
     pub verified: bool,
@@ -164,9 +164,9 @@ pub struct Node {
     pub name: String,
     pub path: PathBuf,
     pub identity: Identity,
-    pub logical_size: u64,
     pub allocated_size: u64,
-    pub own_logical_size: u64,
+    /// A file's byte count: only for clone verification and rescan change detection, never summed or shown.
+    pub length: u64,
     pub own_allocated_size: u64,
     pub is_directory: bool,
     pub hard_link: bool,
@@ -186,7 +186,6 @@ pub enum ScanState {
 pub struct ScanStats {
     pub entries: u64,
     pub directories: u64,
-    pub logical_bytes: u64,
     pub allocated_bytes: u64,
     pub errors: u64,
     #[serde(default)]
@@ -384,7 +383,7 @@ pub(crate) struct Entry {
     pub device: u64,
     pub inode: u64,
     pub kind: NodeKind,
-    pub logical: u64,
+    pub length: u64,
     pub allocated: u64,
     pub hard_link: bool,
 }
@@ -437,7 +436,7 @@ fn entry(path: PathBuf) -> std::io::Result<Entry> {
                 false
             }
         },
-        logical: if m.is_dir() { 0 } else { m.len() },
+        length: if m.is_dir() { 0 } else { m.len() },
         allocated: if m.is_dir() { 0 } else { allocated },
     })
 }
@@ -754,9 +753,8 @@ fn scanned_node(e: Entry, id: u32, parent: Option<u32>) -> ScannedNode {
         metadata: NodeMetadata {
             parent,
             identity,
-            logical_size: e.logical,
             allocated_size: e.allocated,
-            own_logical_size: e.logical,
+            length: e.length,
             own_allocated_size: e.allocated,
             is_directory,
             hard_link: e.hard_link,
@@ -783,9 +781,8 @@ fn node(e: Entry, id: u32, parent: Option<u32>) -> Node {
         hard_link: e.hard_link,
         excluded: false,
         identity,
-        logical_size: e.logical,
         allocated_size: e.allocated,
-        own_logical_size: e.logical,
+        length: e.length,
         own_allocated_size: e.allocated,
     }
 }
@@ -915,7 +912,7 @@ fn scan_live_internal_reuse(
         device: expected.device,
         inode: expected.inode,
         kind: expected.kind,
-        logical: 0,
+        length: 0,
         allocated: 0,
         hard_link: false,
     };
@@ -1186,7 +1183,6 @@ fn scan_live_internal_reuse(
                         // Only this listing can append while the store is held, so its
                         // published children form a dense range, even after filtering.
                         let first_child = s.node_count();
-                        let mut added_logical = 0u64;
                         let mut added_allocated = 0u64;
                         match listing {
                             // The root is held by descriptor; only a child directory can vanish.
@@ -1265,10 +1261,7 @@ fn scan_live_internal_reuse(
                                             if n.metadata.is_directory {
                                                 s.stats.directories += 1;
                                             }
-                                            let (l, a) = (
-                                                n.metadata.logical_size,
-                                                n.metadata.allocated_size,
-                                            );
+                                            let a = n.metadata.allocated_size;
                                             let child_path = permitted.then(|| entry_path.clone());
                                             let inserted = s.append_scanned_node(&n);
                                             drop(n);
@@ -1277,7 +1270,6 @@ fn scan_live_internal_reuse(
                                             if let Some(probe) = clone_probe {
                                                 clones::commit(&mut s, nid, probe);
                                             }
-                                            added_logical = added_logical.saturating_add(l);
                                             added_allocated = added_allocated.saturating_add(a);
                                             if permitted
                                                 && visited.insert((
@@ -1315,17 +1307,15 @@ fn scan_live_internal_reuse(
                         }
                         s.set_scanned_children(id, first_child)
                             .expect("scanner child batch");
-                        // Fresh nodes have equal own/aggregate logical sizes; allocated
-                        // values already include hardlink attribution. Saturating sums
-                        // can be combined once without exposing a partial batch.
-                        s.stats.logical_bytes = s.stats.logical_bytes.saturating_add(added_logical);
+                        // Allocated values already include hardlink attribution.
+                        // Saturating sums can be combined once without exposing a
+                        // partial batch.
                         s.stats.allocated_bytes =
                             s.stats.allocated_bytes.saturating_add(added_allocated);
                         let mut ancestor = Some(id);
                         while let Some(i) = ancestor {
                             ancestor = s.node(i).unwrap().parent;
                             s.update_node(i, |n| {
-                                n.logical_size = n.logical_size.saturating_add(added_logical);
                                 n.allocated_size = n.allocated_size.saturating_add(added_allocated);
                             })
                             .expect("scanner ancestor");
@@ -1547,9 +1537,7 @@ pub fn aggregate(s: &mut Snapshot) {
     s.tree.clone_attributions = plan.clone_attributions;
     s.aggregate_sizes_to_parents().unwrap();
     if let Some(root) = s.node(0) {
-        let (l, a) = (root.logical_size, root.allocated_size);
-        s.stats.logical_bytes = l;
-        s.stats.allocated_bytes = a;
+        s.stats.allocated_bytes = root.allocated_size;
     }
 }
 
@@ -1579,7 +1567,7 @@ mod tests {
                                 hard_link,
                                 clone_checked,
                                 path: "/fixture".into(),
-                                logical: u64::MAX,
+                                length: u64::MAX,
                                 allocated: u64::MAX,
                             };
                             assert_eq!(
@@ -1594,7 +1582,7 @@ mod tests {
                                 (entry.hard_link, entry.clone_checked),
                                 (hard_link, clone_checked)
                             );
-                            assert_eq!((entry.logical, entry.allocated), (u64::MAX, u64::MAX));
+                            assert_eq!((entry.length, entry.allocated), (u64::MAX, u64::MAX));
                         }
                     }
                 }
@@ -1795,7 +1783,7 @@ mod tests {
             device: 1,
             inode: 2,
             kind: NodeKind::File,
-            logical: 7,
+            length: 7,
             allocated: 4096,
             hard_link: false,
         };
@@ -1816,7 +1804,7 @@ mod tests {
             inode: 1,
             clone_checked: false,
             device: 1,
-            logical: 0,
+            length: 0,
             allocated: 0,
             hard_link: false,
         };
@@ -1886,7 +1874,7 @@ mod tests {
             let before = serde_json::to_value(&s.stats).unwrap();
             let raw: Vec<_> = s
                 .iter_nodes()
-                .map(|n| (n.id, n.own_logical_size, n.own_allocated_size))
+                .map(|n| (n.id, n.length, n.own_allocated_size))
                 .collect();
             accounting_listing_warnings(
                 &mut s,
@@ -1896,7 +1884,7 @@ mod tests {
             assert_eq!(serde_json::to_value(&s.stats).unwrap(), before);
             assert_eq!(
                 s.iter_nodes()
-                    .map(|n| (n.id, n.own_logical_size, n.own_allocated_size))
+                    .map(|n| (n.id, n.length, n.own_allocated_size))
                     .collect::<Vec<_>>(),
                 raw
             );
@@ -1963,7 +1951,7 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn resource_fork_logical_sizes_match_across_backends() {
+    fn resource_fork_lengths_match_across_backends() {
         let p = fixture();
         fs::write(p.join("both"), vec![1; 4096]).unwrap();
         fs::write(p.join("both/..namedfork/rsrc"), vec![2; 8192]).unwrap();
@@ -1985,26 +1973,25 @@ mod tests {
             .unwrap();
             assert_eq!(s.state, ScanState::Completed);
             assert_eq!(s.stats.errors, 0);
-            for (name, logical) in [
+            for (name, length) in [
                 ("both", 12288),
                 ("resource-only", 512),
                 ("data-only", 1024),
                 ("empty", 0),
             ] {
                 let n = s.iter_nodes().find(|n| n.native_name() == name).unwrap();
-                assert_eq!(n.own_logical_size, logical, "{name}");
+                assert_eq!(n.length, length, "{name}");
             }
-            assert_eq!(s.stats.logical_bytes, 13828); // Files plus the four-byte symlink.
             let nodes = s
                 .iter_nodes()
                 .map(|n| {
                     (
                         n.path().unwrap(),
-                        (n.identity, n.own_logical_size, n.own_allocated_size),
+                        (n.identity, n.length, n.own_allocated_size),
                     )
                 })
                 .collect::<std::collections::BTreeMap<_, _>>();
-            (s.stats.logical_bytes, s.stats.allocated_bytes, nodes)
+            (s.stats.allocated_bytes, nodes)
         };
         assert_eq!(index(Backend::Bulk), index(Backend::Portable));
         fs::remove_dir_all(p).unwrap();
@@ -2056,12 +2043,7 @@ mod tests {
                 .map(|n| {
                     (
                         n.path().unwrap(),
-                        (
-                            n.identity,
-                            n.own_logical_size,
-                            n.own_allocated_size,
-                            n.hard_link,
-                        ),
+                        (n.identity, n.length, n.own_allocated_size, n.hard_link),
                     )
                 })
                 .collect::<std::collections::BTreeMap<_, _>>()
@@ -2109,7 +2091,6 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(s.stats.entries, 61);
-                assert_eq!(s.stats.logical_bytes, 90);
                 assert_eq!(s.state, ScanState::Completed);
                 assert_eq!(s.stats.errors, 0);
             }
@@ -2732,12 +2713,12 @@ mod tests {
                 inode: 1,
                 kind: NodeKind::File,
                 hard_link: false,
-                logical: 1,
+                length: 1,
                 allocated: 1,
             }),
             || panic!("error context must be lazy"),
         );
-        assert_eq!(result.unwrap().logical, 1);
+        assert_eq!(result.unwrap().length, 1);
     }
     #[test]
     fn expected_exclusions_remain_complete_and_keep_separate_retention_counts() {
@@ -2791,7 +2772,7 @@ mod tests {
             device: 2,
             inode: 7,
             kind: NodeKind::Directory,
-            logical: 0,
+            length: 0,
             allocated: 0,
             hard_link: false,
         };

@@ -91,9 +91,6 @@ it("builds the documented menus, items and accelerators", async () => {
     "Treemap [CmdOrCtrl+1]",
     "Sunburst [CmdOrCtrl+2]",
     "Separator",
-    "On Disk",
-    "Logical",
-    "Separator",
     "Folders and Files [CmdOrCtrl+Alt+1]",
     "File Types [CmdOrCtrl+Alt+2]",
     "Separator",
@@ -125,7 +122,7 @@ it("builds the documented menus, items and accelerators", async () => {
     "Separator",
     "CloseWindow",
   ]);
-  expect(checkIds.size).toBe(7);
+  expect(checkIds.size).toBe(5);
   for (const id of commandIds)
     expect(menuItem(id) instanceof CheckMenuItem, id).toBe(checkIds.has(id));
   expect(installed.windowsMenu).toBe(submenu("Window"));

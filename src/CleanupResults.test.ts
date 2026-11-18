@@ -12,7 +12,6 @@ const item = (id: number, path: string): NodeView => ({
   parentId: 0,
   kind: "file",
   childrenCount: 0,
-  logicalBytes: 4096,
   allocatedBytes: 4096,
   incomplete: false,
 });

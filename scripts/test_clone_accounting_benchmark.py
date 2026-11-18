@@ -9,7 +9,7 @@ from clone_accounting_benchmark import normalize, raw_coverage, summarize, valid
 class CloneBenchmarkTests(unittest.TestCase):
     def test_native_uses_actual_engine_timer_not_process_wall(self):
         result = normalize({'success': True, 'wall_ms': 400, 'raw': {
-            'stats': {'elapsed_ms': 123, 'entries': 10, 'logical_bytes': 200, 'allocated_bytes': 100,
+            'stats': {'elapsed_ms': 123, 'entries': 10, 'allocated_bytes': 100,
                       'errors': 0, 'incomplete': False}, 'peak_rss_native_units': 4096,
             'accounting': {'deduction_bytes': 100}, 'workers': 3}}, 'native')
         self.assertEqual(result['elapsed_ms'], 123)

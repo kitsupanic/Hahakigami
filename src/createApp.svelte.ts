@@ -1,6 +1,5 @@
 import { onMount, untrack } from "svelte";
 import createQuickLook from "./createQuickLook.svelte";
-import { logicalSize } from "./logicalSize.svelte";
 import { createCleanupQueue, tauriQueuePort } from "./cleanupQueue.svelte";
 import { createSessionState, createExplorerState } from "./appState.svelte";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -25,9 +24,7 @@ import type { AppToast } from "./toastTypes";
 import { canvasEvidence, runNativeInteractions } from "./nativeBenchmark";
 import {
   bytes,
-  size,
   type FullDiskAccess,
-  type Metric,
   type NodeView,
   type Page,
   type ScanSummary,
@@ -116,8 +113,6 @@ export default function createApp() {
   }
   const setSelection = explorer.setSelection;
   let selection = $derived(explorer.selection);
-  const setMetric = explorer.setMetric;
-  let metric = $derived(explorer.metric);
   const setMode = explorer.setMode;
   let mode = $derived(explorer.mode);
   const setQuery = explorer.setQuery;
@@ -286,7 +281,6 @@ export default function createApp() {
     crumbs: NodeView[];
     query: string;
     filters: ExplorerFilter;
-    metric: Metric;
     sort: SortOrder;
     offset: number;
     selection: NodeView[];
@@ -339,18 +333,6 @@ export default function createApp() {
     setOffset(0);
     setSelection([]);
   }
-  function changeMetric(value: Metric) {
-    if (value === metric || (value === "logical" && !logicalSize.shown)) return;
-    invalidateList();
-    setMetric(value);
-    setOffset(0);
-    setSelection([]);
-  }
-  // Hiding Logical size while viewing it returns to On disk.
-  $effect(() => {
-    if (!logicalSize.shown && metric === "logical")
-      untrack(() => changeMetric("allocated"));
-  });
   $effect(() => {
     [query];
     return untrack(() => {
@@ -929,7 +911,7 @@ export default function createApp() {
       return;
     performanceReported.current = true;
     const scanId = summary.scanId;
-    const canvas = canvasEvidence(nodes, focus?.id ?? summary.rootId, metric);
+    const canvas = canvasEvidence(nodes, focus?.id ?? summary.rootId);
     const interactions =
       performanceConfig?.interactions &&
       (!["same_process", "changed"].includes(performanceConfig.mode) ||
@@ -1134,7 +1116,7 @@ export default function createApp() {
       : revision,
   );
   $effect(() => {
-    [scanIdentity, mapRevision, focusIdentity, metric, mapColorMode];
+    [scanIdentity, mapRevision, focusIdentity, mapColorMode];
     return untrack(() => {
       if (!summary || !focus) return;
       let ignore = false;
@@ -1158,7 +1140,6 @@ export default function createApp() {
         }>("get_map", {
           scanId,
           nodeId,
-          metric,
           limit: 5000,
           ...(queryColorMode === "fileType" ? { colorMode: "fileType" } : {}),
         })
@@ -1203,7 +1184,6 @@ export default function createApp() {
       scanIdentity,
       revision,
       focusIdentity,
-      metric,
       offset,
       query,
       debouncedQuery,
@@ -1230,7 +1210,6 @@ export default function createApp() {
         scanId: summary.scanId,
         offset,
         limit: 150,
-        metric,
         sort,
       };
       const nameQuery = debouncedQuery.trim();
@@ -1287,7 +1266,6 @@ export default function createApp() {
           : [],
       query,
       filters: { ...filters },
-      metric,
       sort,
       offset,
       selection: [...selection],
@@ -1330,7 +1308,6 @@ export default function createApp() {
     setQuery(snapshot.query);
     setDebouncedQuery(snapshot.query);
     setFilters({ ...snapshot.filters });
-    setMetric(snapshot.metric);
     const sortChanged = sort !== snapshot.sort;
     ++sortChoice.current;
     setSort(snapshot.sort);
@@ -1742,9 +1719,6 @@ export default function createApp() {
     get explore() {
       return exploring;
     },
-    get logical() {
-      return exploring && logicalSize.shown;
-    },
     get toggleSidebar() {
       return !accessOpen && !trash && !clearQueueOpen;
     },
@@ -1872,9 +1846,6 @@ export default function createApp() {
     get selection() {
       return selection;
     },
-    get metric() {
-      return metric;
-    },
     get mode() {
       return mode;
     },
@@ -1961,9 +1932,6 @@ export default function createApp() {
     },
     get setSelection() {
       return setSelection;
-    },
-    get setMetric() {
-      return setMetric;
     },
     get setMode() {
       return setMode;
@@ -2083,9 +2051,6 @@ export default function createApp() {
     },
     get changeFilters() {
       return changeFilters;
-    },
-    get changeMetric() {
-      return changeMetric;
     },
     get persistSort() {
       return persistSort;

@@ -30,7 +30,7 @@ pub(crate) struct ParsedRecord<N> {
     pub(crate) device: u64,
     pub(crate) inode: u64,
     pub(crate) kind: u32,
-    pub(crate) logical: u64,
+    pub(crate) length: u64,
     pub(crate) allocated: u64,
     pub(crate) links: u32,
     pub(crate) clone_metadata: Option<crate::CloneMetadata>,
@@ -136,7 +136,7 @@ fn parse_into<'a, N>(
             } else {
                 0
             };
-            let logical = if file & 2 != 0 {
+            let length = if file & 2 != 0 {
                 let v = u64_at(r, at)?;
                 if v > i64::MAX as u64 {
                     return Err(invalid());
@@ -169,7 +169,7 @@ fn parse_into<'a, N>(
                 }
                 Ok(Some(value))
             };
-            let data_logical = optional_size(0x200)?;
+            let data_length = optional_size(0x200)?;
             let data_allocated = optional_size(0x400)?;
             let clone_id = if ext & 0x100 != 0 {
                 let v = u64_at(r, at)?;
@@ -192,7 +192,7 @@ fn parse_into<'a, N>(
             } else {
                 None
             };
-            if data_logical.is_some_and(|v| v > logical)
+            if data_length.is_some_and(|v| v > length)
                 || data_allocated.is_some_and(|v| v > allocated)
             {
                 return Err(invalid());
@@ -206,7 +206,7 @@ fn parse_into<'a, N>(
                 Some(crate::CloneMetadata {
                     clone_id: clone_id.unwrap(),
                     data_allocated_size: data_allocated.unwrap(),
-                    data_logical_size: data_logical.unwrap(),
+                    data_length: data_length.unwrap(),
                     reference_count: refs.unwrap(),
                     may_share_blocks: flags.unwrap() & 1 != 0,
                     verified: false,
@@ -226,7 +226,7 @@ fn parse_into<'a, N>(
                 device,
                 inode,
                 kind,
-                logical,
+                length,
                 allocated,
                 links,
                 clone_metadata,
@@ -451,10 +451,10 @@ fn enumerate_using(
                         device: r.device,
                         inode: r.inode,
                         kind,
-                        logical: if kind == NodeKind::Directory {
+                        length: if kind == NodeKind::Directory {
                             0
                         } else {
-                            r.logical
+                            r.length
                         },
                         allocated: if kind == NodeKind::Directory {
                             0
@@ -588,7 +588,7 @@ mod tests {
     fn record_view<N>(record: &ParsedRecord<N>, name: &[u8]) -> serde_json::Value {
         serde_json::json!({
             "name": name, "device": record.device, "inode": record.inode,
-            "kind": record.kind, "logical": record.logical, "allocated": record.allocated,
+            "kind": record.kind, "length": record.length, "allocated": record.allocated,
             "links": record.links, "clone_metadata": record.clone_metadata,
             "clone_checked": record.clone_checked,
         })
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(actual_peak, 2184 * 96);
         assert_eq!(std::mem::size_of::<Record<'_>>(), 96);
         assert_eq!(std::mem::size_of::<BufferedRecord>(), 96);
-        assert_eq!(std::mem::size_of::<crate::tree::Record>(), 80);
+        assert_eq!(std::mem::size_of::<crate::tree::Record>(), 72);
         assert_eq!(std::mem::size_of::<io::Result<crate::Entry>>(), 64);
     }
     // Frozen baseline byte parser: independent of the shared generic parser.
@@ -884,7 +884,7 @@ mod tests {
             } else {
                 0
             };
-            let logical = if file & 2 != 0 {
+            let length = if file & 2 != 0 {
                 let v = u64_at(r, at)?;
                 if v > i64::MAX as u64 {
                     return Err(invalid());
@@ -917,7 +917,7 @@ mod tests {
                 }
                 Ok(Some(value))
             };
-            let data_logical = optional_size(0x200)?;
+            let data_length = optional_size(0x200)?;
             let data_allocated = optional_size(0x400)?;
             let clone_id = if ext & 0x100 != 0 {
                 let v = u64_at(r, at)?;
@@ -940,7 +940,7 @@ mod tests {
             } else {
                 None
             };
-            if data_logical.is_some_and(|v| v > logical)
+            if data_length.is_some_and(|v| v > length)
                 || data_allocated.is_some_and(|v| v > allocated)
             {
                 return Err(invalid());
@@ -954,7 +954,7 @@ mod tests {
                 Some(crate::CloneMetadata {
                     clone_id: clone_id.unwrap(),
                     data_allocated_size: data_allocated.unwrap(),
-                    data_logical_size: data_logical.unwrap(),
+                    data_length: data_length.unwrap(),
                     reference_count: refs.unwrap(),
                     may_share_blocks: flags.unwrap() & 1 != 0,
                     verified: false,
@@ -974,7 +974,7 @@ mod tests {
                 device,
                 inode,
                 kind,
-                logical,
+                length,
                 allocated,
                 links,
                 clone_metadata,
@@ -1018,7 +1018,7 @@ mod tests {
                         "name": entry.path.as_os_str().as_bytes(),
                         "device": entry.device, "inode": entry.inode,
                         "kind": format!("{:?}", entry.kind),
-                        "logical": entry.logical, "allocated": entry.allocated,
+                        "length": entry.length, "allocated": entry.allocated,
                         "hard_link": entry.hard_link, "clone_checked": entry.clone_checked,
                     }),
                 }).collect::<Vec<_>>()})
@@ -1344,10 +1344,10 @@ mod tests {
                     device: r.device,
                     inode: r.inode,
                     kind,
-                    logical: if kind == NodeKind::Directory {
+                    length: if kind == NodeKind::Directory {
                         0
                     } else {
-                        r.logical
+                        r.length
                     },
                     allocated: if kind == NodeKind::Directory {
                         0
@@ -1723,7 +1723,7 @@ mod tests {
                 device: 1,
                 inode: 2,
                 kind: NodeKind::File,
-                logical: 128,
+                length: 128,
                 allocated: 1024,
                 hard_link: false,
                 clone_checked: false,
@@ -2169,7 +2169,7 @@ mod tests {
             assert!(parse(&b[..end], 1, false).is_err());
         }
         let r = parse(&b, 1, false).unwrap();
-        assert_eq!(r[0].logical, 123);
+        assert_eq!(r[0].length, 123);
         assert_eq!(r[0].links, 1);
         let mut high_bit = b.clone();
         high_bit[32..36].copy_from_slice(&0x8000_0001u32.to_ne_bytes());

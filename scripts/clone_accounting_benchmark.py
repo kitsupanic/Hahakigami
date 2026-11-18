@@ -15,7 +15,7 @@ def normalize(result, layer):
     raw = result.get('raw', {})
     if layer == 'native':
         stats = raw.get('stats', {})
-        for key in ('elapsed_ms', 'entries', 'logical_bytes', 'allocated_bytes', 'errors'):
+        for key in ('elapsed_ms', 'entries', 'allocated_bytes', 'errors'):
             result[key] = stats.get(key)
         result['peak_rss_bytes'] = raw.get('peak_rss_native_units')
         result['workers'] = raw.get('workers')

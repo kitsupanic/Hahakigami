@@ -10,7 +10,7 @@ import subprocess
 import time
 from benchmark import ROOT, command_output, file_hash
 
-COVERAGE_KEYS = ('entries', 'directories', 'errors', 'logical_bytes', 'allocated_bytes')
+COVERAGE_KEYS = ('entries', 'directories', 'errors', 'allocated_bytes')
 
 
 def summarize(runs, rounds=3):

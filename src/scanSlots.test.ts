@@ -46,7 +46,6 @@ const summary = (
   workerStats: [],
   finalizationUs: 0,
   entries,
-  logicalBytes: 4096,
   allocatedBytes: 2048,
   elapsedMs: 1000,
   errors: 0,

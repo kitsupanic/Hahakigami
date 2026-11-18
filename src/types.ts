@@ -30,7 +30,6 @@ export interface WorkerStats {
   relativeOpens?: number;
   absoluteReopens?: number;
 }
-export type Metric = "logical" | "allocated";
 export interface Target {
   id: string;
   name: string;
@@ -49,7 +48,6 @@ export interface NodeView {
   path: string;
   kind: "directory" | "file" | "symlink" | "other" | "aggregate";
   pathKey?: string;
-  logicalBytes: number;
   allocatedBytes: number;
   rawAllocatedBytes?: number;
   verifiedClone?: boolean;
@@ -86,7 +84,6 @@ export interface ScanSummary {
   rootId: number;
   state: "running" | "completed" | "cancelled" | "failed";
   entries: number;
-  logicalBytes: number;
   allocatedBytes: number;
   elapsedMs: number;
   errors: number;
@@ -117,8 +114,6 @@ export interface Page {
   items: NodeView[];
   total: number;
 }
-export const size = (n: NodeView, m: Metric) =>
-  m === "logical" ? n.logicalBytes : n.allocatedBytes;
 export function bytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
   if (!n) return "0 B";
   const i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));

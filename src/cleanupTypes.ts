@@ -6,7 +6,6 @@ export interface QueueEntry {
   path: string;
   pathKey?: string;
   rootPath: string;
-  logicalBytes: number;
   allocatedBytes: number;
   status: "ready" | "needsScan" | "missing" | "changed" | "blocked";
   reason: string | null;

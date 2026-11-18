@@ -17,7 +17,6 @@ const summary: ScanSummary = {
   workerStats: [],
   finalizationUs: 0,
   entries: 10,
-  logicalBytes: 1,
   allocatedBytes: 1,
   elapsedMs: 10,
   errors: 2,
@@ -25,7 +24,6 @@ const summary: ScanSummary = {
 };
 let container: HTMLDivElement, root: Root;
 const detailsProps = {
-  metric: "allocated" as const,
   description: "",
 };
 const page = (

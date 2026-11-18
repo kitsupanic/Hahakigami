@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import TrashConfirmation from "./TrashConfirmation.svelte";
 import { act, createTestRoot, type Root } from "./testUtils";
 import type { NodeView } from "./types";
@@ -17,14 +16,12 @@ function node(id: number, patch: Partial<NodeView> = {}): NodeView {
     path: `/data/${id}/report`,
     kind: "file",
     allocatedBytes: 2048,
-    logicalBytes: 4096,
     childrenCount: 0,
     incomplete: false,
     ...patch,
   };
 }
 beforeEach(() => {
-  setShowLogicalSize(true);
   onCancel.mockClear();
   onConfirm.mockClear();
   opener = document.createElement("button");
@@ -134,19 +131,17 @@ it.each([NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     );
     const totals = container.querySelectorAll(".trash-summary dd");
     expect(totals[1].textContent).toBe("Unavailable");
-    expect(totals[2].textContent).toBe("4 KiB");
     expect(text()).not.toContain("NaN");
     expect(text()).not.toContain("Infinity");
   },
 );
 it("does not overflow combined sizes or hide valid zero", async () => {
   await render([
-    node(1, { allocatedBytes: Number.MAX_SAFE_INTEGER, logicalBytes: 0 }),
-    node(2, { allocatedBytes: 1, logicalBytes: 0 }),
+    node(1, { allocatedBytes: Number.MAX_SAFE_INTEGER }),
+    node(2, { allocatedBytes: 1 }),
   ]);
   const totals = container.querySelectorAll(".trash-summary dd");
   expect(totals[1].textContent).toBe("Unavailable");
-  expect(totals[2].textContent).toBe("0 B");
 });
 it("confirms only once per activation and prevents empty confirmations", async () => {
   await render();

@@ -1,7 +1,7 @@
 //! A bounded composition map: real directory context plus exact file-type tiles.
 //! The retained frontier is small; one metadata traversal assigns files to the
 //! nearest retained ancestor, without a histogram for every scanned directory.
-use crate::{file_types, size, view, MapData, NodeView};
+use crate::{file_types, view, MapData, NodeView};
 use disk_scan::{NodeKind, Snapshot};
 use std::{
     cmp::Reverse,
@@ -14,48 +14,9 @@ const MAX_DEPTH: usize = 4;
 const MAX_TYPES: usize = 12;
 const MAX_DIRECT_FILES: usize = 8;
 
-#[derive(Clone, Copy, Default)]
-struct Bytes {
-    logical: u64,
-    allocated: u64,
-}
-impl Bytes {
-    fn node(node: &disk_scan::NodeRef<'_>) -> Self {
-        Self {
-            logical: node.logical_size,
-            allocated: node.allocated_size,
-        }
-    }
-    fn selected(self, allocated: bool) -> u64 {
-        if allocated {
-            self.allocated
-        } else {
-            self.logical
-        }
-    }
-    fn add(&mut self, other: Self) {
-        self.logical = self.logical.saturating_add(other.logical);
-        self.allocated = self.allocated.saturating_add(other.allocated);
-    }
-    fn subtract(self, other: Self) -> Result<Self, String> {
-        Ok(Self {
-            logical: self
-                .logical
-                .checked_sub(other.logical)
-                .ok_or("File-type map exceeds recorded logical size")?,
-            allocated: self
-                .allocated
-                .checked_sub(other.allocated)
-                .ok_or("File-type map exceeds recorded on-disk size")?,
-        })
-    }
-    fn positive(self) -> bool {
-        self.logical > 0 || self.allocated > 0
-    }
-}
 #[derive(Default)]
 struct Group {
-    bytes: Bytes,
+    bytes: u64,
     files: u64,
 }
 struct Bucket {
@@ -86,7 +47,7 @@ fn aggregate(
     id: u32,
     parent: &NodeView,
     name: String,
-    bytes: Bytes,
+    bytes: u64,
     extension: Option<String>,
     files: Option<u64>,
 ) -> NodeView {
@@ -97,8 +58,7 @@ fn aggregate(
         path: String::new(),
         path_key: String::new(),
         kind: "aggregate".into(),
-        logical_bytes: bytes.logical,
-        allocated_bytes: bytes.allocated,
+        allocated_bytes: bytes,
         raw_allocated_bytes: 0,
         verified_clone: false,
         clone_deduction_bytes: 0,
@@ -114,7 +74,6 @@ fn aggregate(
 pub(crate) fn build(
     snapshot: &Snapshot,
     scope: u32,
-    allocated: bool,
     limit: usize,
     issues: &[PathBuf],
 ) -> Result<MapData, String> {
@@ -141,9 +100,9 @@ pub(crate) fn build(
                 let child = snapshot.node(child).ok_or("Unknown map child")?;
                 if child.identity.kind == NodeKind::Directory
                     && !child.excluded
-                    && size(&child, allocated) > 0
+                    && child.allocated_size > 0
                 {
-                    candidates.insert((size(&child, allocated), Reverse(child.id), depth + 1));
+                    candidates.insert((child.allocated_size, Reverse(child.id), depth + 1));
                     if candidates.len() > directory_budget {
                         candidates.pop_first();
                     }
@@ -182,12 +141,12 @@ pub(crate) fn build(
                 .groups
                 .entry(file_types::extension(node.native_name()))
                 .or_default();
-            group.bytes.add(Bytes::node(&node));
+            group.bytes = group.bytes.saturating_add(node.allocated_size);
             group.files += 1;
-            if node.parent == Some(bucket.id) && size(&node, allocated) > 0 {
+            if node.parent == Some(bucket.id) && node.allocated_size > 0 {
                 keep_largest(
                     &mut bucket.direct,
-                    (size(&node, allocated), Reverse(node.id)),
+                    (node.allocated_size, Reverse(node.id)),
                     direct_budget,
                 );
             }
@@ -199,25 +158,31 @@ pub(crate) fn build(
     for mut bucket in buckets {
         let node = snapshot.node(bucket.id).ok_or("Unknown map folder")?;
         let parent = view(&node, issues)?;
-        let mut accounted = Bytes::default();
+        let mut accounted = 0u64;
         for &child in node.children() {
             if retained_index.contains_key(&child) {
-                accounted.add(Bytes::node(
-                    &snapshot.node(child).ok_or("Unknown map folder")?,
-                ));
+                accounted = accounted.saturating_add(
+                    snapshot
+                        .node(child)
+                        .ok_or("Unknown map folder")?
+                        .allocated_size,
+                );
             }
         }
         let mut direct_views = Vec::new();
         for (_, Reverse(id)) in bucket.direct.iter().rev() {
             let file = snapshot.node(*id).ok_or("Unknown map file")?;
-            let bytes = Bytes::node(&file);
+            let bytes = file.allocated_size;
             let group = bucket
                 .groups
                 .get_mut(&file_types::extension(file.native_name()))
                 .ok_or("Missing map file type")?;
-            group.bytes = group.bytes.subtract(bytes)?;
+            group.bytes = group
+                .bytes
+                .checked_sub(bytes)
+                .ok_or("File-type map exceeds recorded on-disk size")?;
             group.files -= 1;
-            accounted.add(bytes);
+            accounted = accounted.saturating_add(bytes);
             direct_views.push(view(&file, issues)?);
         }
         let aggregate_slots = slots - direct_views.len();
@@ -232,17 +197,14 @@ pub(crate) fn build(
         groups.sort_by(|(left_ext, left), (right_ext, right)| {
             right
                 .bytes
-                .selected(allocated)
-                .cmp(&left.bytes.selected(allocated))
-                .then_with(|| right.bytes.logical.cmp(&left.bytes.logical))
-                .then_with(|| right.bytes.allocated.cmp(&left.bytes.allocated))
+                .cmp(&left.bytes)
                 .then_with(|| left_ext.cmp(right_ext))
         });
         nodes.push(parent.clone());
         nodes.extend(direct_views);
         let omitted_types = groups.len() > type_slots;
         for (extension, group) in groups.into_iter().take(type_slots) {
-            accounted.add(group.bytes);
+            accounted = accounted.saturating_add(group.bytes);
             let label = if extension.is_empty() {
                 "No extension".into()
             } else {
@@ -260,8 +222,11 @@ pub(crate) fn build(
                 .checked_add(1)
                 .ok_or("Map aggregate ID limit exceeded")?;
         }
-        let residual = Bytes::node(&node).subtract(accounted)?;
-        if residual.positive() {
+        let residual = node
+            .allocated_size
+            .checked_sub(accounted)
+            .ok_or("File-type map exceeds recorded on-disk size")?;
+        if residual > 0 {
             nodes.push(aggregate(
                 synthetic_id,
                 &parent,
@@ -304,7 +269,7 @@ mod tests {
             parent: Option<u32>,
             name: &str,
             kind: NodeKind,
-            logical: u64,
+            length: u64,
             allocated: u64,
             excluded: bool,
         ) -> u32 {
@@ -324,9 +289,8 @@ mod tests {
                     inode: u64::from(id),
                     kind,
                 },
-                logical_size: logical,
                 allocated_size: allocated,
-                own_logical_size: logical,
+                length,
                 own_allocated_size: allocated,
                 is_directory: kind == NodeKind::Directory,
                 hard_link: false,
@@ -341,9 +305,7 @@ mod tests {
         fn finish(mut self) -> Snapshot {
             for i in (1..self.nodes.len()).rev() {
                 let parent = self.nodes[i].parent.unwrap() as usize;
-                let logical = self.nodes[i].logical_size;
                 let allocated = self.nodes[i].allocated_size;
-                self.nodes[parent].logical_size += logical;
                 self.nodes[parent].allocated_size += allocated;
             }
             let mut snapshot = Snapshot::empty(PathBuf::from("/fixture"));
@@ -353,9 +315,6 @@ mod tests {
             snapshot.state = ScanState::Completed;
             snapshot
         }
-    }
-    fn bytes(node: &NodeView) -> (u64, u64) {
-        (node.logical_bytes, node.allocated_bytes)
     }
     fn assert_honest(map: &MapData, snapshot: &Snapshot, limit: usize) {
         assert!(map.nodes.len() <= limit.clamp(2, 5000));
@@ -372,7 +331,7 @@ mod tests {
                 assert_eq!(node.file_type.is_some(), node.file_count.is_some());
             } else {
                 let actual = snapshot.node(node.id).unwrap();
-                assert_eq!(bytes(node), (actual.logical_size, actual.allocated_size));
+                assert_eq!(node.allocated_bytes, actual.allocated_size);
                 assert!(node.file_type.is_none());
                 assert!(node.file_count.is_none());
             }
@@ -381,13 +340,9 @@ mod tests {
                     .nodes
                     .iter()
                     .filter(|child| child.parent_id == Some(node.id))
-                    .fold((0, 0), |(logical, allocated), child| {
-                        (
-                            logical + child.logical_bytes,
-                            allocated + child.allocated_bytes,
-                        )
-                    });
-                assert_eq!(child_totals, bytes(node), "folder {}", node.name);
+                    .map(|child| child.allocated_bytes)
+                    .sum::<u64>();
+                assert_eq!(child_totals, node.allocated_bytes, "folder {}", node.name);
             }
         }
     }
@@ -416,56 +371,52 @@ mod tests {
         f.finish()
     }
     #[test]
-    fn both_metrics_and_small_limits_preserve_accounting_and_synthetic_authority() {
+    fn small_limits_preserve_accounting_and_synthetic_authority() {
         let snapshot = mixed_fixture();
-        for allocated in [false, true] {
-            for limit in [0, 2, 3, 4, 10, 23, 47, 100, 5000, 10000] {
-                let map = build(&snapshot, 0, allocated, limit, &[]).unwrap();
-                assert_honest(&map, &snapshot, limit);
-                assert_eq!(
-                    serde_json::to_value(&map).unwrap(),
-                    serde_json::to_value(build(&snapshot, 0, allocated, limit, &[]).unwrap())
-                        .unwrap()
-                );
-                if limit <= 2 {
-                    assert_eq!(map.nodes.len(), 2);
-                    assert!(map.nodes[1].file_type.is_none());
-                }
-                let scope = build(&snapshot, 1, allocated, limit, &[]).unwrap();
-                assert_honest(&scope, &snapshot, limit);
-                assert!(!scope
-                    .nodes
-                    .iter()
-                    .any(|n| n.file_type.as_deref() == Some("mov")));
+        for limit in [0, 2, 3, 4, 10, 23, 47, 100, 5000, 10000] {
+            let map = build(&snapshot, 0, limit, &[]).unwrap();
+            assert_honest(&map, &snapshot, limit);
+            assert_eq!(
+                serde_json::to_value(&map).unwrap(),
+                serde_json::to_value(build(&snapshot, 0, limit, &[]).unwrap()).unwrap()
+            );
+            if limit <= 2 {
+                assert_eq!(map.nodes.len(), 2);
+                assert!(map.nodes[1].file_type.is_none());
             }
+            let scope = build(&snapshot, 1, limit, &[]).unwrap();
+            assert_honest(&scope, &snapshot, limit);
+            assert!(!scope
+                .nodes
+                .iter()
+                .any(|n| n.file_type.as_deref() == Some("mov")));
         }
         // Count zero-byte and attributed-zero files without classifying links,
         // metadata, or the excluded subtree as file bytes.
-        let map = build(&snapshot, 1, true, 5000, &[]).unwrap();
+        let map = build(&snapshot, 1, 5000, &[]).unwrap();
         let colored = map
             .nodes
             .iter()
             .filter(|n| n.file_type.is_some() || n.kind == "file")
-            .fold((0, 0, 0), |(files, logical, allocated), n| {
+            .fold((0, 0), |(files, allocated), n| {
                 (
                     files + n.file_count.unwrap_or(1),
-                    logical + n.logical_bytes,
                     allocated + n.allocated_bytes,
                 )
             });
-        assert_eq!(colored, (5, 2600, 1024));
+        assert_eq!(colored, (5, 1024));
         let jpg = map
             .nodes
             .iter()
             .find(|n| n.file_type.as_deref() == Some("jpg"))
             .unwrap();
         assert_eq!(jpg.file_count, Some(2));
-        assert_eq!(bytes(jpg), (700, 0));
+        assert_eq!(jpg.allocated_bytes, 0);
         assert!(map.nodes.iter().any(|n| n.file_type.as_deref() == Some("")));
-        let excluded = build(&snapshot, 9, true, 5000, &[]).unwrap();
+        let excluded = build(&snapshot, 9, 5000, &[]).unwrap();
         assert_honest(&excluded, &snapshot, 5000);
         assert!(excluded.nodes.iter().all(|n| n.file_type.is_none()));
-        assert!(build(&snapshot, 9999, true, 5000, &[]).is_err());
+        assert!(build(&snapshot, 9999, 5000, &[]).is_err());
     }
     #[test]
     fn deep_broad_tree_keeps_major_context_and_colors_descendants_beyond_bfs_budget() {
@@ -509,47 +460,39 @@ mod tests {
             );
         }
         let snapshot = f.finish();
-        for allocated in [false, true] {
-            let map = build(&snapshot, root, allocated, 5000, &[]).unwrap();
-            assert_honest(&map, &snapshot, 5000);
-            for expected in [users, home, docs] {
-                assert!(map.nodes.iter().any(|n| n.id == expected));
+        let map = build(&snapshot, root, 5000, &[]).unwrap();
+        assert_honest(&map, &snapshot, 5000);
+        for expected in [users, home, docs] {
+            assert!(map.nodes.iter().any(|n| n.id == expected));
+        }
+        let root_size = snapshot.node(root).unwrap().allocated_size;
+        let colored: u64 = map
+            .nodes
+            .iter()
+            .filter(|n| n.file_type.is_some() || n.kind == "file")
+            .map(|n| n.allocated_bytes)
+            .sum();
+        assert!(
+            colored > root_size * 99 / 100,
+            "{colored} of {root_size} colored"
+        );
+        assert!(map
+            .nodes
+            .iter()
+            .any(|n| n.file_type.as_deref() == Some("mov")));
+        assert!(map
+            .nodes
+            .iter()
+            .any(|n| n.file_type.as_deref() == Some("zip")));
+        assert!(map.nodes.iter().filter(|n| n.kind == "directory").count() <= MAX_DIRECTORIES);
+        for n in map.nodes.iter().filter(|n| n.kind == "directory") {
+            let mut depth = 0;
+            let mut id = n.id;
+            while id != root {
+                id = snapshot.node(id).unwrap().parent.unwrap();
+                depth += 1;
             }
-            let root_size = size(&snapshot.node(root).unwrap(), allocated);
-            let colored: u64 = map
-                .nodes
-                .iter()
-                .filter(|n| n.file_type.is_some() || n.kind == "file")
-                .map(|n| {
-                    if allocated {
-                        n.allocated_bytes
-                    } else {
-                        n.logical_bytes
-                    }
-                })
-                .sum();
-            assert!(
-                colored > root_size * 99 / 100,
-                "{colored} of {root_size} colored"
-            );
-            assert!(map
-                .nodes
-                .iter()
-                .any(|n| n.file_type.as_deref() == Some("mov")));
-            assert!(map
-                .nodes
-                .iter()
-                .any(|n| n.file_type.as_deref() == Some("zip")));
-            assert!(map.nodes.iter().filter(|n| n.kind == "directory").count() <= MAX_DIRECTORIES);
-            for n in map.nodes.iter().filter(|n| n.kind == "directory") {
-                let mut depth = 0;
-                let mut id = n.id;
-                while id != root {
-                    id = snapshot.node(id).unwrap().parent.unwrap();
-                    depth += 1;
-                }
-                assert!(depth <= MAX_DEPTH);
-            }
+            assert!(depth <= MAX_DEPTH);
         }
     }
     #[test]
@@ -569,7 +512,7 @@ mod tests {
         }
         let snapshot = f.finish();
         for limit in [2, 3, 5000] {
-            let map = build(&snapshot, root, true, limit, &[]).unwrap();
+            let map = build(&snapshot, root, limit, &[]).unwrap();
             assert_honest(&map, &snapshot, limit);
             let neutral = map
                 .nodes

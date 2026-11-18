@@ -778,19 +778,14 @@ mod tests {
         }
     }
     /// What the scan compares: every node's identity, sizes and flags, by path.
-    fn signature(s: &Snapshot) -> BTreeMap<PathBuf, (disk_scan::Identity, [u64; 4], [bool; 2])> {
+    fn signature(s: &Snapshot) -> BTreeMap<PathBuf, (disk_scan::Identity, [u64; 3], [bool; 2])> {
         s.iter_nodes()
             .map(|n| {
                 (
                     n.path().unwrap(),
                     (
                         n.identity.clone(),
-                        [
-                            n.own_logical_size,
-                            n.own_allocated_size,
-                            n.logical_size,
-                            n.allocated_size,
-                        ],
+                        [n.length, n.own_allocated_size, n.allocated_size],
                         [n.hard_link, n.excluded],
                     ),
                 )
@@ -988,7 +983,7 @@ mod tests {
             s.iter_nodes()
                 .find(|n| n.path().unwrap() == file)
                 .unwrap()
-                .logical_size
+                .length
         };
         assert_eq!(size(&reconciled), longer.len() as u64);
     }
@@ -1153,8 +1148,8 @@ mod tests {
         let seed = seed(start);
         assert_eq!(seed.dirty_paths.len(), 2);
         assert_eq!(
-            seed.snapshot.stats.logical_bytes,
-            baseline.stats.logical_bytes
+            seed.snapshot.stats.allocated_bytes,
+            baseline.stats.allocated_bytes
         );
         #[cfg(feature = "performance-benchmark")]
         assert!(!rig
@@ -1191,7 +1186,10 @@ mod tests {
         rig.cancel.store(true, Ordering::Relaxed);
         let (start, _) = rig.acquire(&root, previous(), t);
         let first = seed(start);
-        assert_eq!(first.snapshot.stats.logical_bytes, tree.stats.logical_bytes);
+        assert_eq!(
+            first.snapshot.stats.allocated_bytes,
+            tree.stats.allocated_bytes
+        );
         // Cancelled after it finished, while the journal replay was still running.
         rig.cancel.store(false, Ordering::Relaxed);
         rig.journal.during_load({
@@ -1356,7 +1354,7 @@ mod tests {
                         .iter_nodes()
                         .find(|n| n.path().unwrap() == file)
                         .unwrap()
-                        .own_logical_size,
+                        .length,
                     3
                 );
                 assert!(candidate.stats.reused_entries > 0);
@@ -1367,7 +1365,7 @@ mod tests {
                         .iter_nodes()
                         .find(|n| n.path().unwrap() == file)
                         .unwrap()
-                        .own_logical_size,
+                        .length,
                     3
                 );
                 // The live event stream must include this write after private construction.
@@ -1389,7 +1387,7 @@ mod tests {
                 .iter_nodes()
                 .find(|n| n.path().unwrap() == file)
                 .unwrap()
-                .own_logical_size,
+                .length,
             3
         );
         let store = Arc::new(RwLock::new(Snapshot::empty(root.clone())));
@@ -1414,9 +1412,8 @@ mod tests {
                         n.path().unwrap(),
                         (
                             n.identity.clone(),
-                            n.own_logical_size,
+                            n.length,
                             n.own_allocated_size,
-                            n.logical_size,
                             n.allocated_size,
                             n.excluded,
                         ),

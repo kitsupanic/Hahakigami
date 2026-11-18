@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import { guardianStored } from "./theme.svelte";
 import { act, createTestRoot, type Root } from "./testUtils";
 import App from "./App.svelte";
@@ -36,7 +35,6 @@ const root0: NodeView = {
   name: "Home",
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 2,
   incomplete: false,
@@ -67,7 +65,6 @@ const summary = (): ScanSummary => ({
   finalizationUs: 0,
   entries: 3,
   allocatedBytes: 100,
-  logicalBytes: 100,
   elapsedMs: 1000,
   errors: 0,
 });
@@ -105,7 +102,6 @@ async function scanned() {
   await flush();
 }
 beforeEach(async () => {
-  setShowLogicalSize(true);
   vi.useFakeTimers();
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args = {}) => {
@@ -356,9 +352,6 @@ it("keeps check marks and flipping titles in step with the view", async () => {
   expect([pressed("Treemap"), pressed("Sunburst")]).toEqual(["true", "false"]);
   await click(menuItem("treemap"));
   expect(checked("treemap")).toBe(true);
-  await click(menuItem("logical"));
-  expect(app().metric).toBe("logical");
-  expect([checked("onDisk"), checked("logical")]).toEqual([false, true]);
   await click(menuItem("viewFileTypes"));
   // Choosing File types also colours the map by type: one control, one state.
   expect(app().mapColorMode).toBe("fileType");

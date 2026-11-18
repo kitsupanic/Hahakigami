@@ -65,7 +65,7 @@ struct Benchmark {
             "elapsed_ms": elapsedMS,
             "entries": reachability.filter { $0 }.count,
             "allocated_bytes": tree.size(of: FileTree.rootID),
-            "logical_bytes": NSNull(), "errors": unreadable,
+            "errors": unreadable,
             "peak_rss_bytes": usage.ru_maxrss,
             "stored_nodes": tree.nodeCount,
             "workers_measurement": "configured_traversal_limit_not_observed_active_workers",
@@ -98,7 +98,7 @@ struct Benchmark {
             var identity: Any = NSNull()
             if let key = tree.hardLinkKey(of: id) { identity = ["device": key.device, "inode": key.fileID] }
             try write(["type": "node", "path_base64": Data(relative.utf8).base64EncodedString(),
-                       "kind": tree.isDirectory(id) ? "directory" : "file", "logical_bytes": NSNull(),
+                       "kind": tree.isDirectory(id) ? "directory" : "file",
                        "allocated_bytes": tree.size(of: id), "size_scope": tree.isDirectory(id) ? "aggregate" : "own",
                        "identity": identity, "summary": false])
             stack.append(contentsOf: tree.children(of: id))

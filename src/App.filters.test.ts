@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setShowLogicalSize } from "./logicalSize.svelte";
 import App from "./App.svelte";
 import { menuItem } from "./fakeMenu";
 import type { NodeView, Page, ScanSummary } from "./types";
@@ -22,7 +21,6 @@ const rootNode: NodeView = {
   name: "Home",
   path: "/fixture",
   kind: "directory",
-  logicalBytes: 100,
   allocatedBytes: 100,
   childrenCount: 2,
   incomplete: false,
@@ -51,7 +49,6 @@ const summary = (id = "live"): ScanSummary => ({
   finalizationUs: 0,
   state: "completed",
   entries: 3,
-  logicalBytes: 100,
   allocatedBytes: 100,
   elapsedMs: 1000,
   errors: 0,
@@ -113,7 +110,6 @@ async function click(name: string) {
   await flush();
 }
 beforeEach(async () => {
-  setShowLogicalSize(true);
   vi.useFakeTimers();
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(
@@ -199,9 +195,7 @@ it("keeps filter values and parent paths visible with the popover closed and sha
     minBytes: 1024 ** 3,
     query: "image",
   });
-  await click("Logical");
-  expect(chips.textContent).toContain("Logical size ≥ 1 GiB");
-  await click("Remove size filter: Logical size ≥ 1 GiB");
+  await click("Remove size filter: On disk ≥ 1 GiB");
   expect(container.querySelector('[aria-label="Active filters"]')).toBeNull();
   expect(calls("search_nodes").at(-1)?.[1].query).toBe("image");
   expect(container.querySelector(".file-parent-path")?.textContent).toBe(
@@ -245,7 +239,7 @@ it("filters the entire scan, combines debounced query and preserves maps across 
   });
   expect(calls("get_map").length).toBe(mapCalls);
 });
-it("metric and filter changes reset page and selection, Clear filters preserves query", async () => {
+it("filter changes reset page and selection, Clear filters preserves query", async () => {
   await choose("File category", "images");
   await click("Next");
   await act(async () =>
@@ -256,14 +250,6 @@ it("metric and filter changes reset page and selection, Clear filters preserves 
   expect(
     container.querySelector('.file-list [aria-selected="true"]'),
   ).not.toBeNull();
-  await click("Logical");
-  expect(calls("filter_nodes").at(-1)?.[1]).toMatchObject({
-    metric: "logical",
-    offset: 0,
-  });
-  expect(
-    container.querySelector('.file-list [aria-selected="true"]'),
-  ).toBeNull();
   await search("photo");
   await advance();
   await click("Clear filters");

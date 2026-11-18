@@ -21,7 +21,7 @@ it.each([[false, false], [true, false], [false, true]])('completes every verifie
     <input aria-label="Search file names"><div class="table-head" data-sort="sizeDescending"><button aria-label="Sort by name"></button><button aria-label="Sort by size"></button></div>
     <select aria-label="File category"><option value="all">All</option><option value="other">Other</option></select>
     <select aria-label="Size range"><option value="any">Any</option><option value="100mb">100 MB</option></select>
-    <button class="chosen">On disk</button><button>Logical</button><button>Treemap</button><button>Sunburst</button>
+    <button>Treemap</button><button>Sunburst</button>
     <nav aria-label="Folder breadcrumbs"></nav><div role="tree"></div></main>`;
   const app=document.querySelector<HTMLElement>('main')!;
   const tree=document.querySelector<HTMLElement>('[role="tree"]')!;
@@ -51,14 +51,13 @@ it.each([[false, false], [true, false], [false, true]])('completes every verifie
       render();return;
     }
     const row=target.closest('[role="treeitem"]');if(row) {row.setAttribute('aria-selected','true');return;}
-    if(target.textContent==='Logical'||target.textContent==='On disk') {for(const button of app.querySelectorAll('button.chosen'))button.classList.remove('chosen');target.classList.add('chosen');}
     if(target.textContent==='Sunburst'||target.textContent==='Treemap')app.dataset.nativeMapMode=target.textContent.toLowerCase();
   });
   tree.addEventListener('dblclick',()=>{app.dataset.nativeFocus=app.dataset.nativeFocus==='root'?'shallow':'deep';expanded=false;render();});
   app.addEventListener('change',render);app.addEventListener('input',render);render();
   const pending=runNativeInteractions();await vi.runAllTimersAsync();const report=await pending;
   expect(report.error).toBeUndefined();expect(report.success).toBe(true);
-  expect(report.phases.map(phase=>phase.name)).toEqual(['selection','scroll','nested-expansion','search','sort','filters','navigation','size-metric','map-switch']);
+  expect(report.phases.map(phase=>phase.name)).toEqual(['selection','scroll','nested-expansion','search','sort','filters','navigation','map-switch']);
   expect(report.phases.every(phase=>phase.outcome.verified)).toBe(true);expect(raf).not.toHaveBeenCalled();
   const scroll=report.phases.find(phase=>phase.name==='scroll')!;
   expect(scroll.outcome.evidence.after.focus).toBe('root');
@@ -99,7 +98,6 @@ it("observes positive canvas geometry without allocating a drawing context", () 
     name: "root",
     path: "/root",
     kind: "directory",
-    logicalBytes: 20,
     allocatedBytes: 10,
     childrenCount: 2,
     incomplete: false,
@@ -109,16 +107,14 @@ it("observes positive canvas geometry without allocating a drawing context", () 
     id: 1,
     parentId: 0,
     kind: "file",
-    logicalBytes: 20,
     allocatedBytes: 10,
   };
   const zero: NodeView = {
     ...child,
     id: 2,
-    logicalBytes: 5,
     allocatedBytes: 0,
   };
-  expect(canvasEvidence([root, child, zero], 0, "allocated")).toEqual({
+  expect(canvasEvidence([root, child, zero], 0)).toEqual({
     expected_positive_nodes: 1,
     backing_width: 1200,
     backing_height: 800,
@@ -126,9 +122,6 @@ it("observes positive canvas geometry without allocating a drawing context", () 
     css_height: 400,
     device_pixel_ratio: 2,
   });
-  expect(
-    canvasEvidence([root, child, zero], 0, "logical").expected_positive_nodes,
-  ).toBe(2);
   expect(getContext).not.toHaveBeenCalled();
 });
 
@@ -142,7 +135,7 @@ it("reports empty and absent backing geometry as observed without repairing it",
   } as DOMRect);
   const getContext = vi.spyOn(canvas, "getContext");
   vi.stubGlobal("devicePixelRatio", 1.5);
-  expect(canvasEvidence([], 0, "allocated")).toEqual({
+  expect(canvasEvidence([], 0)).toEqual({
     expected_positive_nodes: 0,
     backing_width: 0,
     backing_height: 0,
@@ -156,12 +149,11 @@ it("reports empty and absent backing geometry as observed without repairing it",
     name: "file",
     path: "/file",
     kind: "file",
-    logicalBytes: 10,
     allocatedBytes: 10,
     childrenCount: 0,
     incomplete: false,
   };
-  expect(canvasEvidence([positive], 0, "allocated")).toMatchObject({
+  expect(canvasEvidence([positive], 0)).toMatchObject({
     expected_positive_nodes: 1,
     backing_width: 0,
     backing_height: 0,
@@ -169,7 +161,7 @@ it("reports empty and absent backing geometry as observed without repairing it",
   expect([canvas.width, canvas.height]).toEqual([0, 0]);
   expect(getContext).not.toHaveBeenCalled();
   canvas.remove();
-  expect(canvasEvidence([], 0, "allocated")).toEqual({
+  expect(canvasEvidence([], 0)).toEqual({
     expected_positive_nodes: 0,
     backing_width: 0,
     backing_height: 0,

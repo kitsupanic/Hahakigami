@@ -10,7 +10,6 @@ it("renders only a visible window while allowing access to the final paginated r
     name: `file-${id}`,
     path: `/file-${id}`,
     kind: "file",
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 0,
     incomplete: false,
@@ -21,7 +20,6 @@ it("renders only a visible window while allowing access to the final paginated r
   await act(async () =>
     root.render(FileRows, {
       items: items,
-      metric: "allocated",
       selection: [],
       running: false,
       onSelect: () => {},
@@ -47,7 +45,6 @@ it("expands a directory lazily, preserves selection, and exposes omitted childre
     name: "Projects",
     path: "/Projects",
     kind: "directory",
-    logicalBytes: 100,
     allocatedBytes: 100,
     childrenCount: 300,
     incomplete: false,
@@ -69,7 +66,6 @@ it("expands a directory lazily, preserves selection, and exposes omitted childre
   await act(async () =>
     root.render(FileRows, {
       items: [folder],
-      metric: "allocated",
       selection: [],
       running: false,
       onLoadChildren: async () => ({ items: [child], total: 300 }),
@@ -117,7 +113,6 @@ it("refreshes expanded folders with the latest loader and ignores older failures
     name: "Projects",
     path: "/Projects",
     kind: "directory",
-    logicalBytes: 100,
     allocatedBytes: 100,
     childrenCount: 1,
     incomplete: false,
@@ -141,7 +136,6 @@ it("refreshes expanded folders with the latest loader and ignores older failures
   const render = (revision: string, load: (id: number) => Promise<Page>) =>
     root.render(FileRows, {
       items: items,
-      metric: "allocated",
       selection: [1],
       running: false,
       revision: revision,
@@ -180,7 +174,6 @@ it("keeps excluded directories selectable without presenting empty sizes or expa
     name: "Other volume",
     path: "/Volumes/Other",
     kind: "directory",
-    logicalBytes: 0,
     allocatedBytes: 0,
     childrenCount: 0,
     incomplete: false,
@@ -195,7 +188,6 @@ it("keeps excluded directories selectable without presenting empty sizes or expa
   await act(async () =>
     root.render(FileRows, {
       items: [folder],
-      metric: "allocated",
       selection: [],
       running: false,
       onLoadChildren: async () => {
@@ -249,7 +241,6 @@ it("only previews plain Space on regular file rows and leaves folders/interactiv
     name: "file",
     path: "/file",
     kind: "file",
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 0,
     incomplete: false,
@@ -270,7 +261,6 @@ it("only previews plain Space on regular file rows and leaves folders/interactiv
     root.render(FileRows, {
       items: [file, folder],
       selection: [],
-      metric: "allocated",
       running: false,
       onSelect: () => selections++,
       onOpen: () => opens++,
@@ -338,7 +328,6 @@ it("R4 preserves focused row identity when siblings reorder", async () => {
     name: `file-${id}`,
     path: `/file-${id}`,
     kind: "file",
-    logicalBytes: id,
     allocatedBytes: id,
     childrenCount: 0,
     incomplete: false,
@@ -348,7 +337,6 @@ it("R4 preserves focused row identity when siblings reorder", async () => {
   const root = createRoot(element);
   const opened: number[] = [];
   const props = {
-    metric: "allocated" as const,
     selection: [],
     running: false,
     onSelect: () => {},
@@ -381,7 +369,7 @@ it("R4 preserves focused row identity when siblings reorder", async () => {
   }
 });
 
-it("keeps row sizes compact with full details and updates proportional bars for the metric", async () => {
+it("keeps row sizes compact with full details and updates proportional bars", async () => {
   const items: NodeView[] = [
     {
       id: 1,
@@ -389,7 +377,6 @@ it("keeps row sizes compact with full details and updates proportional bars for 
       name: "Projects",
       path: "/Projects",
       kind: "directory",
-      logicalBytes: 4096,
       allocatedBytes: 2048,
       childrenCount: 2,
       incomplete: false,
@@ -400,7 +387,6 @@ it("keeps row sizes compact with full details and updates proportional bars for 
       name: "notes.txt",
       path: "/notes.txt",
       kind: "file",
-      logicalBytes: 1024,
       allocatedBytes: 1024,
       childrenCount: 0,
       incomplete: false,
@@ -409,11 +395,10 @@ it("keeps row sizes compact with full details and updates proportional bars for 
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
-  const render = async (metric: "allocated" | "logical") =>
+  const render = async () =>
     act(async () =>
       root.render(FileRows, {
         items,
-        metric,
         selection: [],
         running: false,
         onSelect: () => {},
@@ -421,7 +406,7 @@ it("keeps row sizes compact with full details and updates proportional bars for 
       }),
     );
   try {
-    await render("allocated");
+    await render();
     const rows = element.querySelectorAll<HTMLElement>("[role=treeitem]");
     expect(rows[0].children).toHaveLength(4);
     expect(Array.from(rows[0].children, (cell) => cell.className)).toEqual([
@@ -441,11 +426,6 @@ it("keeps row sizes compact with full details and updates proportional bars for 
     expect(
       rows[1].querySelector<HTMLElement>(".file-share > span")?.style.width,
     ).toBe("50%");
-    await render("logical");
-    expect(rows[0].querySelector(".file-size")?.textContent).toBe("4 KiB");
-    expect(
-      rows[1].querySelector<HTMLElement>(".file-share > span")?.style.width,
-    ).toBe("25%");
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -482,7 +462,6 @@ it("fills a tall viewport after resize while keeping distant rows virtualized", 
     name: `file-${id}`,
     path: `/file-${id}`,
     kind: "file",
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 0,
     incomplete: false,
@@ -494,7 +473,6 @@ it("fills a tall viewport after resize while keeping distant rows virtualized", 
     await act(async () =>
       root.render(FileRows, {
         items,
-        metric: "allocated",
         selection: [],
         running: false,
         onSelect: () => {},
@@ -546,7 +524,6 @@ it("shows persistent queue badges across selection and queue updates", async () 
     name: "Downloads",
     path: "/Downloads",
     kind: "directory",
-    logicalBytes: 1,
     allocatedBytes: 1,
     childrenCount: 2,
     incomplete: false,
@@ -571,7 +548,6 @@ it("shows persistent queue badges across selection and queue updates", async () 
       items,
       selection,
       queuedPaths: queuedPaths.map((path) => ({ path })),
-      metric: "allocated",
       running: false,
       onSelect: () => {},
       onOpen: () => {},
@@ -602,7 +578,7 @@ it("shows persistent queue badges across selection and queue updates", async () 
   }
 });
 
-it("shows each item's share of the scan for either metric, and handles an empty scan", async () => {
+it("shows each item's share of the scan, and handles an empty scan", async () => {
   const item: NodeView = {
     id: 1,
     parentId: 0,
@@ -610,17 +586,15 @@ it("shows each item's share of the scan for either metric, and handles an empty 
     path: "/Documents",
     kind: "directory",
     allocatedBytes: 20,
-    logicalBytes: 60,
     childrenCount: 2,
     incomplete: false,
   };
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
-  const render = (metric: "allocated" | "logical", scanBytes: number | null) =>
+  const render = (scanBytes: number | null) =>
     root.render(FileRows, {
       items: [item],
-      metric,
       scanBytes,
       selection: [],
       running: false,
@@ -628,19 +602,19 @@ it("shows each item's share of the scan for either metric, and handles an empty 
       onOpen: () => {},
     });
   try {
-    await act(() => render("allocated", 100));
+    await act(() => render(100));
     expect(element.querySelector(".file-relative")?.textContent?.trim()).toBe(
       "20.0%",
     );
-    await act(() => render("logical", 200));
+    await act(() => render(200));
     expect(element.querySelector(".file-relative")?.textContent?.trim()).toBe(
-      "30.0%",
+      "10.0%",
     );
-    await act(() => render("allocated", 0));
+    await act(() => render(0));
     expect(element.querySelector(".file-relative")?.textContent?.trim()).toBe(
       "—",
     );
-    await act(() => render("allocated", null));
+    await act(() => render(null));
     expect(element.querySelector(".file-share")).not.toBeNull();
   } finally {
     await act(() => root.unmount());

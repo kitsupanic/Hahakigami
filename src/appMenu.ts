@@ -15,8 +15,6 @@ export const commandIds = [
   "find",
   "sunburst",
   "treemap",
-  "onDisk",
-  "logical",
   "viewFiles",
   "viewFileTypes",
   "toggleSidebar",
@@ -108,9 +106,6 @@ const layout: readonly (readonly [title: string, rows: readonly Row[]])[] = [
     [
       cmd("treemap", "Treemap", "CmdOrCtrl+1", check),
       cmd("sunburst", "Sunburst", "CmdOrCtrl+2", check),
-      "Separator",
-      cmd("onDisk", "On Disk", undefined, check),
-      cmd("logical", "Logical", undefined, check),
       "Separator",
       cmd("viewFiles", "Folders and Files", "CmdOrCtrl+Alt+1", check),
       cmd("viewFileTypes", "File Types", "CmdOrCtrl+Alt+2", check),
