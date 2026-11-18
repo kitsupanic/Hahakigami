@@ -264,8 +264,10 @@ impl Slots {
         Ok(())
     }
     /// Puts a new scan in `key`'s slot. Refuses, changing nothing, while that slot's own scan runs or the
-    /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan, takes its results as
-    /// the rescan baseline and installs the new session. Other slots are never touched.
+    /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan and installs the new
+    /// session, then releases the slot table and takes the old results as the rescan baseline. That last step
+    /// waits for the old store's writer lock, behind any read of it, so no lookup may wait on the table meanwhile.
+    /// The old scan's `operation` lock is held throughout. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.live.lock().unwrap();
         live.draining.retain(|s| session_running(s));
@@ -289,11 +291,12 @@ impl Slots {
         if let Some(old) = &old {
             old.invalidate();
         }
-        let previous = old
-            .as_ref()
-            .and_then(|old| old.take_baseline(&request.root));
+        let root = request.root.clone();
         let session = Arc::new(Session::live(request, Some(share.descriptors)));
         live.slots.insert(key, session.clone());
+        // The scan thread starts only after this returns, so the baseline is taken before the new scan reads it.
+        drop(live);
+        let previous = old.as_ref().and_then(|old| old.take_baseline(&root));
         Ok(Started {
             session,
             previous,
@@ -546,6 +549,48 @@ mod tests {
                 None => assert_eq!(old.store.read().unwrap().node_count(), seeded, "{name}"),
             }
         }
+    }
+
+    #[test]
+    fn a_replace_waiting_on_a_read_of_the_old_results_does_not_block_lookups() {
+        let slots = Arc::new(slots());
+        let (_dir, root) = dir();
+        let old = ended(&root, scan_of(&root));
+        *old.cache_token.lock().unwrap() = Some(token());
+        slots.install(disk(&root), old.clone());
+        // A long read of the old results: taking them as the baseline has to wait for it.
+        let reader = old.store.read().unwrap();
+        let replacing = {
+            let (slots, root) = (slots.clone(), root.clone());
+            std::thread::spawn(move || slots.replace(disk(&root), request(&root)).unwrap())
+        };
+        // Wait for the new session to be installed. `try_lock` so a replace that still holds the slot table
+        // fails this test instead of hanging it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let new = loop {
+            let installed = slots.live.try_lock().ok().and_then(|live| {
+                live.slots
+                    .get(&disk(&root))
+                    .filter(|s| s.id != old.id)
+                    .cloned()
+            });
+            if let Some(new) = installed {
+                break new;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replace held the slot table while waiting for the old results"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(!replacing.is_finished());
+        assert!(Arc::ptr_eq(&slots.find(&new.id).unwrap(), &new));
+        assert_eq!(slots.find(&old.id).err().unwrap(), GONE);
+        assert_eq!(slots.sessions().len(), 1);
+        drop(reader);
+        let started = replacing.join().unwrap();
+        assert!(Arc::ptr_eq(&started.session, &new));
+        assert!(started.previous.is_some());
     }
 
     #[test]

@@ -220,19 +220,10 @@ fn errno() -> *mut libc::c_int {
 fn errno() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
-#[cfg(test)]
 pub(crate) fn enumerate(
     fd: &OwnedFd,
     path: &Path,
     cancel: &AtomicBool,
-) -> io::Result<Vec<io::Result<Entry>>> {
-    enumerate_limited(fd, path, cancel, None)
-}
-pub(crate) fn enumerate_limited(
-    fd: &OwnedFd,
-    path: &Path,
-    cancel: &AtomicBool,
-    limit: Option<usize>,
 ) -> io::Result<Vec<io::Result<Entry>>> {
     let duplicate = syscall(|| unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
     let directory = unsafe { libc::fdopendir(duplicate) };
@@ -270,12 +261,6 @@ pub(crate) fn enumerate_limited(
             continue;
         }
         let name = std::ffi::OsStr::from_bytes(bytes);
-        if limit.is_some_and(|limit| entries.len() >= limit) {
-            return crate::retry::terminal_listing(
-                entries,
-                io::Error::other("calibration directory listing budget exceeded"),
-            );
-        }
         entries.push(crate::entry_result(entry_at(fd, path, name), || {
             path.join(name)
         }));

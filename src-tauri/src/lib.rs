@@ -1217,60 +1217,67 @@ async fn get_map(
         }
         _ => return Err("Unknown map color mode".into()),
     }
-    let snapshot = s.store.read().unwrap();
-    let issues = issue_index(&s, &snapshot);
-    let root = snapshot.node(node_id).ok_or("Unknown node")?;
-    let budget = limit.clamp(2, 5000);
-    let mut nodes = vec![view(&root, &issues.1)?];
-    let mut queue = VecDeque::from([node_id]);
-    let mut aggregate_id = 0x80000000u32;
-    while let Some(id) = queue.pop_front() {
-        if nodes.len() >= budget {
-            break;
-        }
-        let positive = sorted_children(&s, &snapshot, id)?;
-        let remaining = budget - nodes.len();
-        let take = if positive.len() > remaining {
-            remaining.saturating_sub(1)
-        } else {
-            positive.len()
-        };
-        for child in positive.iter().take(take) {
-            let n = snapshot.node(*child).ok_or("Unknown node")?;
-            nodes.push(view(&n, &issues.1)?);
-            if n.is_directory {
-                queue.push_back(*child);
+    tauri::async_runtime::spawn_blocking(move || {
+        let snapshot = s.store.read().unwrap();
+        s.check_valid()?;
+        let issues = issue_index(&s, &snapshot);
+        let root = snapshot.node(node_id).ok_or("Unknown node")?;
+        let budget = limit.clamp(2, 5000);
+        let mut nodes = vec![view(&root, &issues.1)?];
+        let mut queue = VecDeque::from([node_id]);
+        let mut aggregate_id = 0x80000000u32;
+        while let Some(id) = queue.pop_front() {
+            if nodes.len() >= budget {
+                break;
+            }
+            let positive = sorted_children(&s, &snapshot, id)?;
+            let remaining = budget - nodes.len();
+            let take = if positive.len() > remaining {
+                remaining.saturating_sub(1)
+            } else {
+                positive.len()
+            };
+            for child in positive.iter().take(take) {
+                let n = snapshot.node(*child).ok_or("Unknown node")?;
+                nodes.push(view(&n, &issues.1)?);
+                if n.is_directory {
+                    queue.push_back(*child);
+                }
+            }
+            if take < positive.len() {
+                let allocated = positive.iter().skip(take).try_fold(0u64, |a, i| {
+                    let n = snapshot.node(*i).ok_or("Unknown node")?;
+                    Ok::<_, String>(a.saturating_add(n.allocated_size))
+                })?;
+                nodes.push(NodeView {
+                    id: aggregate_id,
+                    parent_id: Some(id),
+                    name: format!("{} smaller items", positive.len() - take),
+                    path: String::new(),
+                    path_key: String::new(),
+                    kind: "aggregate".into(),
+                    allocated_bytes: allocated,
+                    raw_allocated_bytes: 0,
+                    verified_clone: false,
+                    clone_deduction_bytes: 0,
+                    clone_owner: None,
+                    children_count: 0,
+                    incomplete: false,
+                    excluded: false,
+                    file_type: None,
+                    file_count: None,
+                });
+                aggregate_id += 1;
             }
         }
-        if take < positive.len() {
-            let allocated = positive.iter().skip(take).fold(0u64, |a, i| {
-                a.saturating_add(snapshot.node(*i).unwrap().allocated_size)
-            });
-            nodes.push(NodeView {
-                id: aggregate_id,
-                parent_id: Some(id),
-                name: format!("{} smaller items", positive.len() - take),
-                path: String::new(),
-                path_key: String::new(),
-                kind: "aggregate".into(),
-                allocated_bytes: allocated,
-                raw_allocated_bytes: 0,
-                verified_clone: false,
-                clone_deduction_bytes: 0,
-                clone_owner: None,
-                children_count: 0,
-                incomplete: false,
-                excluded: false,
-                file_type: None,
-                file_count: None,
-            });
-            aggregate_id += 1;
-        }
-    }
-    Ok(MapData {
-        nodes,
-        root_id: node_id,
+        s.check_valid()?;
+        Ok(MapData {
+            nodes,
+            root_id: node_id,
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn search_nodes(
@@ -1519,10 +1526,14 @@ async fn reveal_node(
 ) -> Result<(), String> {
     let _activity = Activity::begin(&state.activity)?;
     let s = state.scans.find(&scan_id)?;
-    let _held = s.hold(Need::Live)?;
-    let snapshot = s.store.read().unwrap();
-    let n = snapshot.node(node_id).ok_or("Unknown node")?;
-    platform::reveal(&n.path()?)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _held = s.hold(Need::Live)?;
+        let snapshot = s.store.read().unwrap();
+        let n = snapshot.node(node_id).ok_or("Unknown node")?;
+        platform::reveal(&n.path()?)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn prepare_trash(
@@ -1532,7 +1543,11 @@ async fn prepare_trash(
 ) -> Result<Review, String> {
     let _activity = Activity::begin(&state.activity)?;
     let s = state.scans.find(&scan_id)?;
-    cleanup::review(&s, cleanup::Pick::Nodes(&node_ids))
+    tauri::async_runtime::spawn_blocking(move || {
+        cleanup::review(&s, cleanup::Pick::Nodes(&node_ids))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn commit_trash<R: tauri::Runtime>(
@@ -1650,7 +1665,12 @@ async fn prepare_cleanup_queue(
     let _activity = Activity::begin(&state.activity)?;
     let s = state.scans.find(&scan_id)?;
     let scans = state.scans.sessions();
-    cleanup::review(&s, cleanup::Pick::Queue(&state.cleanup_queue, &scans))
+    let queue = state.cleanup_queue.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        cleanup::review(&s, cleanup::Pick::Queue(&queue, &scans))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn commit_cleanup_queue<R: tauri::Runtime>(

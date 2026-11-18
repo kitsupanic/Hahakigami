@@ -63,6 +63,7 @@
   const uid = $props.id();
   const summaryId = `${uid}-summary`;
   let canvas: HTMLCanvasElement;
+  let overlay: HTMLCanvasElement;
   let worker: Worker | null = null;
   let version = 0;
   let paintVersion = $state.raw(0);
@@ -444,6 +445,17 @@
     ctx.arc(x + radius, y + radius, radius, Math.PI, Math.PI * 1.5);
     ctx.closePath();
   }
+  function outlinePath(ctx: CanvasRenderingContext2D, s: Shape) {
+    ctx.beginPath();
+    if (mode === "treemap") tilePath(ctx, s, 1.5);
+    else {
+      const cx = dimensions.width / 2,
+        cy = dimensions.height / 2;
+      ctx.arc(cx, cy, s.outer, s.start, s.end);
+      ctx.arc(cx, cy, s.inner, s.end, s.start, true);
+      ctx.closePath();
+    }
+  }
   $effect(() => {
     const el = canvas!;
     // Empty layouts need neither a context nor a high-resolution backing store.
@@ -800,17 +812,6 @@
       }
     }
     ctx.setLineDash([]);
-    function outlinePath(s: Shape) {
-      ctx.beginPath();
-      if (mode === "treemap") tilePath(ctx, s, 1.5);
-      else {
-        const cx = dimensions.width / 2,
-          cy = dimensions.height / 2;
-        ctx.arc(cx, cy, s.outer, s.start, s.end);
-        ctx.arc(cx, cy, s.inner, s.end, s.start, true);
-        ctx.closePath();
-      }
-    }
     // The canvas CSS sets accent-color to the person's accent; canvas cannot read var().
     const accent = getComputedStyle(el).accentColor;
     const selectionColor = accent && accent !== "auto" ? accent : "#246fde";
@@ -818,25 +819,38 @@
       if (!selectedIds.has(s.id)) continue;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 5;
-      outlinePath(s);
+      outlinePath(ctx, s);
       ctx.stroke();
       ctx.strokeStyle = selectionColor;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-    const hoveredShape = shapes.find((shape) => shape.id === hoverId);
-    if (hoveredShape) {
-      const s = hoveredShape;
-      ctx.strokeStyle = "#ffc66d";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 3]);
-      // Hover traces the same edge as the selection outline, so moving between them doesn't shift.
-      outlinePath(s);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
     if (layoutCurrent && paintVersion === version)
       untrack(() => onRendered?.(nodes));
+  });
+  // The hover outline has its own canvas so moving the pointer doesn't repaint the map.
+  $effect(() => {
+    const el = overlay!;
+    const s = shapes.find((shape) => shape.id === hoverId);
+    if (!s) {
+      if (el.width !== 0) el.width = 0;
+      if (el.height !== 0) el.height = 0;
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const pixelWidth = Math.trunc(dimensions.width * dpr),
+      pixelHeight = Math.trunc(dimensions.height * dpr);
+    if (el.width !== pixelWidth) el.width = pixelWidth;
+    if (el.height !== pixelHeight) el.height = pixelHeight;
+    const ctx = el.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, dimensions.width, dimensions.height);
+    ctx.strokeStyle = "#ffc66d";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 3]);
+    // Hover traces the same edge as the selection outline, so moving between them doesn't shift.
+    outlinePath(ctx, s);
+    ctx.stroke();
   });
   function clearHover() {
     if (!hover) return;
@@ -879,6 +893,7 @@
   data-contains-count={visibleMarks.contains}
   data-hovered-id={hoverId ?? undefined}
 >
+  <div class="map-stack">
   <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role (The canvas is a pointer-only picture of the folder; keyboard users act through the list, and the description below mirrors the map.) -->
   <canvas
     bind:this={canvas}
@@ -934,6 +949,14 @@
       openCapturedFolder(capturedNode());
     }}
   ></canvas>
+  <canvas
+    bind:this={overlay}
+    class="map-overlay"
+    width="0"
+    height="0"
+    aria-hidden="true"
+  ></canvas>
+  </div>
   {#if centerNode && holeRadius >= 40 && layoutCurrent}
     <div
       class="map-center"
@@ -1012,6 +1035,16 @@
 <style>
   .map-wrap {
     padding-bottom: 6px;
+  }
+  .map-stack {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  .map-wrap .map-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
   }
   .map-center {
     position: absolute;

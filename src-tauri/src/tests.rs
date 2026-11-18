@@ -3913,6 +3913,7 @@ fn recorded_entry(item: &str, item_kind: u8) -> cleanup_queue::Candidate {
             device: 7,
             inode: 7,
             kind,
+            birth: None,
         },
     };
     cleanup_queue::Candidate {

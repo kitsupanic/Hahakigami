@@ -1,7 +1,11 @@
 import { onMount, untrack } from "svelte";
 import createQuickLook from "./createQuickLook.svelte";
 import { createCleanupQueue, tauriQueuePort } from "./cleanupQueue.svelte";
-import { createSessionState, createExplorerState } from "./appState.svelte";
+import {
+  createSessionState,
+  createExplorerState,
+  rawState,
+} from "./appState.svelte";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import "./quickLook.css";
@@ -43,19 +47,13 @@ declare global {
 export default function createApp() {
   const session = createSessionState(),
     explorer = createExplorerState();
-  let performanceConfig = $state.raw<{
+  const performanceConfigState = rawState<{
     root: string;
     mode: string;
     interactions?: boolean;
   } | null>(null);
-  function setPerformanceConfig(
-    value:
-      | typeof performanceConfig
-      | ((previous: typeof performanceConfig) => typeof performanceConfig),
-  ) {
-    performanceConfig =
-      typeof value === "function" ? value(performanceConfig) : value;
-  }
+  const setPerformanceConfig = performanceConfigState.set;
+  let performanceConfig = $derived(performanceConfigState.value);
   const performanceStarted = { current: false };
   const performanceReported = { current: false };
   const performanceRescanned = { current: false };
@@ -64,26 +62,12 @@ export default function createApp() {
   let performanceMapReady = $state.raw(false);
   let performanceMapQueryPending = $state.raw(false);
   let performanceMapQueryEpoch = 0;
-  let performanceEventsReady = $state.raw(!performanceBuild);
-  function setPerformanceEventsReady(
-    value:
-      | typeof performanceEventsReady
-      | ((
-          previous: typeof performanceEventsReady,
-        ) => typeof performanceEventsReady),
-  ) {
-    performanceEventsReady =
-      typeof value === "function" ? value(performanceEventsReady) : value;
-  }
-  let performanceMapScan = $state.raw<string | null>(null);
-  function setPerformanceMapScan(
-    value:
-      | typeof performanceMapScan
-      | ((previous: typeof performanceMapScan) => typeof performanceMapScan),
-  ) {
-    performanceMapScan =
-      typeof value === "function" ? value(performanceMapScan) : value;
-  }
+  const performanceEventsReadyState = rawState(!performanceBuild);
+  const setPerformanceEventsReady = performanceEventsReadyState.set;
+  let performanceEventsReady = $derived(performanceEventsReadyState.value);
+  const performanceMapScanState = rawState<string | null>(null);
+  const setPerformanceMapScan = performanceMapScanState.set;
+  let performanceMapScan = $derived(performanceMapScanState.value);
   onMount(() => {
     if (!performanceBuild) return;
     const receive = () =>
@@ -136,25 +120,18 @@ export default function createApp() {
   // The live scans. beginStart is the app's side of every start.
   const scans = createScanSlots(tauriScanPort, { begin: beginStart });
   // Set by what holds the session besides a scan start (trash review, cleanup); starts count in scans.
-  let opBusy = $state.raw(false);
-  const busy = $derived(opBusy || scans.starting);
-  function setBusy(
-    value: typeof opBusy | ((previous: typeof opBusy) => typeof opBusy),
-  ) {
-    opBusy = typeof value === "function" ? value(opBusy) : value;
-  }
+  const opBusy = rawState(false);
+  const setBusy = opBusy.set;
+  const busy = $derived(opBusy.value || scans.starting);
   const setCancelling = session.setCancelling;
   let cancelling = $derived(session.cancelling);
-  let trash = $state.raw<{
+  const trashState = rawState<{
     queued?: boolean;
     token: string;
     items: NodeView[];
   } | null>(null);
-  function setTrash(
-    value: typeof trash | ((previous: typeof trash) => typeof trash),
-  ) {
-    trash = typeof value === "function" ? value(trash) : value;
-  }
+  const setTrash = trashState.set;
+  let trash = $derived(trashState.value);
   let queueOpen = $state(false);
   // Home shows the welcome page without discarding the loaded or running scan.
   let homeOpen = $state(false);
@@ -427,36 +404,18 @@ export default function createApp() {
     setSelection([]);
     void persistSort(order);
   }
-  let access = $state.raw<FullDiskAccess | null>(null);
-  function setAccess(
-    value: typeof access | ((previous: typeof access) => typeof access),
-  ) {
-    access = typeof value === "function" ? value(access) : value;
-  }
-  let accessOpen = $state.raw(false);
-  function setAccessOpen(
-    value:
-      | typeof accessOpen
-      | ((previous: typeof accessOpen) => typeof accessOpen),
-  ) {
-    accessOpen = typeof value === "function" ? value(accessOpen) : value;
-  }
-  let accessBusy = $state.raw(false);
-  function setAccessBusy(
-    value:
-      | typeof accessBusy
-      | ((previous: typeof accessBusy) => typeof accessBusy),
-  ) {
-    accessBusy = typeof value === "function" ? value(accessBusy) : value;
-  }
-  let accessError = $state.raw("");
-  function setAccessError(
-    value:
-      | typeof accessError
-      | ((previous: typeof accessError) => typeof accessError),
-  ) {
-    accessError = typeof value === "function" ? value(accessError) : value;
-  }
+  const accessState = rawState<FullDiskAccess | null>(null);
+  const setAccess = accessState.set;
+  let access = $derived(accessState.value);
+  const accessOpenState = rawState(false);
+  const setAccessOpen = accessOpenState.set;
+  let accessOpen = $derived(accessOpenState.value);
+  const accessBusyState = rawState(false);
+  const setAccessBusy = accessBusyState.set;
+  let accessBusy = $derived(accessBusyState.value);
+  const accessErrorState = rawState("");
+  const setAccessError = accessErrorState.set;
+  let accessError = $derived(accessErrorState.value);
   // The user came back from System Settings and Full Disk Access is still off.
   let accessReturned = $state.raw(false);
   // The dialog was opened because a scan is waiting on Full Disk Access.
@@ -1220,11 +1179,7 @@ export default function createApp() {
             ...filters,
           })
         : nameQuery
-          ? invoke<Page>("search_nodes", {
-              ...common,
-              nodeId: focus.id,
-              query: nameQuery,
-            })
+          ? invoke<Page>("search_nodes", { ...common, query: nameQuery })
           : invoke<Page>("get_children", { ...common, nodeId: focus.id });
       load
         .then((result) => {

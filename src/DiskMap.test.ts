@@ -1790,6 +1790,25 @@ it("links exact and ancestor map hover with nested context, deduplicates pointer
   }
 });
 
+it("draws the hover outline on its own canvas without repainting the map", async () => {
+  const f = await linkedMapFixture();
+  try {
+    await f.complete();
+    await f.pointer("mousemove");
+    const [, overlay] = Array.from(f.element.querySelectorAll("canvas"));
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    expect(f.strokes.at(-1)).toEqual({ color: "#ffc66d", dash: [6, 3] });
+    const fills = f.fills.length;
+    f.strokes.length = 0;
+    // A different tile: the outline is redrawn, the tiles are not.
+    await f.pointer("mousemove", 20, 30);
+    expect(f.fills).toHaveLength(fills);
+    expect(f.strokes).toEqual([{ color: "#ffc66d", dash: [6, 3] }]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 it("clears owned hover and suppresses hits and external outlines until the current layout completes", async () => {
   const f = await linkedMapFixture();
   try {
