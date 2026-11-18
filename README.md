@@ -1,30 +1,47 @@
+<div align="center">
+
+<img src="src-tauri/icons/128x128@2x.png" width="128" height="128" alt="Hahakigami icon: a broom spirit with straw bristles and a red knotted cord">
+
 # Hahakigami
 
-A local disk-space analyzer for macOS 14+. Scan a disk or folder, explore it as a size-sorted tree, treemap or sunburst, and move a reviewed selection to the Trash.
+**A local disk-space analyzer for macOS 14+.**<br>
+Scan a disk or folder, explore it as a size-sorted tree, treemap or sunburst,<br>
+and move a reviewed selection to the Trash.
 
-Built with Rust, Tauri 2, Svelte 5 and TypeScript. No accounts, analytics or uploads.
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-1c1c1e?logo=apple&logoColor=white)](#install)
+[![Apple silicon](https://img.shields.io/badge/Apple_silicon-arm64-1c1c1e)](#install)
+[![Rust · Tauri 2 · Svelte 5](https://img.shields.io/badge/Rust_·_Tauri_2_·_Svelte_5-1c1c1e?logo=rust&logoColor=white)](#architecture)
+[![License: MIT](https://img.shields.io/badge/license-MIT-c8a35a)](LICENSE)
+
+[Install](#install) · [Run from source](#run-from-source) · [CLI and MCP](#cli-and-mcp) · [Architecture](#architecture) · [Contributing](#contributing)
+
+No accounts, analytics or uploads.
+
+</div>
 
 ## Features
 
-- Scan the startup disk, any attached volume or a folder, or all local disks at once.
-- Switch between **On disk** and **Logical** sizes. Hard links and full APFS clones are counted once.
-- Search names, filter by file category and size, and break usage down by file type.
-- Quick Look previews and Reveal in Finder.
-- A cleanup queue that survives restarts. Nothing is deleted permanently: items go to the Trash after you review the exact paths.
-- Fast rescans that reuse unchanged folders via macOS FSEvents.
-- A command-line `scan` and a local MCP server for agents.
+- **Any scope.** Scan the startup disk, any attached volume or a folder, or all local disks at once.
+- **Honest sizes.** Switch between **On disk** and **Logical** sizes. Hard links and full APFS clones are counted once.
+- **Find it fast.** Search names, filter by file category and size, and break usage down by file type.
+- **Native.** Quick Look previews and Reveal in Finder.
+- **Careful cleanup.** A cleanup queue that survives restarts. Nothing is deleted permanently: items go to the Trash after you review the exact paths.
+- **Fast rescans.** Rescans reuse unchanged folders via macOS FSEvents.
+- **Scriptable.** A command-line `scan` and a local MCP server for agents.
 
-Scanning reads file metadata only, never file contents. Sizes do not predict how much space moving to Trash will free.
+> [!NOTE]
+> Scanning reads file metadata only, never file contents. Sizes do not predict how much space moving to Trash will free.
 
 ## Install
 
 Download `Hahakigami-<version>-arm64.zip` from the [latest release](https://github.com/kitsupanic/Hahakigami/releases/latest), unzip it and move `Hahakigami.app` to Applications. Apple silicon only; on Intel, run from source.
 
-The release is not notarized, so macOS blocks the first launch. Open the app once, then choose **Open Anyway** in **System Settings → Privacy & Security**, or run:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Hahakigami.app
-```
+> [!IMPORTANT]
+> The release is not notarized, so macOS blocks the first launch. Open the app once, then choose **Open Anyway** in **System Settings → Privacy & Security**, or run:
+>
+> ```sh
+> xattr -dr com.apple.quarantine /Applications/Hahakigami.app
+> ```
 
 ### Full Disk Access
 
@@ -39,7 +56,8 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Quit the installed app first: only one instance can use the local data directory at a time.
+> [!TIP]
+> Quit the installed app first: only one instance can use the local data directory at a time.
 
 To build a signed `.app` (uses an existing **Apple Development** identity from your keychain, so Full Disk Access survives rebuilds):
 
@@ -79,9 +97,11 @@ Tools: `scan`, `status`, `cancel`, `summary`, `node`, `children`, `search`, `iss
 
 ## Architecture
 
-- `crates/disk-scan`: the Tauri-independent metadata scanner and compact tree.
-- `src-tauri`: scan sessions, queries, Finder/Trash actions and the CLI/MCP entry points.
-- `src`: the Svelte UI, with Canvas maps laid out in workers.
+| Path | What lives there |
+| --- | --- |
+| `crates/disk-scan` | The Tauri-independent metadata scanner and compact tree. |
+| `src-tauri` | Scan sessions, queries, Finder/Trash actions and the CLI/MCP entry points. |
+| `src` | The Svelte UI, with Canvas maps laid out in workers. |
 
 Native paths stay in Rust; the UI sends scan and node IDs, never paths or shell strings. See [session lifecycle](docs/architecture/session-lifecycle.md), [ADRs](docs/adr/) and [GLOSSARY.md](GLOSSARY.md).
 
