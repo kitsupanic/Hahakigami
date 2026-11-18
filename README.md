@@ -19,6 +19,10 @@ No accounts, analytics or uploads.
 
 </div>
 
+<p align="center">
+  <img src="docs/images/screenshot.png" width="900" alt="Hahakigami showing a scan of its own repository as a sunburst, with the size-sorted folder list beside it">
+</p>
+
 ## Features
 
 - **Any scope.** Scan the startup disk, any attached volume or a folder, or all local disks at once.
