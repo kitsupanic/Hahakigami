@@ -163,6 +163,15 @@
       >
     </button>
   {/if}
+  <button
+    class="side-nav scan-folder-nav"
+    title={app.can.chooseFolder && !app.can.scanFolder
+      ? "A folder scan is running"
+      : "Choose a folder and scan it"}
+    disabled={!app.can.scanFolder}
+    onclick={() => void app.scanFolder()}
+    ><Icon name="plus" size={18} /><span>Scan folder…</span></button
+  >
   <div class="sidebar-actions">
     <button
       class="side-nav queue-nav"

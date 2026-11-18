@@ -1510,3 +1510,28 @@ it("scans the location on screen from the failed scan modal, not the sidebar sel
   expect(starts).toHaveLength(2);
   expect(starts[1][1].targetId).toBe("home");
 });
+it("scans a folder chosen from the sidebar and leaves the Cleanup queue to show it", async () => {
+  const photos = {
+    id: "photos",
+    path: "/Users/test/Photos",
+    name: "Photos",
+    totalBytes: null,
+    freeBytes: null,
+    volume: false,
+  };
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command, args) =>
+    command === "choose_folder" ? photos : original(command, args),
+  );
+  await act(() => mock.app!.showQueue(true));
+  const before = calls("start_scan").length;
+  await act(() =>
+    container
+      .querySelector<HTMLButtonElement>("button.scan-folder-nav")!
+      .click(),
+  );
+  await flush();
+  expect(calls("start_scan")).toHaveLength(before + 1);
+  expect(mock.app!.target?.path).toBe(photos.path);
+  expect(mock.app!.queueOpen).toBe(false);
+});
