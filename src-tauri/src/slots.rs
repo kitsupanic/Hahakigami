@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard,
+        Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard,
     },
 };
 
@@ -148,7 +148,11 @@ impl Session {
     }
     /// Takes the scan's `operation` lock and checks it is still usable for `need`. It does not read the store.
     pub(crate) fn hold(&self, need: Need) -> Result<Held<'_>, String> {
-        let operation = self.operation.lock().unwrap();
+        // A command that panicked while holding the scan poisons this; the lock guards no data, so later commands go on.
+        let operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.check_valid()?;
         if need == Need::LiveCompleted && self.finishing.load(Ordering::Acquire) {
             return Err(NOT_COMPLETED.into());
@@ -228,17 +232,21 @@ pub(crate) struct Slots {
 }
 
 impl Slots {
+    /// A command that panicked holding the table poisons it; the slots stay consistent, so every other command goes on.
+    fn lock(&self) -> MutexGuard<'_, LiveSlots> {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner)
+    }
     /// The live scan with this id, if its results are still valid.
     /// Takes no lock a scan holds, so read-only queries use it.
     pub(crate) fn find(&self, id: &str) -> Result<Arc<Session>, String> {
-        let s = self.live.lock().unwrap().find(id).ok_or(GONE)?;
+        let s = self.lock().find(id).ok_or(GONE)?;
         s.check_valid()?;
         Ok(s)
     }
     /// Every live scan, for matching cleanup-queue entries against the scan of their own root.
     /// Disk slots come first, so a disk's scan wins over a folder scan of the same root.
     pub(crate) fn sessions(&self) -> Vec<(Slot, Arc<Session>)> {
-        let live = self.live.lock().unwrap();
+        let live = self.lock();
         let mut slots: Vec<_> = live
             .slots
             .iter()
@@ -249,16 +257,11 @@ impl Slots {
     }
     /// Whether `s` still sits in a live slot: not replaced, not discarded.
     pub(crate) fn is_live(&self, s: &Arc<Session>) -> bool {
-        self.live
-            .lock()
-            .unwrap()
-            .slots
-            .values()
-            .any(|slot| Arc::ptr_eq(slot, s))
+        self.lock().slots.values().any(|slot| Arc::ptr_eq(slot, s))
     }
     /// For what cannot overlap any scan, a draining one included: refuses with `reason` while one runs.
     pub(crate) fn require_idle(&self, reason: &str) -> Result<(), String> {
-        if self.live.lock().unwrap().any_running() {
+        if self.lock().any_running() {
             return Err(reason.into());
         }
         Ok(())
@@ -269,10 +272,12 @@ impl Slots {
     /// waits for the old store's writer lock, behind any read of it, so no lookup may wait on the table meanwhile.
     /// The old scan's `operation` lock is held throughout. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
-        let mut live = self.live.lock().unwrap();
+        let mut live = self.lock();
         live.draining.retain(|s| session_running(s));
         let old = live.slots.get(&key).cloned();
-        let _operation = old.as_ref().map(|old| old.operation.lock().unwrap());
+        let _operation = old
+            .as_ref()
+            .map(|old| old.operation.lock().unwrap_or_else(PoisonError::into_inner));
         // Scans on other slots run side by side; only a scan already running in this slot stops the start.
         if live.slot_running(&key) {
             return Err(match key {
@@ -306,7 +311,7 @@ impl Slots {
     /// Drops a live scan whose disk was ejected: stops it if it is running, then frees its slot.
     /// A scan that has not ended yet keeps counting as running until it does. An unknown id is a no-op.
     pub(crate) fn discard(&self, id: &str) {
-        let mut live = self.live.lock().unwrap();
+        let mut live = self.lock();
         live.draining.retain(|s| session_running(s));
         let key = live
             .slots
@@ -337,7 +342,7 @@ impl Slots {
     }
     /// Puts a ready-made session in a slot, as if a scan had ended there.
     pub(crate) fn install(&self, key: Slot, s: Arc<Session>) {
-        self.live.lock().unwrap().slots.insert(key, s);
+        self.lock().slots.insert(key, s);
     }
 }
 
@@ -760,6 +765,55 @@ mod tests {
         // An invalidated scan that is still in its slot says why.
         live.invalidate();
         assert_eq!(slots.find(&live.id).err().unwrap(), RESULTS_CHANGED);
+    }
+
+    #[test]
+    fn a_poisoned_operation_lock_does_not_poison_the_slot_table() {
+        let slots = roomy();
+        let a = Path::new("/a");
+        let first = slots.replace(disk(a), request(a)).unwrap();
+        end(&first.session, ScanState::Cancelled);
+        // A command that panics while it holds the scan poisons its `operation` lock.
+        let held = first.session.clone();
+        assert!(std::thread::spawn(move || {
+            let _held = held.hold(Need::Live).unwrap();
+            panic!("command failed");
+        })
+        .join()
+        .is_err());
+        assert!(first.session.operation.is_poisoned());
+        assert!(first.session.hold(Need::Live).is_ok());
+        let second = slots.replace(disk(a), request(a)).unwrap();
+        assert!(!first.session.is_valid());
+        assert!(!slots.live.is_poisoned());
+        assert!(Arc::ptr_eq(
+            &slots.find(&second.session.id).unwrap(),
+            &second.session
+        ));
+    }
+
+    #[test]
+    fn a_poisoned_slot_table_keeps_working() {
+        let slots = roomy();
+        let a = Path::new("/a");
+        let first = slots.replace(disk(a), request(a)).unwrap();
+        assert!(std::thread::scope(|scope| scope
+            .spawn(|| {
+                let _live = slots.live.lock().unwrap();
+                panic!("table holder failed");
+            })
+            .join())
+        .is_err());
+        assert!(slots.live.is_poisoned());
+        assert!(Arc::ptr_eq(
+            &slots.find(&first.session.id).unwrap(),
+            &first.session
+        ));
+        assert_eq!(slots.sessions().len(), 1);
+        assert!(slots.is_live(&first.session));
+        assert!(slots.require_idle("busy").is_err());
+        slots.discard(&first.session.id);
+        assert!(slots.sessions().is_empty());
     }
 
     #[test]

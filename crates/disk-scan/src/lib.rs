@@ -1132,6 +1132,9 @@ fn scan_live_internal_reuse(
                             clone_capabilities,
                             &cancel,
                             clone_observations,
+                            // Any listing warning means a rich read failed and files were
+                            // marked checked without a reply, so they are no device evidence.
+                            clone_listing_warnings.is_empty(),
                         )),
                         _ => None,
                     };
@@ -1164,6 +1167,10 @@ fn scan_live_internal_reuse(
                         match listing {
                             // The root is held by descriptor; only a child directory can vanish.
                             Err(e) if fresh && id != 0 && vanished(&e) => {}
+                            // `retry::interrupted` reports cancellation as EINTR; that is not a scan error.
+                            Err(e)
+                                if e.kind() == std::io::ErrorKind::Interrupted
+                                    && cancel.load(Ordering::Relaxed) => {}
                             Err(e) => io_issue(&mut s, path, e),
                             Ok(entries) => {
                                 let check_firmlinks = firmlinks.may_have_alias_children(&path);
@@ -1430,24 +1437,7 @@ fn scan_live_internal_reuse(
         )
     };
     #[cfg(not(unix))]
-    let validation = {
-        let s = store.read().unwrap();
-        clones::Validation {
-            statuses: s
-                .tree
-                .clones
-                .iter()
-                .map(|(_, m)| {
-                    if m.verified {
-                        clones::ClaimStatus::Verified
-                    } else {
-                        clones::ClaimStatus::Unverified
-                    }
-                })
-                .collect(),
-            accounting: s.accounting.clone(),
-        }
-    };
+    let validation = clones::validate_unverified(&store.read().unwrap(), &cancel);
     let mut s = store.write().unwrap();
     validation.apply(&mut s);
     #[cfg(unix)]
@@ -1986,6 +1976,26 @@ mod tests {
         assert_eq!(s.state, ScanState::Cancelled);
         assert_eq!(s.node_count(), 1);
         assert!(s.stats.incomplete);
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_mid_scan_reports_no_interrupted_errors() {
+        let p = fixture();
+        for i in 0..64 {
+            fs::create_dir_all(p.join(format!("d{i}/a/b"))).unwrap();
+        }
+        for i in 0..200u64 {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let flag = cancel.clone();
+            let canceller = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_micros(i * 10));
+                flag.store(true, Ordering::Relaxed);
+            });
+            let s = scan(p.clone(), ScanOptions::default(), cancel, |_| {}).unwrap();
+            canceller.join().unwrap();
+            assert!(s.errors.is_empty(), "{:?}", s.errors);
+        }
         fs::remove_dir_all(p).unwrap();
     }
     #[cfg(target_os = "macos")]

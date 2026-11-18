@@ -39,6 +39,31 @@ impl Service {
     }
 
     pub(crate) fn scan(&self, path: PathBuf) -> Result<Value, String> {
+        self.scan_with(path, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// `scan` with the caller's cancel flag, so a caller can stop exactly this scan, even before it starts.
+    pub(crate) fn scan_with(
+        &self,
+        path: PathBuf,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Value, String> {
+        {
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|_| "Automation session lock poisoned")?;
+            if session.active {
+                return Err(
+                    "A scan is already running; cancel it and wait for it to finish.".into(),
+                );
+            }
+            // Active before the path is resolved, so a cancel during setup is kept: the scanner starts cancelled.
+            session.active = true;
+            session.cancel = cancel.clone();
+        }
+        // Clears `active` on every exit, including a scanner panic or an early `?`, so later scans are not refused.
+        let _active = ActiveGuard(&self.session);
         let resolved = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
         let expected = disk_scan::platform_identity(&resolved).map_err(|e| e.to_string())?;
         let root = disk_scan::ScanRoot::open(resolved, expected).map_err(|e| e.to_string())?;
@@ -50,17 +75,11 @@ impl Service {
         let (workers, _, _) = settings::ScanSettings::default()
             .resolve_scan_workers(scope, platform::scheduling_conditions());
         let store = Arc::new(RwLock::new(Snapshot::empty(root.path().to_owned())));
-        let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut session = self
                 .session
                 .lock()
                 .map_err(|_| "Automation session lock poisoned")?;
-            if session.active {
-                return Err(
-                    "A scan is already running; cancel it and wait for it to finish.".into(),
-                );
-            }
             *session = Session {
                 current: Some(store.clone()),
                 active: true,
@@ -68,8 +87,6 @@ impl Service {
                 ..Session::default()
             };
         }
-        // Clears `active` on every exit, including a scanner panic or an early `?`, so later scans are not refused.
-        let _active = ActiveGuard(&self.session);
         let result = disk_scan::scan_live_authorized(
             root,
             disk_scan::ScanOptions {
@@ -338,6 +355,18 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(!service.session.lock().unwrap().active);
+    }
+
+    #[test]
+    fn a_scan_that_fails_to_start_clears_active_and_keeps_the_previous_results() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let service = Service::new();
+        service.scan(root.clone()).unwrap();
+        assert!(service.scan(root.join("missing")).is_err());
+        assert!(!service.session.lock().unwrap().active);
+        assert_eq!(service.summary().unwrap()["state"], "completed");
+        service.scan(root).unwrap();
     }
 
     #[test]

@@ -349,6 +349,18 @@ it("supports keyboard tabs, keeps the file-types panel open during navigation, a
   expect(map().dataset.ids).toBe("");
 });
 
+it("keeps the File types tab through a Home round trip on the same scan", async () => {
+  await openTypes();
+  await act(() => app().showHome());
+  await flush();
+  await act(() => app().showResults());
+  await flush();
+  expect(
+    element.querySelector("#file-types-tab")?.getAttribute("aria-selected"),
+  ).toBe("true");
+  expect(panel().hidden).toBe(false);
+});
+
 it("labels matching-file results with their actual folder scope", async () => {
   await act(() => app().open(folder));
   await flush();

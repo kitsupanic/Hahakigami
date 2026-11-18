@@ -230,7 +230,7 @@
   );
   const selection = $derived(app.selection);
   // Derived, so progress events of the same scan do not re-run the reset below.
-  const shownScanId = $derived(summary?.scanId);
+  const shownScanId = $derived(app.summary?.scanId);
   $effect(() => {
     shownScanId;
     untrack(() => {

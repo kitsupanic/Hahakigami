@@ -73,9 +73,14 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
             issue(s, &snapshot, ids, None)
         }
         Pick::Queue(queue, scans) => {
-            // Lock order: operation (held), queue, store. The queue stays locked until the ticket records its revision.
-            let queue = queue.lock().unwrap();
-            queue.require_mutable()?;
+            // Lock order: operation (held), queue, store. The disk is checked on a copy, never under the queue lock:
+            // a hung share must not stall every queue command. The ticket records the copy's revision, and `commit`
+            // refuses it if the queue moved on.
+            let queue = {
+                let queue = queue.lock().unwrap();
+                queue.require_mutable()?;
+                queue.clone()
+            };
             let statuses = statuses(&queue, scans);
             let ids = cleanup_queue::ready_nodes(&queue, &statuses, &s.id);
             if ids.is_empty() {
@@ -112,7 +117,7 @@ fn issue(
         .iter()
         .map(|&id| Ok((snapshot.path(id)?, id)))
         .collect::<Result<_, String>>()?;
-    let items = selection(s, snapshot, ids)?;
+    let items = selection(s, snapshot, ids, None)?;
     let issues = issue_index(s, snapshot);
     let views = items
         .iter()
@@ -230,8 +235,10 @@ fn execute(
 /// Adds nodes of the held scan `s` to the queue.
 pub(crate) fn add(s: &Session, queue: &Mutex<Queue>, node_ids: &[u32]) -> Result<(), String> {
     let held = s.hold(Need::LiveCompleted)?;
+    // Queue before store. Queue edits need the activity gate, so this copy stays current while `held`.
+    let queued = queue.lock().unwrap().clone();
     let snapshot = held.completed_snapshot()?;
-    let items = selection(s, &snapshot, node_ids)?;
+    let items = selection(s, &snapshot, node_ids, Some(&queued))?;
     let candidates = cleanup_queue::candidates(&scan_view(s, &snapshot, false), items, node_ids)?;
     // Release the store before the queue: the lock order is operation, queue, store.
     drop(snapshot);
@@ -243,8 +250,18 @@ pub(crate) fn queue_view(
     queue: &Mutex<Queue>,
     scans: &[(Slot, Arc<Session>)],
 ) -> cleanup_queue::View {
-    let queue = queue.lock().unwrap();
-    cleanup_queue::view(&queue, &statuses(&queue, scans))
+    // The disk is checked on a copy, never under the queue lock: a hung share must not stall every queue command.
+    let copy = queue.lock().unwrap().clone();
+    let view = cleanup_queue::view(&copy, &statuses(&copy, scans));
+    // An edit that landed meanwhile makes the view stale: compute it once more from the newer queue.
+    let newer = {
+        let queue = queue.lock().unwrap();
+        (queue.revision != copy.revision).then(|| queue.clone())
+    };
+    match newer {
+        None => view,
+        Some(copy) => cleanup_queue::view(&copy, &statuses(&copy, scans)),
+    }
 }
 
 /// `s` and its `snapshot` as the cleanup rules see them.
@@ -261,27 +278,35 @@ pub(crate) fn scan_view<'a>(
         volumes: s.volumes.get(),
     }
 }
-/// The selected nodes of `s` as checked items, verified against the scan root and collapsed to the outermost.
+/// The selected nodes of `s` as checked items, collapsed to the outermost and then verified against the scan root.
+/// Only the outermost items touch the disk, and when `queued` is given they must fit its room before any of them
+/// does, so a huge selection is refused without a single disk read.
 pub(crate) fn selection(
     s: &Session,
     snapshot: &Snapshot,
     node_ids: &[u32],
+    queued: Option<&Queue>,
 ) -> Result<Vec<safety::CheckedItem>, String> {
     if node_ids.is_empty() {
         return Err("Select at least one item.".into());
     }
+    let scan = scan_view(s, snapshot, false);
+    let items = node_ids
+        .iter()
+        .map(|&id| safety::checked_item(&scan, id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut items = safety::collapse(items);
+    if let Some(queued) = queued {
+        queued.check_room(&items)?;
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mounts = platform::mounted_paths();
-    let scan = scan_view(s, snapshot, false);
-    let mut items = vec![];
-    for &id in node_ids {
-        let mut item = safety::checked_item(&scan, id)?;
+    for item in &mut items {
         // Read before `verify`, so a file replaced in between fails it.
         item.pin_birth();
-        safety::verify(&item, &snapshot.root, home.as_deref(), &mounts)?;
-        items.push(item);
+        safety::verify(item, &snapshot.root, home.as_deref(), &mounts)?;
     }
-    Ok(safety::collapse(items))
+    Ok(items)
 }
 /// Runs `f` with the scans that can vouch for queue entries: Live, valid, not running and Completed. Their
 /// snapshots stay read-locked while `f` runs.

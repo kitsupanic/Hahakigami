@@ -27,7 +27,6 @@ import { cleanupResult } from "./cleanupResults";
 import type { AppToast } from "./toastTypes";
 import { canvasEvidence, runNativeInteractions } from "./nativeBenchmark";
 import {
-  bytes,
   type FullDiskAccess,
   type NodeView,
   type Page,
@@ -947,7 +946,11 @@ export default function createApp() {
           !restarted &&
           summary?.state !== "cancelled"
         )
-          showToast("Scan cancelled. Partial results are shown.");
+          showToast(
+            exploring
+              ? "Scan cancelled. Partial results are shown."
+              : `Scan of ${liveTarget?.name ?? "the disk"} cancelled.`,
+          );
         setSummary(s);
       },
       fetched: setSummary,
@@ -1536,8 +1539,7 @@ export default function createApp() {
     exploring &&
       summary?.state === "completed" &&
       selection.length > 0 &&
-      !busy &&
-      !quickLook.pending &&
+      !sessionBlocked &&
       !selection.some((node) => node.excluded),
   );
   const readyHereEntries = $derived(cleanupQueue.readyHere);
@@ -1579,7 +1581,6 @@ export default function createApp() {
     get addToQueue() {
       return (
         selectionActionable &&
-        !queueBusy &&
         !queue.blocked &&
         !queueSelection.queued &&
         !queueSelection.directlyQueued &&

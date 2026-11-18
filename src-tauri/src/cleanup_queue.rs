@@ -15,6 +15,7 @@ use std::{
 };
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 1000;
+const FULL: &str = "Cleanup queue supports at most 1,000 entries. Remove items first.";
 mod native_path {
     use super::*;
     pub fn serialize<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
@@ -95,6 +96,37 @@ fn record_nonregular(directory: &File) -> std::io::Result<bool> {
     let stat = unsafe { stat.assume_init() };
     Ok(stat.st_mode & libc::S_IFMT != libc::S_IFREG)
 }
+/// Removes the `<uuid>.tmp` files a crash between `publish`'s write and its rename left behind (up to 16 MB
+/// each). Only regular files named `*.tmp` go: symlinks, directories and `quarantine-*` records stay. Best effort.
+fn remove_stale_temps(directory: &File) {
+    // Lists the directory through the descriptor opened without following symlinks, not through its path.
+    let fd = unsafe { libc::dup(directory.as_raw_fd()) };
+    if fd < 0 {
+        return;
+    }
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        unsafe { libc::close(fd) };
+        return;
+    }
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let (name, kind) = unsafe {
+            (
+                std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()),
+                (*entry).d_type,
+            )
+        };
+        // `unlinkat` never follows a symlink, and without AT_REMOVEDIR it leaves directories alone.
+        if kind == libc::DT_REG && name.to_bytes().ends_with(b".tmp") {
+            unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+        }
+    }
+    unsafe { libc::closedir(stream) };
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Guard {
     #[serde(with = "native_path")]
@@ -173,7 +205,7 @@ struct Record {
     version: u32,
     entries: Vec<Candidate>,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Queue {
     directory: Option<PathBuf>,
     pub entries: Vec<Candidate>,
@@ -195,6 +227,7 @@ impl Queue {
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
                 .open(&directory)?;
+            remove_stale_temps(&dir);
             let file = open_at(&dir, c"queue.json", libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
             if !file.metadata()?.is_file() {
                 return Err(std::io::Error::other("Queue record is not regular"));
@@ -329,6 +362,29 @@ impl Queue {
         self.blocked = false;
         Ok(())
     }
+    /// Fails as `add` would when `items` (outermost only) cannot be merged in under `MAX_ENTRIES`, from paths alone
+    /// so it can run before any disk check: an item under a queued entry adds nothing, one above queued entries
+    /// replaces them.
+    pub fn check_room(&self, items: &[CheckedItem]) -> Result<(), String> {
+        self.require_mutable()?;
+        let queued: std::collections::HashSet<&Path> =
+            self.entries.iter().map(|c| c.item.path.as_path()).collect();
+        let new: std::collections::HashSet<&Path> =
+            items.iter().map(|i| i.path.as_path()).collect();
+        let added = items
+            .iter()
+            .filter(|i| !i.path.ancestors().any(|a| queued.contains(a)))
+            .count();
+        let replaced = self
+            .entries
+            .iter()
+            .filter(|c| c.item.path.ancestors().skip(1).any(|a| new.contains(a)))
+            .count();
+        if self.entries.len() - replaced + added > MAX_ENTRIES {
+            return Err(FULL.into());
+        }
+        Ok(())
+    }
     pub fn add(&mut self, candidates: Vec<Candidate>) -> Result<(), String> {
         self.require_mutable()?;
         let mut candidates: Vec<_> = self
@@ -351,7 +407,7 @@ impl Queue {
             entries.push(c);
         }
         if entries.len() > MAX_ENTRIES {
-            return Err("Cleanup queue supports at most 1,000 entries. Remove items first.".into());
+            return Err(FULL.into());
         }
         entries.sort_by_key(|(index, _)| *index);
         let entries: Vec<_> = entries.into_iter().map(|(_, c)| c).collect();
@@ -406,8 +462,8 @@ impl Queue {
                     return None;
                 }
                 let mut c = c.clone();
-                if let Some((_, error)) = failures.iter().find(|(p, _)| c.item.path.starts_with(p))
-                {
+                // Exact path: a failed folder never tried the queued entries under it.
+                if let Some((_, error)) = failures.iter().find(|(p, _)| *p == c.item.path) {
                     let error: String = error.chars().take(4096).collect();
                     if c.last_error.as_ref() != Some(&error) {
                         changed = true;
@@ -1046,5 +1102,47 @@ mod tests {
         assert!(record.is_dir());
         assert_eq!(fs::read(record.join("keep")).unwrap(), b"preserved");
         assert_eq!(fs::read_dir(storage).unwrap().count(), 1);
+    }
+    #[test]
+    fn a_failed_folder_does_not_mark_queued_entries_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let folder = root.join("folder");
+        fs::create_dir(&folder).unwrap();
+        let child = folder.join("child");
+        fs::write(&child, []).unwrap();
+        let mut q = Queue::load(root.join("queue"));
+        q.add(vec![candidate(&root, &child)]).unwrap();
+        let revision = q.revision;
+        // The folder failed to trash; the entry under it was never tried.
+        q.outcomes(&[], &[(folder.clone(), "folder failed".into())])
+            .unwrap();
+        assert_eq!((q.revision, &q.entries[0].last_error), (revision, &None));
+        q.outcomes(&[], &[(child, "child failed".into())]).unwrap();
+        assert_eq!(q.entries[0].last_error.as_deref(), Some("child failed"));
+        // A trashed folder does take its descendants with it.
+        q.outcomes(&[folder], &[]).unwrap();
+        assert!(q.entries.is_empty());
+    }
+    #[test]
+    fn load_removes_stale_temp_records_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        fs::create_dir(&storage).unwrap();
+        let stale = storage.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&stale, b"half written").unwrap();
+        let quarantine = storage.join("quarantine-1");
+        fs::write(&quarantine, b"kept").unwrap();
+        let victim = dir.path().join("victim.tmp");
+        fs::write(&victim, b"untouched").unwrap();
+        let link = storage.join("link.tmp");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let folder = storage.join("folder.tmp");
+        fs::create_dir(&folder).unwrap();
+        assert!(!Queue::load(storage).blocked);
+        assert!(!stale.exists());
+        assert!(quarantine.exists() && folder.is_dir());
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(fs::read(victim).unwrap(), b"untouched");
     }
 }

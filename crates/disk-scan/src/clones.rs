@@ -39,6 +39,30 @@ impl Validation {
         s.accounting = self.accounting;
     }
 }
+/// Without native clone queries nothing is re-verified; keep what the scan already knew.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn validate_unverified(
+    s: &Snapshot,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Validation {
+    let mut accounting = s.accounting.clone();
+    accounting.checks_complete &= !cancel.load(std::sync::atomic::Ordering::Relaxed);
+    Validation {
+        statuses: s
+            .tree
+            .clones
+            .iter()
+            .map(|(_, m)| {
+                if m.verified {
+                    ClaimStatus::Verified
+                } else {
+                    ClaimStatus::Unverified
+                }
+            })
+            .collect(),
+        accounting,
+    }
+}
 #[cfg(unix)]
 pub(crate) fn validate(
     s: &Snapshot,
@@ -52,23 +76,7 @@ pub(crate) fn validate(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = root;
-        let mut accounting = s.accounting.clone();
-        accounting.checks_complete &= !cancel.load(std::sync::atomic::Ordering::Relaxed);
-        Validation {
-            statuses: s
-                .tree
-                .clones
-                .iter()
-                .map(|(_, m)| {
-                    if m.verified {
-                        ClaimStatus::Verified
-                    } else {
-                        ClaimStatus::Unverified
-                    }
-                })
-                .collect(),
-            accounting,
-        }
+        validate_unverified(s, cancel)
     }
 }
 pub(crate) struct ProbeBatch {
@@ -110,8 +118,9 @@ pub(crate) fn prepare(
     caps: &std::sync::Mutex<HashMap<u64, bool>>,
     cancel: &std::sync::atomic::AtomicBool,
     observations: std::collections::VecDeque<(usize, CloneMetadata)>,
+    device_answered: bool,
 ) -> ProbeBatch {
-    prepare_core(entries, fd, caps, observations, || {
+    prepare_core(entries, fd, caps, observations, device_answered, || {
         cancel.load(std::sync::atomic::Ordering::Relaxed)
     })
 }
@@ -139,6 +148,7 @@ fn prepare_core(
     fd: &std::os::fd::OwnedFd,
     caps: &std::sync::Mutex<HashMap<u64, bool>>,
     observations: std::collections::VecDeque<(usize, CloneMetadata)>,
+    device_answered: bool,
     mut cancelled: impl FnMut() -> bool,
 ) -> ProbeBatch {
     let mut batch = ProbeBatch {
@@ -151,11 +161,13 @@ fn prepare_core(
     // A bulk reply with clone fields (fresh rich listing, or `vouch_reused`) means this device
     // answered, so one file's reply without them is that file's warning, not a volume signal.
     // shortcut: one device per listing (files of a directory share it), as `vouch_reused` assumes.
+    // A listing recovered from a failed rich read marks files `clone_checked` without any reply
+    // (`device_answered` is false), so it proves nothing about the device.
     #[cfg(target_os = "macos")]
     if let Some(e) = entries
         .iter()
         .flatten()
-        .find(|e| e.kind == NodeKind::File && e.clone_checked)
+        .find(|e| device_answered && e.kind == NodeKind::File && e.clone_checked)
     {
         caps.lock().unwrap().insert(e.device, true);
     }
@@ -189,7 +201,7 @@ fn prepare_core(
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let _ = (fd, caps);
+                    let _ = (fd, caps, device_answered);
                     Ok(None)
                 }
             }
@@ -227,6 +239,7 @@ pub(crate) fn commit(s: &mut Snapshot, id: u32, result: std::io::Result<Option<C
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
+    use crate::bulk::is_unsupported;
     use std::{
         io,
         os::{
@@ -243,13 +256,6 @@ mod native {
     }
     fn unsupported() -> io::Error {
         io::Error::new(io::ErrorKind::Unsupported, "clone attributes unsupported")
-    }
-    fn is_unsupported(error: &io::Error) -> bool {
-        error.kind() == io::ErrorKind::Unsupported
-            || matches!(
-                error.raw_os_error(),
-                Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL)
-            )
     }
     // Cursor over the shared bounds-checked readers in bulk.rs.
     fn u32at(b: &[u8], o: &mut usize) -> io::Result<u32> {
@@ -1057,7 +1063,7 @@ mod native {
                             statuses[i] = ClaimStatus::Unverified;
                         }
                         fallback.clear();
-                        if matches!(e.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP)) {
+                        if is_unsupported(&e) {
                             direct = true;
                         } else {
                             warning(info, e);
@@ -1526,6 +1532,7 @@ mod native {
                     caps,
                     &AtomicBool::new(false),
                     Default::default(),
+                    true,
                 )
             };
             // Control: an HFS+ reply without clone fields, from a device that never answered, is
@@ -1551,6 +1558,32 @@ mod native {
             drop(fd);
             drop(guard);
             let _ = std::fs::remove_dir_all(&base);
+        }
+        #[test]
+        fn files_of_a_recovered_listing_are_not_evidence_the_device_answered() {
+            let (p, s, fd) = real_clone_fixture("recovered-evidence");
+            let checked = || {
+                let mut e =
+                    crate::descriptor::entry_at(&fd, &s.root, std::ffi::OsStr::new("a")).unwrap();
+                e.clone_checked = true;
+                e
+            };
+            for (answered, expected) in [(false, None), (true, Some(true))] {
+                let caps = std::sync::Mutex::new(HashMap::new());
+                super::super::prepare(
+                    &[Ok(checked())],
+                    &fd,
+                    &caps,
+                    &AtomicBool::new(false),
+                    Default::default(),
+                    answered,
+                );
+                assert_eq!(
+                    caps.lock().unwrap().get(&checked().device).copied(),
+                    expected
+                );
+            }
+            std::fs::remove_dir_all(p).unwrap();
         }
         #[test]
         fn non_apfs_volume_scans_without_clone_warnings() {
@@ -2325,6 +2358,7 @@ mod native {
                 &std::sync::Mutex::new(HashMap::new()),
                 &AtomicBool::new(false),
                 std::collections::VecDeque::from([(3, bulk_metadata.clone().unwrap())]),
+                true,
             );
             assert_eq!(batch.queries, 2);
             assert_eq!(
@@ -2358,6 +2392,7 @@ mod native {
                     &fd,
                     &std::sync::Mutex::new(HashMap::new()),
                     observations,
+                    true,
                     || {
                         let cancelled = visited == stop_at;
                         visited += 1;
@@ -2402,6 +2437,7 @@ mod native {
                 &std::sync::Mutex::new(HashMap::new()),
                 &AtomicBool::new(true),
                 std::collections::VecDeque::from([(3, bulk_metadata.unwrap())]),
+                true,
             );
             assert!(cancelled.cancelled);
             assert_eq!(cancelled.queries, 0);
@@ -2455,6 +2491,7 @@ mod native {
                 &std::sync::Mutex::new(HashMap::new()),
                 &AtomicBool::new(false),
                 observations,
+                true,
             );
             assert_eq!(batch.queries, 2);
             let published: Vec<_> = (0..entries.len()).map(|i| batch.take_at(i)).collect();

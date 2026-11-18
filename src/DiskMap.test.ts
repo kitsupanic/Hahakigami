@@ -2597,3 +2597,117 @@ it("exposes the map as an image with a live summary, a permanent queue key and a
     element.remove();
   }
 });
+
+async function mountWithManualWorker() {
+  let respond: ((shapes: Shape[]) => void) | undefined;
+  let requested = 0;
+  vi.stubGlobal(
+    "Worker",
+    class {
+      onmessage:
+        | ((event: { data: { requestId: number; shapes: Shape[] } }) => void)
+        | null = null;
+      postMessage(data: { requestId: number }) {
+        requested = data.requestId;
+        respond = (shapes) =>
+          this.onmessage?.({ data: { requestId: requested, shapes } });
+      }
+      terminate() {}
+    },
+  );
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const context = Object.fromEntries(
+    ["setLineDash", "setTransform", "clearRect", "beginPath", "rect", "arc"]
+      .concat(["closePath", "fill", "stroke", "save", "clip", "restore"])
+      .map((key) => [key, vi.fn()]),
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    withGradients(context) as unknown as CanvasRenderingContext2D,
+  );
+  const element = document.createElement("div");
+  document.body.append(element);
+  const root = createRoot(element);
+  return { context, element, root, respond: (s: Shape[]) => respond?.(s) };
+}
+const emptyRoot: NodeView = {
+  id: 0,
+  parentId: null,
+  name: "root",
+  path: "/root",
+  kind: "directory",
+  allocatedBytes: 0,
+  childrenCount: 0,
+  incomplete: false,
+};
+
+it("keeps the previous frame after a mode switch until the worker replies", async () => {
+  const { context, element, root, respond } = await mountWithManualWorker();
+  const shape: Shape = {
+    id: 1,
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    start: 0,
+    end: 0,
+    inner: 0,
+    outer: 0,
+    depth: 0,
+  };
+  const render = (mode: "treemap" | "sunburst") =>
+    root.render(DiskMap, {
+      nodes: [emptyRoot],
+      rootId: 0,
+      mode,
+      selected: [],
+      onSelect: () => {},
+      onOpen: () => {},
+    });
+  try {
+    await act(async () => render("treemap"));
+    await act(async () => respond([shape]));
+    expect(context.fill).toHaveBeenCalled();
+    context.clearRect.mockClear();
+    context.arc.mockClear();
+    await act(async () => render("sunburst"));
+    expect(context.clearRect).not.toHaveBeenCalled();
+    expect(context.arc).not.toHaveBeenCalled();
+    await act(async () => respond([shape]));
+    expect(context.clearRect).toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
+it("says a completed scan has nothing to draw, but not while the scan runs", async () => {
+  const { element, root, respond } = await mountWithManualWorker();
+  const nodes = [emptyRoot];
+  const empty = () => element.querySelector(".map-empty")?.textContent?.trim();
+  const render = (scanComplete: boolean) =>
+    root.render(DiskMap, {
+      nodes,
+      rootId: 0,
+      mode: "treemap",
+      selected: [],
+      scanComplete,
+      onSelect: () => {},
+      onOpen: () => {},
+    });
+  try {
+    await act(async () => render(false));
+    await act(async () => respond([]));
+    expect(empty()).toBe("The map fills in as files are found");
+    await act(async () => render(true));
+    expect(empty()).toBe("Nothing here takes space on disk.");
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
