@@ -126,11 +126,12 @@ pub(crate) fn vouch_reused(
     caps: &std::sync::Mutex<HashMap<u64, bool>>,
     cancel: &std::sync::atomic::AtomicBool,
     observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
+    buffer: &mut Vec<u8>,
 ) {
     #[cfg(target_os = "macos")]
-    native::vouch_reused(entries, fd, caps, cancel, observations);
+    native::vouch_reused(entries, fd, caps, cancel, observations, buffer);
     #[cfg(not(target_os = "macos"))]
-    let _ = (entries, fd, caps, cancel, observations);
+    let _ = (entries, fd, caps, cancel, observations, buffer);
 }
 #[cfg(unix)]
 fn prepare_core(
@@ -640,6 +641,7 @@ mod native {
         caps: &std::sync::Mutex<HashMap<u64, bool>>,
         cancel: &AtomicBool,
         observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
+        buffer: &mut Vec<u8>,
     ) {
         let mut wanted = HashMap::new();
         let mut device = None;
@@ -662,7 +664,9 @@ mod native {
         }
         let mut matched = vec![false; entries.len()];
         let mut shared = Vec::new();
-        let result = crate::bulk::visit_clone_records(fd, cancel, &mut Default::default(), |r| {
+        // The worker's bulk buffer is lent for the read so each reused folder avoids a fresh 64 KiB.
+        let mut stats = crate::bulk::CloneReadStats::with_buffer(std::mem::take(buffer));
+        let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, |r| {
             let Some(&i) = wanted.get(r.name) else {
                 return Ok(());
             };
@@ -687,6 +691,7 @@ mod native {
             Ok(())
         });
         drop(wanted);
+        *buffer = stats.into_buffer();
         // A failed read vouches for nothing: every file keeps its per-file probe.
         if result.is_ok() {
             for (entry, _) in entries.iter_mut().zip(&matched).filter(|(_, m)| **m) {
@@ -2423,6 +2428,7 @@ mod native {
                 &caps,
                 &AtomicBool::new(false),
                 &mut observations,
+                &mut Vec::new(),
             );
             let checked = |entries: &[io::Result<crate::Entry>]| -> Vec<bool> {
                 entries
@@ -2465,6 +2471,7 @@ mod native {
                 &caps,
                 &AtomicBool::new(true),
                 &mut observations,
+                &mut Vec::new(),
             );
             assert_eq!(checked(&fresh), [false, false]);
             assert!(observations.is_empty());
@@ -2476,6 +2483,7 @@ mod native {
                 &caps,
                 &AtomicBool::new(false),
                 &mut observations,
+                &mut Vec::new(),
             );
             assert_eq!(checked(&fresh), [false, false]);
             std::fs::remove_dir_all(p).unwrap();

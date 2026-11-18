@@ -13,26 +13,23 @@
     Math.min(summary.errors, Math.max(0, summary.restrictedSystemIssues ?? 0)),
   );
   let other = $derived(Math.max(0, summary.errors - restricted));
-  // Only real problems are listed; restricted system locations and excluded mounts are expected.
-  let initialKind = $derived((): ScanIssueKind => "other");
+  let initialKind: ScanIssueKind = $derived(
+    !other && restricted ? "restricted" : "other",
+  );
   let incomplete = $derived(!!coverageLabel(summary));
-  let kind: ScanIssueKind = $state.raw(untrack(() => initialKind()));
+  // There is no kind picker: follow the category that has entries, so real errors that
+  // arrive after restricted ones still show.
+  let kind: ScanIssueKind = $derived(initialKind);
   let offset = $state.raw(0);
   let page: ScanIssuePage | null = $state.raw(null);
   let loading = $state.raw(false);
   let error = $state.raw("");
   let retry = $state.raw(0);
   let generation = 0;
-  let opened = false;
-  // The first time the tab opens, start on the category that has entries; later
-  // openings keep whatever the person picked. Runs before the load effect reads it.
+  // A new category starts on its first page. Runs before the load effect reads it.
   $effect.pre(() => {
-    if (active && !opened)
-      untrack(() => {
-        kind = initialKind();
-        offset = 0;
-        opened = true;
-      });
+    kind;
+    untrack(() => (offset = 0));
   });
   let copying = $state.raw(false);
   let copyMessage = $state.raw("");
@@ -149,10 +146,17 @@
         requestedKind = kind,
         requestedOffset = offset;
       const current = ++generation;
-      page = null;
       error = "";
+      // A count change refetches the shown page in place; any other request drops it.
+      if (
+        !active ||
+        page?.scanId !== scanId ||
+        page.kind !== requestedKind ||
+        page.offset !== requestedOffset
+      )
+        page = null;
       if (!active) return;
-      loading = true;
+      loading = !page;
       invoke<ScanIssuePage>("get_scan_issues", {
         scanId,
         kind: requestedKind,
@@ -212,7 +216,7 @@
         <p class="scan-issue-note">
           These counts are problems or skipped places, not unreadable files. One folder problem can affect everything inside it.
         </p>
-        {#if loading}<p role="status">
+        {#if loading && !page}<p role="status">
             Loading scan details…
           </p>{/if}{#if error}<div role="alert">
             {error}{" "}<button

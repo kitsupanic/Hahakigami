@@ -3,6 +3,7 @@ import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 // The coverage panel is driven through the popover that owns its chip and tab.
 import ScanDetails from "./ScanDetails.svelte";
+import ScanIssues from "./ScanIssues.svelte";
 import type { ScanSummary, ScanIssuePage } from "./types";
 const mock = vi.hoisted(() => ({ invoke: vi.fn(), writeText: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mock.invoke }));
@@ -528,4 +529,65 @@ it("keeps an incomplete result with zero error events explicit and exclusions al
   );
   expect(container.querySelector(".scan-coverage-chip")).toBeNull();
   expect(container.querySelector(".partial-coverage")).toBeNull();
+});
+
+it("keeps the loaded page visible while a progress event raises the error count", async () => {
+  await click("Show scan details");
+  let resolve!: (result: ScanIssuePage) => void;
+  mock.invoke.mockImplementationOnce(
+    () =>
+      new Promise<ScanIssuePage>((done) => {
+        resolve = done;
+      }),
+  );
+  await act(async () =>
+    root.render(ScanDetails, {
+      ...detailsProps,
+      summary: { ...summary, state: "running", errors: 3 },
+    }),
+  );
+  expect(container.textContent).toContain("/fixture/private");
+  expect(container.textContent).not.toContain("Loading scan details");
+  const next = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next details",
+  )!;
+  expect(next).toBeTruthy();
+  await act(async () => resolve({ ...page(), total: 3, retainedTotal: 3 }));
+  expect(container.textContent).toContain("of 3 retained details");
+});
+
+it("opens on the restricted category when it is the only one with entries", async () => {
+  await act(async () =>
+    root.render(ScanIssues, {
+      summary: { ...summary, errors: 2, restrictedSystemIssues: 2 },
+      active: true,
+    }),
+  );
+  expect(mock.invoke).toHaveBeenLastCalledWith("get_scan_issues", {
+    scanId: "scan-1",
+    kind: "restricted",
+    offset: 0,
+    limit: 100,
+  });
+});
+
+it("switches to real errors when they arrive after restricted-only issues", async () => {
+  await act(async () =>
+    root.render(ScanIssues, {
+      summary: { ...summary, state: "running", errors: 2, restrictedSystemIssues: 2 },
+      active: true,
+    }),
+  );
+  await act(async () =>
+    root.render(ScanIssues, {
+      summary: { ...summary, state: "running", errors: 3, restrictedSystemIssues: 2 },
+      active: true,
+    }),
+  );
+  expect(mock.invoke).toHaveBeenLastCalledWith("get_scan_issues", {
+    scanId: "scan-1",
+    kind: "other",
+    offset: 0,
+    limit: 100,
+  });
 });

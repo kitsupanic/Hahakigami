@@ -516,31 +516,12 @@ fn enumerate_opened(
     cancel: &AtomicBool,
     fd: &std::os::fd::OwnedFd,
 ) -> std::io::Result<Vec<std::io::Result<Entry>>> {
-    enumerate_opened_limited(
+    enumerate_opened_with_accounting(
         path,
         backend,
         cancel,
         fd,
-        None,
         &descriptor::identity_fd(fd)?,
-    )
-}
-#[cfg(all(unix, test))]
-fn enumerate_opened_limited(
-    path: &Path,
-    backend: Backend,
-    cancel: &AtomicBool,
-    fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
-    expected: &Identity,
-) -> std::io::Result<Vec<std::io::Result<Entry>>> {
-    enumerate_opened_limited_with_accounting(
-        path,
-        backend,
-        cancel,
-        fd,
-        limit,
-        expected,
         &mut Vec::new(),
         &mut std::collections::VecDeque::new(),
         &mut Vec::new(),
@@ -548,12 +529,11 @@ fn enumerate_opened_limited(
 }
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
-fn enumerate_opened_limited_with_accounting(
+fn enumerate_opened_with_accounting(
     path: &Path,
     backend: Backend,
     cancel: &AtomicBool,
     fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
     expected: &Identity,
     accounting_warnings: &mut Vec<String>,
     clone_observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
@@ -571,7 +551,6 @@ fn enumerate_opened_limited_with_accounting(
             backend,
             cancel,
             fresh.as_ref().unwrap_or(fd),
-            limit,
             accounting_warnings,
             clone_observations,
             bulk_buffer,
@@ -586,7 +565,6 @@ fn enumerate_once(
     backend: Backend,
     cancel: &AtomicBool,
     fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
     accounting_warnings: &mut Vec<String>,
     clone_observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
     bulk_buffer: &mut Vec<u8>,
@@ -594,11 +572,10 @@ fn enumerate_once(
     if backend != Backend::Portable {
         #[cfg(target_os = "macos")]
         {
-            match bulk::enumerate_limited_with_accounting(
+            match bulk::enumerate_with_accounting(
                 path,
                 cancel,
                 fd,
-                limit,
                 accounting_warnings,
                 clone_observations,
                 bulk_buffer,
@@ -612,7 +589,7 @@ fn enumerate_once(
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (accounting_warnings, clone_observations, bulk_buffer);
-    descriptor::enumerate_limited(fd, path, cancel, limit)
+    descriptor::enumerate(fd, path, cancel)
 }
 struct Work {
     id: u32,
@@ -1106,15 +1083,15 @@ fn scan_live_internal_reuse(
                                     clone_capabilities,
                                     &cancel,
                                     &mut clone_observations,
+                                    &mut bulk_buffer,
                                 );
                                 Ok(entries)
                             }
-                            _ => enumerate_opened_limited_with_accounting(
+                            _ => enumerate_opened_with_accounting(
                                 &path,
                                 options.backend,
                                 &cancel,
                                 opened.fd(),
-                                None,
                                 &expected,
                                 &mut clone_listing_warnings,
                                 &mut clone_observations,

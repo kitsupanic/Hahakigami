@@ -82,7 +82,23 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
                 return Err("No queued items are ready in the current live scan.".into());
             }
             let snapshot = held.completed_snapshot()?;
-            issue(s, &snapshot, &ids, Some(queue.revision))
+            let review = issue(s, &snapshot, &ids, Some(queue.revision))?;
+            // The ticket re-read each birth time from disk; it must still match the one saved when the item was
+            // queued, or a file recreated in the same slot after `statuses` would pass.
+            let mut ticket = s.ticket.lock().unwrap();
+            let replaced = ticket.as_ref().is_some_and(|t| {
+                t.items.iter().any(|item| {
+                    queue
+                        .entries
+                        .iter()
+                        .any(|c| c.item.path == item.path && c.item.identity != item.identity)
+                })
+            });
+            if replaced {
+                *ticket = None;
+                return Err("The selected item changed. Rescan before cleanup.".into());
+            }
+            Ok(review)
         }
     }
 }
@@ -259,7 +275,9 @@ pub(crate) fn selection(
     let scan = scan_view(s, snapshot, false);
     let mut items = vec![];
     for &id in node_ids {
-        let item = safety::checked_item(&scan, id)?;
+        let mut item = safety::checked_item(&scan, id)?;
+        // Read before `verify`, so a file replaced in between fails it.
+        item.pin_birth();
         safety::verify(&item, &snapshot.root, home.as_deref(), &mounts)?;
         items.push(item);
     }

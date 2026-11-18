@@ -465,6 +465,7 @@ pub(crate) fn candidates(
             device: root.identity.device,
             inode: root.identity.inode,
             kind: 1,
+            birth: None,
         },
     };
     let guards = |lineage: &[(PathBuf, Identity)]| {
@@ -593,6 +594,7 @@ pub(crate) fn statuses(
             device: n.identity.device,
             inode: n.identity.inode,
             kind: 1,
+            birth: None,
         });
         for (c, exact) in entries {
             let found = matches.get(c.item.path.as_path()).copied();
@@ -740,6 +742,43 @@ mod tests {
             last_error: None,
             volume: Some(Volume::read(crate::platform::VolumeOf::Path(root)).unwrap()),
         }
+    }
+    #[test]
+    fn a_queue_saved_before_birth_times_still_loads_and_matches() {
+        fn strip_birth(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    m.remove("birth");
+                    m.values_mut().for_each(strip_birth);
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(strip_birth),
+                _ => {}
+            }
+        }
+        // Under HOME: the system temp dir is a protected path.
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let file = root.join("file");
+        fs::write(&file, b"data").unwrap();
+        let storage = root.join("queue");
+        let entry = candidate(&root, &file);
+        assert!(entry.item.identity.birth.is_some());
+        Queue::load(storage.clone())
+            .add(vec![entry.clone()])
+            .unwrap();
+        let record = storage.join("queue.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        assert!(json.to_string().contains("birth"));
+        strip_birth(&mut json);
+        fs::write(&record, serde_json::to_vec(&json).unwrap()).unwrap();
+        let queue = Queue::load(storage);
+        assert!(!queue.blocked, "{:?}", queue.warning);
+        assert_eq!(queue.entries.len(), 1);
+        let old = &queue.entries[0];
+        assert_eq!(old.item.identity.birth, None);
+        assert_eq!(old.item.identity, entry.item.identity);
+        assert!(safety::verify_paths(&old.checked(), &root, None, &[]).is_ok());
     }
     #[test]
     fn restart_preserves_native_bytes_private_modes_and_overlap_semantics() {
@@ -916,6 +955,7 @@ mod tests {
                 device: 1,
                 inode: 1,
                 kind: 1,
+                birth: None,
             },
         };
         let template = Candidate {

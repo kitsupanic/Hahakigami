@@ -243,25 +243,15 @@ fn parse_into<'a, N>(
     parsed
 }
 #[cfg(target_os = "macos")]
-pub(crate) fn enumerate_limited_with_accounting(
+pub(crate) fn enumerate_with_accounting(
     path: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
     warnings: &mut Vec<String>,
     observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
     buffer: &mut Vec<u8>,
 ) -> io::Result<Vec<io::Result<Entry>>> {
-    enumerate_attempt(
-        path,
-        cancel,
-        fd,
-        limit,
-        true,
-        warnings,
-        observations,
-        buffer,
-    )
+    enumerate_attempt(path, cancel, fd, true, warnings, observations, buffer)
 }
 #[cfg(target_os = "macos")]
 fn read_batch(fd: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool) -> io::Result<usize> {
@@ -296,7 +286,6 @@ fn enumerate_attempt(
     path: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
     rich: bool,
     warnings: &mut Vec<String>,
     observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
@@ -306,7 +295,6 @@ fn enumerate_attempt(
         path,
         cancel,
         fd,
-        limit,
         rich,
         warnings,
         observations,
@@ -315,17 +303,14 @@ fn enumerate_attempt(
     )
 }
 #[cfg(target_os = "macos")]
-fn reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize, limit: Option<usize>) {
-    let additional = batch_len.min(limit.unwrap_or(usize::MAX).saturating_sub(entries.len()));
-    let needed = entries.len().saturating_add(additional);
-    // Calibration retains its existing reservation policy and allowance cap.
-    let threshold = if limit.is_some() { 4096 } else { 16_384 };
+fn reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize) {
+    let needed = entries.len().saturating_add(batch_len);
     if needed <= entries.capacity() {
         return;
     }
-    if needed <= threshold {
+    if needed <= 16_384 {
         // Match push's small-vector doubling before extend can reserve an exact
-        // batch-sized prefix. A small calibration allowance never shrinks this.
+        // batch-sized prefix.
         let size = std::mem::size_of::<T>();
         let minimum = if size == 1 {
             8
@@ -348,7 +333,6 @@ fn reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize, limit: Optio
             .capacity()
             .saturating_add(entries.capacity().div_ceil(2)),
     );
-    let target = target.min(limit.unwrap_or(usize::MAX));
     entries.reserve_exact(target.saturating_sub(entries.len()));
 }
 #[cfg(target_os = "macos")]
@@ -357,7 +341,6 @@ fn enumerate_using(
     path: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     fd: &std::os::fd::OwnedFd,
-    limit: Option<usize>,
     rich: bool,
     warnings: &mut Vec<String>,
     observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
@@ -385,7 +368,9 @@ fn enumerate_using(
         };
         match parsed {
             Ok(()) => {}
-            Err(error) if rich => {
+            // EINTR is the caller's `retry::interrupted` to relist; recovering here
+            // would drop clone data and add a spurious warning.
+            Err(error) if rich && error.kind() != io::ErrorKind::Interrupted => {
                 let unsupported =
                     matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP));
                 let expected = crate::descriptor::identity_fd(fd);
@@ -397,7 +382,6 @@ fn enumerate_using(
                         path,
                         cancel,
                         &fresh,
-                        limit,
                         false,
                         warnings,
                         observations,
@@ -414,63 +398,47 @@ fn enumerate_using(
         if records.is_empty() {
             break;
         }
-        let record_count = records.len();
         let base = entries.len();
-        let accepted_len = record_count.min(limit.unwrap_or(usize::MAX).saturating_sub(base));
-        reserve_listing_batch(&mut entries, record_count, limit);
-        entries.extend(
-            records
-                .iter()
-                .take(accepted_len)
-                .enumerate()
-                .map(|(index, r)| {
-                    let kind = match r.kind {
-                        1 => NodeKind::File,
-                        2 => NodeKind::Directory,
-                        5 => NodeKind::Symlink,
-                        _ => NodeKind::Other,
-                    };
-                    let name = std::ffi::OsStr::from_bytes(&buffer[r.name.clone()]);
-                    // Bulk IDs at firmlinks/mount points can describe the covered namespace inode.
-                    // Resolve directory metadata relative to the held descriptor before queueing it.
-                    if matches!(kind, NodeKind::Symlink | NodeKind::Directory) {
-                        return crate::entry_result(
-                            crate::descriptor::entry_at(fd, path, name),
-                            || crate::child_path(path, name),
-                        );
-                    }
-                    if let Some(metadata) = &r.clone_metadata {
-                        observations.push_back((base + index, metadata.clone()));
-                    }
-                    Ok(Entry {
-                        // Only the basename is retained in the compact tree. Preserve
-                        // native bytes without repeating the listing's directory prefix.
-                        path: crate::EntryPath::from_native(name),
-                        hard_link: kind == NodeKind::File && r.links > 1,
-                        clone_checked: r.clone_checked,
-                        device: r.device,
-                        inode: r.inode,
-                        kind,
-                        length: if kind == NodeKind::Directory {
-                            0
-                        } else {
-                            r.length
-                        },
-                        allocated: if kind == NodeKind::Directory {
-                            0
-                        } else {
-                            r.allocated
-                        },
-                    })
-                }),
-        );
-        if record_count > accepted_len {
-            drop(records);
-            return crate::retry::terminal_listing(
-                entries,
-                io::Error::other("calibration directory listing budget exceeded"),
-            );
-        }
+        reserve_listing_batch(&mut entries, records.len());
+        entries.extend(records.iter().enumerate().map(|(index, r)| {
+            let kind = match r.kind {
+                1 => NodeKind::File,
+                2 => NodeKind::Directory,
+                5 => NodeKind::Symlink,
+                _ => NodeKind::Other,
+            };
+            let name = std::ffi::OsStr::from_bytes(&buffer[r.name.clone()]);
+            // Bulk IDs at firmlinks/mount points can describe the covered namespace inode.
+            // Resolve directory metadata relative to the held descriptor before queueing it.
+            if matches!(kind, NodeKind::Symlink | NodeKind::Directory) {
+                return crate::entry_result(crate::descriptor::entry_at(fd, path, name), || {
+                    crate::child_path(path, name)
+                });
+            }
+            if let Some(metadata) = &r.clone_metadata {
+                observations.push_back((base + index, metadata.clone()));
+            }
+            Ok(Entry {
+                // Only the basename is retained in the compact tree. Preserve
+                // native bytes without repeating the listing's directory prefix.
+                path: crate::EntryPath::from_native(name),
+                hard_link: kind == NodeKind::File && r.links > 1,
+                clone_checked: r.clone_checked,
+                device: r.device,
+                inode: r.inode,
+                kind,
+                length: if kind == NodeKind::Directory {
+                    0
+                } else {
+                    r.length
+                },
+                allocated: if kind == NodeKind::Directory {
+                    0
+                } else {
+                    r.allocated
+                },
+            })
+        }));
         grow_packed_buffer(buffer, used);
     }
     drop(records);
@@ -521,6 +489,16 @@ pub(crate) struct CloneReadStats {
 }
 #[cfg(target_os = "macos")]
 impl CloneReadStats {
+    /// Reuses a caller-owned read buffer; hand it back with `into_buffer`.
+    pub(crate) fn with_buffer(buffer: Vec<u8>) -> Self {
+        Self {
+            buffer,
+            ..Self::default()
+        }
+    }
+    pub(crate) fn into_buffer(self) -> Vec<u8> {
+        self.buffer
+    }
     pub(crate) fn workspace_bytes(&self) -> usize {
         self.buffer.capacity()
     }
@@ -987,7 +965,7 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn batch_extension_matches_original_across_limits_failures_and_restarts() {
+    fn batch_extension_matches_original_across_failures_and_restarts() {
         use std::{
             collections::VecDeque,
             os::unix::{ffi::OsStrExt, fs::symlink},
@@ -1041,37 +1019,10 @@ mod tests {
             file,
         ];
         let mut cases = Vec::new();
-        for limit in [
-            None,
-            Some(0),
-            Some(1),
-            Some(mixed.len() - 1),
-            Some(mixed.len()),
-            Some(mixed.len() + 1),
-        ] {
-            cases.push((
-                true,
-                limit,
-                vec![Step::Batch(mixed.clone()), Step::Batch(vec![])],
-            ));
-        }
-        // Equality at a prior batch boundary must still issue the next read.
-        for next in [
-            Step::Batch(vec![]),
-            Step::Error(libc::EIO),
-            Step::Batch(vec![missing]),
-        ] {
-            cases.push((false, Some(1), vec![Step::Batch(vec![file]), next]));
-        }
-        // An unresolvable directory beyond the accepted prefix must never be
-        // materialized: doing so would turn terminal Err into Ok(error rows).
-        cases.push((false, Some(1), vec![Step::Batch(vec![file, missing])]));
-        // The parser must reject a malformed later row even with allowance zero.
-        cases.push((false, Some(0), vec![Step::Malformed]));
+        cases.push((true, vec![Step::Batch(mixed.clone()), Step::Batch(vec![])]));
         for terminal in [libc::EIO, libc::EINVAL, libc::ENOTSUP] {
             cases.push((
                 true,
-                None,
                 vec![
                     Step::Batch(vec![file, missing, file]),
                     Step::Error(terminal),
@@ -1082,7 +1033,6 @@ mod tests {
         }
         cases.push((
             true,
-            None,
             vec![
                 Step::Batch(vec![file, missing]),
                 Step::Malformed,
@@ -1092,15 +1042,13 @@ mod tests {
         ));
         cases.push((
             true,
-            None,
             vec![Step::Cancel(mixed.clone()), Step::Error(libc::EIO)],
         ));
         cases.push((
             false,
-            None,
             vec![Step::Batch(vec![file]), Step::Error(libc::EINTR)],
         ));
-        for (rich, limit, script) in cases {
+        for (rich, script) in cases {
             let mut expected = None;
             for original in [true, false] {
                 let cancel = AtomicBool::new(false);
@@ -1147,7 +1095,6 @@ mod tests {
                         &path,
                         &cancel,
                         &fd,
-                        limit,
                         rich,
                         &mut warnings,
                         &mut observations,
@@ -1159,7 +1106,6 @@ mod tests {
                         &path,
                         &cancel,
                         &fd,
-                        limit,
                         rich,
                         &mut warnings,
                         &mut observations,
@@ -1176,7 +1122,7 @@ mod tests {
                     cancel.load(Ordering::Relaxed),
                 );
                 if let Some(expected) = &expected {
-                    assert_eq!(&state, expected, "rich={rich}, limit={limit:?}");
+                    assert_eq!(&state, expected, "rich={rich}");
                 } else {
                     expected = Some(state);
                 }
@@ -1188,20 +1134,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn extension_reservations_bound_large_batches_and_preserve_small_minimums() {
-        for allowance in 0..=8 {
-            let mut actual: Vec<io::Result<Entry>> = Vec::new();
-            let mut original: Vec<io::Result<Entry>> = Vec::new();
-            reserve_listing_batch(&mut actual, allowance, Some(allowance));
-            original_reserve_listing_batch(&mut original, allowance, Some(allowance));
-            for _ in 0..allowance {
-                actual.push(Err(io::Error::other("entry")));
-                original.push(Err(io::Error::other("entry")));
-            }
-            assert_eq!(actual.capacity(), original.capacity());
-            actual.push(Err(io::Error::other("terminal")));
-            original.push(Err(io::Error::other("terminal")));
-            assert_eq!(actual.capacity(), original.capacity());
-        }
         for batches in [
             vec![100],
             vec![546, 2184, 2184],
@@ -1214,8 +1146,8 @@ mod tests {
             let mut cursor = 0;
             while actual.len() < 33_333 {
                 let count = batches[cursor % batches.len()].min(33_333 - actual.len());
-                reserve_listing_batch(&mut actual, count, None);
-                original_reserve_listing_batch(&mut original, count, None);
+                reserve_listing_batch(&mut actual, count);
+                original_reserve_listing_batch(&mut original, count);
                 actual.extend((0..count).map(|_| Err(io::Error::other("entry"))));
                 for _ in 0..count {
                     original.push(Err(io::Error::other("entry")));
@@ -1234,16 +1166,9 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn original_reserve_listing_batch<T>(
-        entries: &mut Vec<T>,
-        batch_len: usize,
-        limit: Option<usize>,
-    ) {
-        let additional = batch_len.min(limit.unwrap_or(usize::MAX).saturating_sub(entries.len()));
-        let needed = entries.len().saturating_add(additional);
-        // Calibration retains its existing reservation policy and allowance cap.
-        let threshold = if limit.is_some() { 4096 } else { 16_384 };
-        if needed <= entries.capacity() || needed <= threshold {
+    fn original_reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize) {
+        let needed = entries.len().saturating_add(batch_len);
+        if needed <= entries.capacity() || needed <= 16_384 {
             return;
         }
         // Reserve once per validated batch. Only very wide listings grow by 1.5x;
@@ -1253,7 +1178,6 @@ mod tests {
                 .capacity()
                 .saturating_add(entries.capacity().div_ceil(2)),
         );
-        let target = target.min(limit.unwrap_or(usize::MAX));
         entries.reserve_exact(target.saturating_sub(entries.len()));
     }
     #[cfg(target_os = "macos")]
@@ -1262,7 +1186,6 @@ mod tests {
         path: &std::path::Path,
         cancel: &std::sync::atomic::AtomicBool,
         fd: &std::os::fd::OwnedFd,
-        limit: Option<usize>,
         rich: bool,
         warnings: &mut Vec<String>,
         observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
@@ -1294,7 +1217,6 @@ mod tests {
                             path,
                             cancel,
                             &fresh,
-                            limit,
                             false,
                             warnings,
                             observations,
@@ -1308,14 +1230,8 @@ mod tests {
             if records.is_empty() {
                 break;
             }
-            original_reserve_listing_batch(&mut entries, records.len(), limit);
+            original_reserve_listing_batch(&mut entries, records.len());
             for r in records {
-                if limit.is_some_and(|limit| entries.len() >= limit) {
-                    return crate::retry::terminal_listing(
-                        entries,
-                        io::Error::other("calibration directory listing budget exceeded"),
-                    );
-                }
                 let kind = match r.kind {
                     1 => NodeKind::File,
                     2 => NodeKind::Directory,
@@ -1367,77 +1283,76 @@ mod tests {
         let mut bounded = Vec::new();
         for end in [1, 7, 257, 4096, 4097, 8192, 8193, 16_384] {
             let additional = end - bounded.len();
-            reserve_listing_batch(&mut bounded, additional, None);
+            reserve_listing_batch(&mut bounded, additional);
             while ordinary.len() < end {
                 ordinary.push(ordinary.len());
                 bounded.push(bounded.len());
             }
             assert_eq!(ordinary.capacity(), bounded.capacity());
         }
-        let capacity = bounded.capacity();
-        reserve_listing_batch(&mut bounded, 10_000, Some(16_500));
-        assert_eq!(bounded.capacity(), 16_500);
-        assert!(bounded.capacity() > capacity);
-        reserve_listing_batch(&mut bounded, usize::MAX, Some(16_500));
-        assert_eq!(bounded.capacity(), 16_500);
         assert_eq!(ordinary, bounded);
-        let mut calibrated = vec![0usize; 4096];
-        reserve_listing_batch(&mut calibrated, 10_000, Some(4500));
-        assert_eq!(calibrated.capacity(), 4500);
-        reserve_listing_batch(&mut calibrated, usize::MAX, Some(4500));
-        assert_eq!(calibrated.capacity(), 4500);
-        assert_eq!(calibrated.len(), 4096);
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn wide_listing_keeps_order_and_calibration_failure_with_bounded_capacity() {
+    fn wide_listing_keeps_order_with_bounded_capacity() {
         let path = std::env::temp_dir();
         let fd = std::fs::File::open(&path).unwrap().into();
-        for limit in [None, Some(4500)] {
-            let mut emitted = 0usize;
-            let mut warnings = Vec::new();
-            let mut observations = std::collections::VecDeque::new();
-            let result = enumerate_using(
-                &path,
-                &std::sync::atomic::AtomicBool::new(false),
-                &fd,
-                limit,
-                false,
-                &mut warnings,
-                &mut observations,
-                &mut Vec::new(),
-                &mut |_, buffer, _| {
-                    assert_eq!(buffer.len(), BULK_BUFFER_BYTES);
-                    let count = (33_333usize - emitted).min(100);
-                    let mut at = 0;
-                    for _ in 0..count {
-                        let mut record = rich_record(7, 0, 1);
-                        record[40..48].copy_from_slice(&(emitted as u64).to_ne_bytes());
-                        buffer[at..at + record.len()].copy_from_slice(&record);
-                        at += record.len();
-                        emitted += 1;
-                    }
-                    Ok(count)
-                },
+        let mut emitted = 0usize;
+        let mut warnings = Vec::new();
+        let mut observations = std::collections::VecDeque::new();
+        let entries = enumerate_using(
+            &path,
+            &std::sync::atomic::AtomicBool::new(false),
+            &fd,
+            false,
+            &mut warnings,
+            &mut observations,
+            &mut Vec::new(),
+            &mut |_, buffer, _| {
+                assert_eq!(buffer.len(), BULK_BUFFER_BYTES);
+                let count = (33_333usize - emitted).min(100);
+                let mut at = 0;
+                for _ in 0..count {
+                    let mut record = rich_record(7, 0, 1);
+                    record[40..48].copy_from_slice(&(emitted as u64).to_ne_bytes());
+                    buffer[at..at + record.len()].copy_from_slice(&record);
+                    at += record.len();
+                    emitted += 1;
+                }
+                Ok(count)
+            },
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 33_333);
+        for (index, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.as_ref().unwrap().inode, index as u64);
+            assert_eq!(
+                entry.as_ref().unwrap().path.as_ref(),
+                std::path::Path::new("abc")
             );
-            if limit.is_some() {
-                assert!(result.unwrap_err().to_string().contains("budget exceeded"));
-                assert_eq!(emitted, 4600);
-                continue;
-            }
-            let entries = result.unwrap();
-            assert_eq!(entries.len(), 33_333);
-            for (index, entry) in entries.iter().enumerate() {
-                assert_eq!(entry.as_ref().unwrap().inode, index as u64);
-                assert_eq!(
-                    entry.as_ref().unwrap().path.as_ref(),
-                    std::path::Path::new("abc")
-                );
-            }
-            assert!(entries.capacity() < 40_000);
-            assert!(warnings.is_empty());
-            assert!(observations.is_empty());
         }
+        assert!(entries.capacity() < 40_000);
+        assert!(warnings.is_empty());
+        assert!(observations.is_empty());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rich_interrupted_read_is_left_to_the_caller_retry() {
+        let path = std::env::temp_dir();
+        let fd = std::fs::File::open(&path).unwrap().into();
+        let mut warnings = Vec::new();
+        let result = enumerate_using(
+            &path,
+            &std::sync::atomic::AtomicBool::new(false),
+            &fd,
+            true,
+            &mut warnings,
+            &mut std::collections::VecDeque::new(),
+            &mut Vec::new(),
+            &mut |_, _, _| Err(io::Error::from_raw_os_error(libc::EINTR)),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert!(warnings.is_empty());
     }
     #[cfg(target_os = "macos")]
     #[test]
@@ -1452,7 +1367,6 @@ mod tests {
             &path,
             &std::sync::atomic::AtomicBool::new(false),
             &fd,
-            None,
             true,
             &mut Vec::new(),
             &mut observations,
@@ -1634,11 +1548,10 @@ mod tests {
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let mut observations = std::collections::VecDeque::new();
-        let entries = enumerate_limited_with_accounting(
+        let entries = enumerate_with_accounting(
             &p,
             &cancel,
             &fd,
-            None,
             &mut Vec::new(),
             &mut observations,
             &mut Vec::new(),
@@ -1687,7 +1600,6 @@ mod tests {
             &p,
             &cancel,
             &fresh,
-            None,
             false,
             &mut Vec::new(),
             &mut std::collections::VecDeque::new(),
@@ -1811,7 +1723,6 @@ mod tests {
             &p,
             &std::sync::atomic::AtomicBool::new(false),
             &fd,
-            None,
             true,
             &mut warnings,
             &mut observations,
@@ -1866,7 +1777,6 @@ mod tests {
             &p,
             &std::sync::atomic::AtomicBool::new(false),
             &fd,
-            None,
             true,
             &mut warnings,
             &mut observations,
@@ -1883,7 +1793,6 @@ mod tests {
             &p,
             &std::sync::atomic::AtomicBool::new(true),
             &fd,
-            None,
             true,
             &mut warnings,
             &mut observations,

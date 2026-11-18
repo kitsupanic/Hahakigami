@@ -47,6 +47,7 @@ impl Item {
                     device: ancestor.identity.device,
                     inode: ancestor.identity.inode,
                     kind: 1,
+                    birth: None,
                 },
             ));
             parent = ancestor.parent;
@@ -70,6 +71,7 @@ impl Item {
                     device: node.identity.device,
                     inode: node.identity.inode,
                     kind: 2,
+                    birth: None,
                 },
                 ancestors,
                 volume: None,

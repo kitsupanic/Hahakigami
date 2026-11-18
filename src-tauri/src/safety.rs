@@ -8,11 +8,37 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub device: u64,
     pub inode: u64,
     pub kind: u8,
+    /// Creation time (seconds, nanoseconds). (device, inode) alone cannot tell a file from the one that took its
+    /// directory slot on FAT/exFAT. None when the platform has none, and in records written before it existed.
+    #[serde(default)]
+    pub birth: Option<(i64, i64)>,
+}
+/// Two identities are the same item when device, inode and kind match and, if both know a birth time, it matches
+/// too. shortcut: a side without a birth time (a scan snapshot, a queue entry saved by an older version, a platform
+/// without one) compares as before, so FAT inode reuse goes unseen for it; that makes this non-transitive, so it
+/// is not `Eq`. Upgrade by recording the birth time in the scan and re-adding old queue entries.
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        (self.device, self.inode, self.kind) == (other.device, other.inode, other.kind)
+            && match (self.birth, other.birth) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            }
+    }
+}
+#[cfg(target_os = "macos")]
+fn birth(m: &std::fs::Metadata) -> Option<(i64, i64)> {
+    use std::os::macos::fs::MetadataExt as _;
+    Some((m.st_birthtime(), m.st_birthtime_nsec()))
+}
+#[cfg(not(target_os = "macos"))]
+fn birth(_: &std::fs::Metadata) -> Option<(i64, i64)> {
+    None
 }
 impl Identity {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -32,6 +58,7 @@ impl Identity {
                 device: m.dev(),
                 inode: m.ino(),
                 kind,
+                birth: birth(&m),
             })
         }
         #[cfg(not(unix))]
@@ -75,6 +102,13 @@ pub struct CheckedItem {
     /// The volume the identities were read on. None (unknown) never passes `verify`.
     pub volume: Option<Volume>,
 }
+impl CheckedItem {
+    /// Records the item's birth time as the disk has it now, so `verify` refuses another file that reuses its
+    /// device and inode. A scan snapshot holds none. Call it on a fresh item, before the `verify` that follows.
+    pub fn pin_birth(&mut self) {
+        self.identity.birth = Identity::read(&self.path).ok().and_then(|i| i.birth);
+    }
+}
 
 /// One live scan as the cleanup rules see it: only what they read, with no session state. The caller decides which
 /// scans may be offered (live, valid, completed, not running).
@@ -112,6 +146,7 @@ pub fn checked_item(scan: &Scan, id: u32) -> Result<CheckedItem, String> {
             NodeKind::Symlink => 3,
             NodeKind::Other => 4,
         },
+        birth: None,
     };
     let mut lineage = vec![];
     let mut parent = n.parent;
@@ -129,6 +164,7 @@ pub fn checked_item(scan: &Scan, id: u32) -> Result<CheckedItem, String> {
                 device: p.identity.device,
                 inode: p.identity.inode,
                 kind: 1,
+                birth: None,
             },
         ));
         parent = p.parent;
@@ -306,6 +342,7 @@ mod tests {
                 device: 1,
                 inode,
                 kind: 2,
+                birth: None,
             },
             ancestors: vec![],
             volume: None,
@@ -364,6 +401,61 @@ mod tests {
         std::fs::rename(&p, root.join("old")).unwrap();
         std::os::unix::fs::symlink(root.join("old"), &p).unwrap();
         assert!(verify(&item, &root, None, &[]).is_err());
+    }
+    #[test]
+    fn another_birth_time_is_another_item_but_an_unknown_one_matches_as_before() {
+        let id = |birth| Identity {
+            device: 1,
+            inode: 2,
+            kind: 2,
+            birth,
+        };
+        assert_eq!(id(Some((10, 5))), id(Some((10, 5))));
+        assert_ne!(id(Some((10, 5))), id(Some((11, 5))));
+        assert_ne!(id(Some((10, 5))), id(Some((10, 6))));
+        assert_eq!(id(None), id(Some((10, 5))));
+        assert_ne!(
+            Identity {
+                inode: 3,
+                ..id(None)
+            },
+            id(None)
+        );
+    }
+    #[test]
+    fn a_record_without_a_birth_time_still_loads_and_matches() {
+        let old: Identity = serde_json::from_str(r#"{"device":1,"inode":2,"kind":2}"#).unwrap();
+        assert_eq!(old.birth, None);
+        let new = Identity {
+            birth: Some((10, 5)),
+            ..old.clone()
+        };
+        assert_eq!(old, new);
+        let saved: Identity = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(saved.birth, Some((10, 5)));
+    }
+    #[test]
+    fn rejects_a_file_with_the_same_inode_but_another_birth_time() {
+        let d = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(d.path()).unwrap();
+        let p = root.join("a");
+        std::fs::write(&p, []).unwrap();
+        let mut item = CheckedItem {
+            path: p.clone(),
+            identity: Identity::read(&p).unwrap(),
+            ancestors: ancestors(&p).unwrap(),
+            volume: None,
+        };
+        let (secs, nanos) = item.identity.birth.expect("macOS reports a birth time");
+        assert!(verify_paths(&item, &root, None, &[]).is_ok());
+        // What FAT inode reuse looks like: same device and inode, a file born at another time.
+        item.identity.birth = Some((secs - 1, nanos));
+        assert!(verify_paths(&item, &root, None, &[]).is_err());
+        // An item with no recorded birth time is checked as before, until `pin_birth` records it.
+        item.identity.birth = None;
+        assert!(verify_paths(&item, &root, None, &[]).is_ok());
+        item.pin_birth();
+        assert_eq!(item.identity.birth, Some((secs, nanos)));
     }
     #[test]
     fn rejects_other_or_unknown_volume_before_trash() {
