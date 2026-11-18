@@ -33,8 +33,8 @@ export function createBranchPalette(
   );
 }
 
-const normalizePath = (path: string) => path.replace(/\/+$/, "") || "/";
-const parentPath = (path: string) => {
+export const normalizePath = (path: string) => path.replace(/\/+$/, "") || "/";
+export const parentPath = (path: string) => {
   const separator = path.lastIndexOf("/");
   return separator < 0 ? "" : path.slice(0, separator) || "/";
 };

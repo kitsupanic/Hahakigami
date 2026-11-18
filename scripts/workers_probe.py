@@ -11,7 +11,7 @@ from benchmark import ROOT, file_hash, scanner_fingerprints
 
 
 def verify(raw):
-    scan, settings, manual = raw['scan'], raw['settings'], raw['manualReload']
+    scan, settings = raw['scan'], raw['settings']
     if scan['state'] != 'completed' or scan['workerMode'] != 'auto' or scan['workerSource'] != 'hardware':
         raise ValueError('Expected a completed hardware Auto scan')
     ceiling = 8 if settings['autoScope'] == 'volume' else 5
@@ -19,8 +19,6 @@ def verify(raw):
         raise ValueError('Auto worker count exceeds its scope or CPU cap')
     if raw['capturedWorkers'] != scan['workers']:
         raise ValueError('Running scan did not preserve its worker snapshot')
-    if manual['workerMode'] != 'manual' or manual['resolvedWorkers'] != 1:
-        raise ValueError('Legacy preference fixture did not persist and reload')
     automatic = raw['automaticAfterLegacyReload']
     if automatic['workerMode'] != 'auto' or automatic['qos'] != 'automatic' or automatic['resolvedWorkers'] != automatic['defaultWorkers']:
         raise ValueError('Retired preferences overrode production Auto')
@@ -46,7 +44,7 @@ def main():
               'scope': str(scope), 'currentScannerSources': scanner_fingerprints(),
               'currentNativeSources': {str(p.relative_to(ROOT)): file_hash(p) for p in sorted((ROOT / 'src-tauri/src').glob('*.rs'))},
               'permissions': 'Inherited unchanged; no user preferences or macOS grants changed.',
-              'method': 'One full hardware Auto scan through native test commands; legacy preference reload and production Auto check in disposable preferences.',
+              'method': 'One full hardware Auto scan through native test commands; production Auto check in disposable preferences.',
               'limitations': ['No alternating performance comparison or proof of the fastest count.', 'No P/E placement or energy trace.', 'Not a graphical app or OpenDisk acceptance run.'], 'acceptanceMet': False}
     started = time.monotonic()
     result = subprocess.run([str(binary), '--ignored', '--exact', 'tests::automatic_workers_probe', '--nocapture', '--test-threads=1'], env=env, text=True, capture_output=True, timeout=args.timeout)

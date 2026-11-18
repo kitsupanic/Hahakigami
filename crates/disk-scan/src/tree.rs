@@ -105,6 +105,7 @@ impl LegacyTreeBuilder {
     pub fn node_count(&self) -> usize {
         self.snapshot.node_count()
     }
+    #[cfg(test)]
     pub fn scratch_capacity_bytes(&self) -> usize {
         self.parent_path.capacity() + self.expected_path.capacity()
     }
@@ -130,43 +131,6 @@ impl LegacyTreeBuilder {
         }
         self.snapshot
             .append_legacy_ref(n, Some(&self.expected_path))
-    }
-    /// Appends a non-root node whose path is exactly its parent's path joined with
-    /// the one ordinary component `native`, so no path is rebuilt or compared.
-    /// `n.path` and `n.name` are ignored; `label` is the display name when it
-    /// differs from the lossy native name. A joined path over `max_path_bytes` is refused.
-    pub fn append_child_ref(
-        &mut self,
-        n: &Node,
-        native: &OsStr,
-        label: Option<&str>,
-        max_path_bytes: usize,
-    ) -> Result<(), String> {
-        self.snapshot.check_append(n)?;
-        let parent = n.parent.ok_or("root needs an explicit path")?;
-        if !is_exact_native_component(native) {
-            return Err("native name is not one normal component".into());
-        }
-        if self.parent_id != Some(parent) {
-            self.snapshot.path_into(parent, &mut self.parent_path)?;
-            self.parent_id = Some(parent);
-        }
-        let prefix = self.parent_path.as_os_str().len();
-        let ends_with_separator = self
-            .parent_path
-            .as_os_str()
-            .as_encoded_bytes()
-            .last()
-            .is_some_and(|b| std::path::is_separator(char::from(*b)));
-        let separator = usize::from(prefix != 0 && !ends_with_separator);
-        if prefix
-            .checked_add(separator)
-            .and_then(|total| total.checked_add(native.len()))
-            .is_none_or(|total| total > max_path_bytes)
-        {
-            return Err("Cache field exceeds limit".into());
-        }
-        self.snapshot.append_native_ref(n, native, label)
     }
     pub fn finish(self) -> Snapshot {
         self.snapshot
@@ -580,21 +544,6 @@ impl Snapshot {
         self.push_legacy(n, record, name);
         Ok(())
     }
-    /// Child whose path is its parent's path plus the ordinary component `name`.
-    fn append_native_ref(
-        &mut self,
-        n: &Node,
-        name: &OsStr,
-        label: Option<&str>,
-    ) -> Result<(), String> {
-        let record =
-            self.compact_record(n.id, &Self::legacy_metadata(n), name, n.children.len())?;
-        if let Some(label) = label.filter(|label| *label != name.to_string_lossy()) {
-            self.tree.labels.push((n.id, label.to_owned()));
-        }
-        self.push_legacy(n, record, name);
-        Ok(())
-    }
     fn push_legacy(&mut self, n: &Node, record: Record, name: &OsStr) {
         if let Some(metadata) = &n.clone_metadata {
             self.tree.clones.push((n.id, metadata.clone()));
@@ -770,7 +719,7 @@ impl Snapshot {
         self.root = root;
         Ok(())
     }
-    pub fn replace_legacy_node(&mut self, id: u32, n: Node) -> Result<(), String> {
+    pub fn replace_node(&mut self, id: u32, n: Node) -> Result<(), String> {
         if id as usize >= self.node_count() {
             return Err("invalid node id".into());
         }
@@ -809,9 +758,6 @@ impl Snapshot {
         self.tree.labels.push((id, n.name));
         self.tree.labels.sort_by_key(|e| e.0);
         Ok(())
-    }
-    pub fn replace_node(&mut self, id: u32, n: Node) -> Result<(), String> {
-        self.replace_legacy_node(id, n)
     }
 }
 impl serde::Serialize for Snapshot {

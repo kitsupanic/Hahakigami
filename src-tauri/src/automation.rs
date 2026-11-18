@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard, RwLock,
+        Arc, Mutex, RwLock,
     },
 };
 
@@ -17,8 +17,14 @@ struct Session {
     cancel: Arc<AtomicBool>,
     progress: Option<Progress>,
     error: Option<String>,
-    /// The last folder `children` sorted in `current`, so paging through it sorts once.
-    sorted_children: Option<(u32, Arc<Vec<u32>>)>,
+    /// Replaced with the session, so a new scan never sees another scan's cached order or matches.
+    caches: Arc<Mutex<Caches>>,
+}
+
+#[derive(Default)]
+struct Caches {
+    sorts: sorting::Cache,
+    filters: filters::Cache,
 }
 
 pub(crate) struct Service {
@@ -33,8 +39,8 @@ impl Service {
     }
 
     pub(crate) fn scan(&self, path: PathBuf) -> Result<Value, String> {
-        let expected = disk_scan::platform_identity(&path).map_err(|e| e.to_string())?;
         let resolved = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        let expected = disk_scan::platform_identity(&resolved).map_err(|e| e.to_string())?;
         let root = disk_scan::ScanRoot::open(resolved, expected).map_err(|e| e.to_string())?;
         let scope = if platform::is_volume_root(&root) {
             settings::AutoScope::Volume
@@ -145,67 +151,38 @@ impl Service {
         Ok(json!({"cancelRequested": session.active}))
     }
 
-    /// Runs `operation` on the session's latest scan, also passing the session's store.
-    fn with_store(
+    /// Runs `operation` on the session's latest scan, also passing that scan's caches.
+    fn with_caches(
         &self,
-        operation: impl FnOnce(&Snapshot, &Arc<RwLock<Snapshot>>) -> Result<Value, String>,
+        operation: impl FnOnce(&Snapshot, &mut Caches) -> Result<Value, String>,
     ) -> Result<Value, String> {
-        let store = self
-            .session
-            .lock()
-            .map_err(|_| "Automation session lock poisoned")?
-            .current
-            .clone()
-            .ok_or("No scan yet; start a scan first.")?;
+        let (store, caches) = {
+            let session = self
+                .session
+                .lock()
+                .map_err(|_| "Automation session lock poisoned")?;
+            (
+                session
+                    .current
+                    .clone()
+                    .ok_or("No scan yet; start a scan first.")?,
+                session.caches.clone(),
+            )
+        };
         let snapshot = store
             .read()
             .map_err(|_| "Automation snapshot lock poisoned")?;
-        operation(&snapshot, &store)
+        let mut caches = caches
+            .lock()
+            .map_err(|_| "Automation cache lock poisoned")?;
+        operation(&snapshot, &mut caches)
     }
 
     fn with_snapshot(
         &self,
         operation: impl FnOnce(&Snapshot) -> Result<Value, String>,
     ) -> Result<Value, String> {
-        self.with_store(|snapshot, _| operation(snapshot))
-    }
-
-    /// The children of `node_id`, folders first then largest allocated size. Cached for a finished scan,
-    /// and only while `store` is still the session's, so a scan started meanwhile never sees another scan's order.
-    fn sorted_children(
-        &self,
-        store: &Arc<RwLock<Snapshot>>,
-        snapshot: &Snapshot,
-        node_id: u32,
-    ) -> Result<Arc<Vec<u32>>, String> {
-        let cacheable = snapshot.state != ScanState::Running;
-        let session = || -> Result<Option<MutexGuard<Session>>, String> {
-            if !cacheable {
-                return Ok(None);
-            }
-            let session = self
-                .session
-                .lock()
-                .map_err(|_| "Automation session lock poisoned")?;
-            let same = session
-                .current
-                .as_ref()
-                .is_some_and(|c| Arc::ptr_eq(c, store));
-            Ok(same.then_some(session))
-        };
-        if let Some((_, ids)) = session()?
-            .and_then(|s| s.sorted_children.clone())
-            .filter(|(id, _)| *id == node_id)
-        {
-            return Ok(ids);
-        }
-        let mut ids = snapshot.children(node_id)?.to_vec();
-        sorting::sort_ids(snapshot, &mut ids, sorting::Order::SizeDescending, true)?;
-        let ids = Arc::new(ids);
-        if let Some(mut session) = session()? {
-            session.sorted_children = Some((node_id, ids.clone()));
-        }
-        Ok(ids)
+        self.with_caches(|snapshot, _| operation(snapshot))
     }
 
     pub(crate) fn summary(&self) -> Result<Value, String> {
@@ -232,15 +209,14 @@ impl Service {
         limit: usize,
     ) -> Result<Value, String> {
         validate_page(limit)?;
-        self.with_store(|snapshot, store| {
-            let ids = self.sorted_children(store, snapshot, node_id)?;
-            node_page(
-                snapshot,
-                &ids[offset.min(ids.len())..ids.len().min(offset.saturating_add(limit))],
-                ids.len(),
-                offset,
-                limit,
-            )
+        self.with_caches(|snapshot, caches| {
+            let (ids, total) = page_of(offset, limit, |offset, limit| {
+                let order = sorting::Order::SizeDescending;
+                caches
+                    .sorts
+                    .page(snapshot, node_id, order, true, offset, limit)
+            })?;
+            node_page(snapshot, &ids, total, offset, limit)
         })
     }
 
@@ -254,14 +230,10 @@ impl Service {
             "allocated".into(),
             sorting::Order::SizeDescending,
         )?;
-        self.with_snapshot(|snapshot| {
-            let mut cache = filters::Cache::default();
-            let (mut ids, total) = cache.page(snapshot, &query, offset, limit.min(500))?;
-            if limit > 500 {
-                let (more, _) =
-                    cache.page(snapshot, &query, offset.saturating_add(500), limit - 500)?;
-                ids.extend(more);
-            }
+        self.with_caches(|snapshot, caches| {
+            let (ids, total) = page_of(offset, limit, |offset, limit| {
+                caches.filters.page(snapshot, &query, offset, limit)
+            })?;
             node_page(snapshot, &ids, total, offset, limit)
         })
     }
@@ -294,6 +266,19 @@ fn validate_page(limit: usize) -> Result<(), String> {
     } else {
         Err("Limit must be between 1 and 1000.".into())
     }
+}
+
+/// The caches serve at most 500 ids per call, so a larger `limit` takes a second call.
+fn page_of(
+    offset: usize,
+    limit: usize,
+    mut fetch: impl FnMut(usize, usize) -> Result<(Vec<u32>, usize), String>,
+) -> Result<(Vec<u32>, usize), String> {
+    let (mut ids, total) = fetch(offset, limit.min(500))?;
+    if limit > 500 {
+        ids.extend(fetch(offset.saturating_add(500), limit - 500)?.0);
+    }
+    Ok((ids, total))
 }
 
 fn state(snapshot: &Snapshot) -> &'static str {
@@ -362,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn children_pages_share_one_sort_and_a_new_scan_drops_it() {
+    fn children_pages_stay_ordered_and_a_new_scan_drops_the_caches() {
         let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::write(root.join("small"), vec![1; 10]).unwrap();
@@ -378,30 +363,33 @@ mod tests {
         };
         service.scan(root.clone()).unwrap();
         assert_eq!(names(service.children(0, 0, 1).unwrap()), ["large"]);
-        let cached = service
-            .session
-            .lock()
-            .unwrap()
-            .sorted_children
-            .clone()
-            .unwrap()
-            .1;
         assert_eq!(names(service.children(0, 1, 1).unwrap()), ["small"]);
-        let reused = service
-            .session
-            .lock()
-            .unwrap()
-            .sorted_children
-            .clone()
-            .unwrap()
-            .1;
-        assert!(
-            Arc::ptr_eq(&cached, &reused),
-            "the second page reuses the sort"
-        );
-
+        let first = service.session.lock().unwrap().caches.clone();
         std::fs::write(root.join("largest"), vec![1; 1_000_000]).unwrap();
         service.scan(root.clone()).unwrap();
         assert_eq!(names(service.children(0, 0, 1).unwrap()), ["largest"]);
+        assert!(
+            !Arc::ptr_eq(&first, &service.session.lock().unwrap().caches),
+            "a new scan starts with empty caches"
+        );
+    }
+
+    #[test]
+    fn scan_follows_a_symlinked_root() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file"), [1; 10]).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let summary = Service::new().scan(link).unwrap();
+        assert_eq!(summary["state"], "completed");
+        assert_eq!(
+            summary["rootPath"],
+            std::fs::canonicalize(&target)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
     }
 }

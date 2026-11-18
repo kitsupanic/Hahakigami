@@ -209,9 +209,7 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         allocatedBytes,
         readyHere: readyHereRows.length,
         // Only ready-elsewhere entries left: opening their scan is enough, so Scan isn't the primary.
-        onlyElsewhere: rows.every(
-          (entry) => readyHereRows.includes(entry) || entry.status === "ready",
-        ),
+        onlyElsewhere: rows.every((entry) => entry.status === "ready"),
         // Entries the scan on screen can't review: the disk's scan action is only offered for these.
         unreviewable: readyHereRows.length < rows.length,
         share,

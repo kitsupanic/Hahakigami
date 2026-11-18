@@ -4,7 +4,7 @@ use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read},
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
@@ -259,28 +259,10 @@ impl Cache {
         }
     }
     fn write_record(&self, id: &str, record: &Record) -> Result<(), String> {
-        let temp = self.root.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let write = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&temp)
-                .map_err(|e| e.to_string())?;
+        self.store.atomic(&self.path(id)?, |mut file| {
             serde_json::to_writer(&mut file, record).map_err(|e| e.to_string())?;
-            file.flush()
-                .and_then(|_| file.sync_all())
-                .map_err(|e| e.to_string())?;
-            fs::rename(&temp, self.path(id)?).map_err(|e| e.to_string())?;
-            File::open(&self.root)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())
-        })();
-        if write.is_err() {
-            let _ = fs::remove_file(temp);
-        }
-        write
+            file.sync_all().map_err(|e| e.to_string())
+        })
     }
     /// Caller must prove that the freshly scanned tree is semantically unchanged.
     /// Serialized cache operations bind this refresh to the exact previous seed.

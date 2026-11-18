@@ -357,6 +357,21 @@ it("discards an ejected disk's scan without disturbing the results of another di
   expect(app().scanSlots["/Volumes/Backup"]).toBeUndefined();
 });
 
+it.each([false, true])(
+  "closes an open Trash review (queued: %s) when the shown disk is ejected",
+  async (queued) => {
+    await scanDisk("Backup");
+    await act(() => app().setTrash({ token: "ticket", items: [node], queued }));
+    expect(container.querySelector("dialog, [role=dialog]")).not.toBeNull();
+    mounted = ["/"];
+    discovered = [disk, home];
+    await refresh();
+    expect(app().summary).toBeNull();
+    expect(app().trash).toBeNull();
+    expect(container.querySelector("dialog, [role=dialog]")).toBeNull();
+  },
+);
+
 it("does not discard anything when a disk with no scan is ejected", async () => {
   await scanDisk("Macintosh HD");
   mounted = ["/"];

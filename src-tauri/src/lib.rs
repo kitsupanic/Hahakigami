@@ -481,7 +481,13 @@ async fn start_scan<R: tauri::Runtime>(
     // Starts share the gate, so scans on different slots can begin at the same time.
     let _activity = Activity::begin_shared(&state.activity)?;
     quick_look::close(app.clone(), state.preview.clone()).await?;
-    start_scan_impl(&state, target_id, on_event)
+    // validate_target/ScanRoot::open can stall on a dead network mount; keep them off the async workers.
+    // `_activity` stays held here until the blocking start returns.
+    tauri::async_runtime::spawn_blocking(move || {
+        start_scan_impl(&app.state::<AppState>(), target_id, on_event)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 fn mark_failed(snapshot: &mut Snapshot, message: String) {
     if snapshot.state != ScanState::Failed {
@@ -1770,7 +1776,7 @@ pub fn run() {
             *app.state::<AppState>().access_setup.lock().unwrap() =
                 access_setup::AccessSetup::new(&std::env::current_exe()?);
             *app.state::<AppState>().scan_settings.lock().unwrap() =
-                settings::ScanSettings::load(&config);
+                settings::ScanSettings::default();
             Ok(())
             }
         })
@@ -1828,7 +1834,11 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("launch Hahakigami");
+        .unwrap_or_else(|error| {
+            // A second instance fails in setup; show that message, not a panic report.
+            eprintln!("{error}");
+            std::process::exit(1);
+        });
 }
 
 #[cfg(test)]

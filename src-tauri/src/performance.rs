@@ -149,7 +149,7 @@ fn configure(state: &AppState, config: &Config) -> Result<platform::Target, Stri
         explorer_preferences::Preferences::load(&preferences);
     *state.cleanup_queue.lock().unwrap() =
         cleanup_queue::Queue::load(config.state_dir.join("cleanup-queue"));
-    *state.scan_settings.lock().unwrap() = settings::ScanSettings::load(&preferences);
+    *state.scan_settings.lock().unwrap() = settings::ScanSettings::default();
     state
         .baselines
         .configure(config.state_dir.join(if config.mode == "full" {
@@ -321,12 +321,13 @@ fn report(
     let rss = peak_rss();
     let summary = s.summary();
     let snapshot = s.store.read().unwrap();
-    let settings = settings::ScanSettings::load(&config.state_dir.join("config"))
-        .automatic_info_for_scope(if config.root == Path::new("/") {
+    let settings = settings::ScanSettings::default().automatic_info_for_scope(
+        if config.root == Path::new("/") {
             settings::AutoScope::Volume
         } else {
             settings::AutoScope::Folder
-        });
+        },
+    );
     // Untimed buffer inspection follows the RSS capture. These estimates are
     // separate from process RSS and never expose query text or native paths.
     let folder_storage = s.list_folder.lock().unwrap().retained_buffer_storage();

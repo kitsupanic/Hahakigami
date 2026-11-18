@@ -268,6 +268,7 @@ impl Slots {
     /// the rescan baseline and installs the new session. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.live.lock().unwrap();
+        live.draining.retain(|s| session_running(s));
         let old = live.slots.get(&key).cloned();
         let _operation = old.as_ref().map(|old| old.operation.lock().unwrap());
         // Scans on other slots run side by side; only a scan already running in this slot stops the start.
@@ -303,6 +304,7 @@ impl Slots {
     /// A scan that has not ended yet keeps counting as running until it does. An unknown id is a no-op.
     pub(crate) fn discard(&self, id: &str) {
         let mut live = self.live.lock().unwrap();
+        live.draining.retain(|s| session_running(s));
         let key = live
             .slots
             .iter()
@@ -360,7 +362,7 @@ mod tests {
             root_ancestors: vec![],
             workers: 4,
             cached_validation_workers: 4,
-            worker_mode: settings::WorkerMode::Manual,
+            worker_mode: settings::WorkerMode::Auto,
             worker_source: "manual".into(),
             qos: disk_scan::ScanQos::Automatic,
         }
@@ -598,6 +600,30 @@ mod tests {
         slots.discard(&id);
         slots.discard("missing");
         assert_eq!(slots.sessions().len(), 1);
+    }
+
+    #[test]
+    fn a_finished_drained_scan_is_dropped_on_the_next_slot_change() {
+        let slots = slots();
+        let (a, b, c) = (Path::new("/a"), Path::new("/b"), Path::new("/c"));
+        let first = slots.replace(disk(a), request(a)).unwrap();
+        let second = slots.replace(disk(b), request(b)).unwrap();
+        slots.discard(&first.session.id);
+        slots.discard(&second.session.id);
+        assert_eq!(slots.live.lock().unwrap().draining.len(), 2);
+        end(&first.session, ScanState::Cancelled);
+        end(&second.session, ScanState::Cancelled);
+        drop((first.grant, second.grant));
+        // Nothing asked whether a scan runs, yet the next replace frees both.
+        let _third = slots.replace(disk(c), request(c)).unwrap();
+        assert!(slots.live.lock().unwrap().draining.is_empty());
+        // The same holds for discard.
+        let fourth = slots.replace(disk(a), request(a)).unwrap();
+        slots.discard(&fourth.session.id);
+        end(&fourth.session, ScanState::Cancelled);
+        drop(fourth.grant);
+        slots.discard("missing");
+        assert!(slots.live.lock().unwrap().draining.is_empty());
     }
 
     #[test]

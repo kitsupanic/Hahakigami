@@ -1302,7 +1302,7 @@ python3 scripts/workers_probe.py --binary target/release/deps/hahakigami_lib-TES
   --path /absolute/folder-or-volume --output benchmark-results/hardware-auto.json
 ```
 
-The probe uses disposable preferences and inherited permissions. It runs one full Auto scan, verifies captured worker/source information, and verifies a Manual preference save/reload without changing the captured scan. It hashes the executable before and after, records source fingerprints, and does not change grants or user settings. This is an integration observation, not an alternating full-scan benchmark or a graphical app launch check. Earlier calibration reports remain historical evidence; scripts/calibration_probe.py is retired for current Auto.
+The probe uses disposable preferences and inherited permissions. It runs one full Auto scan, verifies captured worker/source information, and checks that production Auto ignores retired preferences. It hashes the executable before and after, records source fingerprints, and does not change grants or user settings. This is an integration observation, not an alternating full-scan benchmark or a graphical app launch check. Earlier calibration reports remain historical evidence; scripts/calibration_probe.py is retired for current Auto.
 
 Final startup policy probe (`benchmark-results-hardware-auto-startup.json`, removed) and GitHub policy probe (`benchmark-results-hardware-auto-projects.json`, removed) passed with unchanged executable SHA-256 `9114ff4ec09e25152c925f57fdbfdeff0f66f20b466446031d893be8260328eb`. Both reported 14 CPU threads, Low Power Mode off and nominal temperature. Each verified a completed hardware Auto scan, fixed captured workers, and a disposable Manual save/reload.
 
