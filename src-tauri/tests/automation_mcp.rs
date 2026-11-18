@@ -201,17 +201,18 @@ async fn stdio_native_paths_round_trip_and_search_pages_can_exceed_five_hundred(
 
 #[tokio::test]
 async fn stdio_cancel_keeps_partial_results_and_disconnect_exits() {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        let fixture = tempfile::tempdir().unwrap();
-        let seed = fixture.path().join("seed");
-        std::fs::write(&seed, b"metadata fixture").unwrap();
-        for directory in 0..200 {
-            let directory = fixture.path().join(format!("dir-{directory}"));
-            std::fs::create_dir(&directory).unwrap();
-            for file in 0..200 {
-                std::fs::hard_link(&seed, directory.join(format!("file-{file}"))).unwrap();
-            }
+    // Built outside the timeout: 40,000 hard links take ~9 s idle and far longer on a busy machine.
+    let fixture = tempfile::tempdir().unwrap();
+    let seed = fixture.path().join("seed");
+    std::fs::write(&seed, b"metadata fixture").unwrap();
+    for directory in 0..200 {
+        let directory = fixture.path().join(format!("dir-{directory}"));
+        std::fs::create_dir(&directory).unwrap();
+        for file in 0..200 {
+            std::fs::hard_link(&seed, directory.join(format!("file-{file}"))).unwrap();
         }
+    }
+    tokio::time::timeout(Duration::from_secs(45), async {
         // Keep the process handle so this verifies EOF exit, not the SDK's kill-on-drop cleanup.
         let mut child = command()
             .stdin(Stdio::piped())
