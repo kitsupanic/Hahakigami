@@ -1223,18 +1223,18 @@ fn sort_map_children(snapshot: &Snapshot, children: &[u32]) -> Result<MapChildOr
         scratch,
     })
 }
-fn sorted_children(s: &Session, snapshot: &Snapshot, id: u32) -> Result<Vec<u32>, String> {
+fn sorted_children(s: &Session, snapshot: &Snapshot, id: u32) -> Result<Arc<[u32]>, String> {
     let n = snapshot.node(id).ok_or("Unknown node")?;
     let mut cache = s.sorts.lock().unwrap();
     if snapshot.state != ScanState::Running {
         if let Some(ids) = cache.get(&id) {
-            return Ok(ids.clone());
+            return Ok(Arc::clone(ids));
         }
     }
     let order = sort_map_children(snapshot, n.children())?;
-    let ids = order.ids;
+    let ids: Arc<[u32]> = order.ids.into();
     if snapshot.state != ScanState::Running {
-        cache.insert(id, ids.clone());
+        cache.insert(id, Arc::clone(&ids));
     }
     drop(cache);
     #[cfg(feature = "performance-benchmark")]

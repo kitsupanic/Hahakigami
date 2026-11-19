@@ -87,6 +87,7 @@ impl From<PathBuf> for EntryPath {
         Self(Storage::Owned(path.into_boxed_path()))
     }
 }
+#[cfg(test)]
 impl From<&str> for EntryPath {
     fn from(path: &str) -> Self {
         Self::from_native(OsStr::new(path))

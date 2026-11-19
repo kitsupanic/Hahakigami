@@ -128,6 +128,8 @@ export default function createApp() {
   const setCancelling = session.setCancelling;
   let cancelling = $derived(session.cancelling);
   const trashState = rawState<{
+    // The scan the review was made for; commit must target it, not whatever is on screen later.
+    scanId: string;
     queued?: boolean;
     token: string;
     items: NodeView[];
@@ -241,7 +243,7 @@ export default function createApp() {
     const scanId = summary.scanId;
     try {
       const review = await cleanupQueue.prepare(scanId);
-      if (summary?.scanId === scanId) setTrash({ ...review, queued: true });
+      if (summary?.scanId === scanId) setTrash({ ...review, scanId, queued: true });
     } catch (e) {
       fail(e);
     } finally {
@@ -1391,13 +1393,13 @@ export default function createApp() {
       return;
     quickLook.dismiss();
     setBusy(true);
+    const scanId = summary.scanId;
     try {
-      setTrash(
-        await invoke("prepare_trash", {
-          scanId: summary.scanId,
-          nodeIds: selection.map((n) => n.id),
-        }),
+      const review = await invoke<{ token: string; items: NodeView[] }>(
+        "prepare_trash",
+        { scanId, nodeIds: selection.map((n) => n.id) },
       );
+      if (summary?.scanId === scanId) setTrash({ ...review, scanId });
     } catch (e) {
       fail(e);
     } finally {
@@ -1410,7 +1412,7 @@ export default function createApp() {
       ...trash,
       items: trash.items.map((item) => ({ ...item })),
     };
-    const scanId = summary.scanId;
+    const scanId = review.scanId;
     const rescanTarget = liveTarget;
     setBusy(true);
     try {

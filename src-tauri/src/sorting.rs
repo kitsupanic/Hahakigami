@@ -150,54 +150,64 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
     }
     Ok(())
 }
-struct Entry {
-    node_id: u32,
-    order: Order,
+pub(crate) struct Entry<K> {
+    pub(crate) key: K,
     nodes_address: usize,
     count: usize,
     root: PathBuf,
-    ids: Vec<u32>,
+    pub(crate) ids: Vec<u32>,
 }
-#[derive(Default)]
-pub(crate) struct Cache {
-    entry: Option<Entry>,
+/// One cached sorted ID list, rebuilt when the key or the snapshot changes. Shared by folder listings and filters.
+pub(crate) struct ResultCache<K> {
+    pub(crate) entry: Option<Entry<K>>,
     #[cfg(test)]
-    builds: usize,
+    pub(crate) builds: usize,
 }
-impl Cache {
-    /// Owned payload buffers only; excludes stack fields and allocator overhead.
+impl<K> Default for ResultCache<K> {
+    fn default() -> Self {
+        Self {
+            entry: None,
+            #[cfg(test)]
+            builds: 0,
+        }
+    }
+}
+pub(crate) type Cache = ResultCache<(u32, Order)>;
+impl<K: PartialEq + Clone> ResultCache<K> {
+    /// Owned payload buffers only (the key's via `key_storage`); excludes stack fields and allocator overhead.
     #[cfg(any(test, feature = "performance-benchmark"))]
-    pub(crate) fn retained_buffer_storage(&self) -> disk_scan::BufferStorage {
+    pub(crate) fn storage_with_key(
+        &self,
+        key_storage: impl FnOnce(&K) -> disk_scan::BufferStorage,
+    ) -> disk_scan::BufferStorage {
         let Some(entry) = &self.entry else {
             return disk_scan::BufferStorage::default();
         };
-        let storage = disk_scan::BufferStorage {
+        let key = key_storage(&entry.key);
+        disk_scan::BufferStorage {
             length_bytes: entry.ids.len() * std::mem::size_of::<u32>()
-                + entry.root.as_os_str().len(),
+                + entry.root.as_os_str().len()
+                + key.length_bytes,
             capacity_bytes: entry.ids.capacity() * std::mem::size_of::<u32>()
-                + entry.root.capacity(),
-        };
-        storage
+                + entry.root.capacity()
+                + key.capacity_bytes,
+        }
     }
-    pub(crate) fn page(
+    /// A page of the list for `key`: reused when the snapshot is final and unchanged, otherwise built.
+    pub(crate) fn get_or_build(
         &mut self,
         snapshot: &Snapshot,
-        node_id: u32,
-        order: Order,
+        key: &K,
+        build: impl FnOnce() -> Result<Vec<u32>, String>,
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<u32>, usize), String> {
-        let node = snapshot
-            .node(node_id)
-            .filter(|n| n.id == node_id)
-            .ok_or("Unknown node ID")?;
         // A cancelled or failed scan keeps its partial results unchanged, so they cache like a completed one.
         let final_state = snapshot.state != ScanState::Running;
         let address = snapshot.storage_identity();
         let reuse = final_state
             && self.entry.as_ref().is_some_and(|e| {
-                e.node_id == node_id
-                    && e.order == order
+                e.key == *key
                     && e.nodes_address == address
                     && e.count == snapshot.node_count()
                     && e.root == snapshot.root
@@ -208,18 +218,10 @@ impl Cache {
             {
                 self.builds += 1;
             }
-            let mut ids = node.children().to_vec();
-            if ids
-                .iter()
-                .any(|&id| snapshot.node(id).is_none_or(|n| n.id != id))
-            {
-                return Err("Invalid child node ID".into());
-            }
-            sort_ids(snapshot, &mut ids, order)?;
+            let ids = build()?;
             if final_state {
                 self.entry = Some(Entry {
-                    node_id,
-                    order,
+                    key: key.clone(),
                     nodes_address: address,
                     count: snapshot.node_count(),
                     root: snapshot.root.clone(),
@@ -234,6 +236,42 @@ impl Cache {
             offset,
             limit,
         ))
+    }
+}
+impl Cache {
+    #[cfg(any(test, feature = "performance-benchmark"))]
+    pub(crate) fn retained_buffer_storage(&self) -> disk_scan::BufferStorage {
+        self.storage_with_key(|_| disk_scan::BufferStorage::default())
+    }
+    pub(crate) fn page(
+        &mut self,
+        snapshot: &Snapshot,
+        node_id: u32,
+        order: Order,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<u32>, usize), String> {
+        let node = snapshot
+            .node(node_id)
+            .filter(|n| n.id == node_id)
+            .ok_or("Unknown node ID")?;
+        self.get_or_build(
+            snapshot,
+            &(node_id, order),
+            || {
+                let mut ids = node.children().to_vec();
+                if ids
+                    .iter()
+                    .any(|&id| snapshot.node(id).is_none_or(|n| n.id != id))
+                {
+                    return Err("Invalid child node ID".into());
+                }
+                sort_ids(snapshot, &mut ids, order)?;
+                Ok(ids)
+            },
+            offset,
+            limit,
+        )
     }
 }
 pub(crate) fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
@@ -447,7 +485,7 @@ mod tests {
         );
         cache.page(&s, 1, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 2);
-        assert_eq!(cache.entry.as_ref().unwrap().node_id, 1);
+        assert_eq!(cache.entry.as_ref().unwrap().key.0, 1);
         cache.page(&s, 0, Order::NameAscending, 0, 500).unwrap();
         assert_eq!(cache.builds, 3);
         cache.page(&s, 0, Order::SizeAscending, 0, 500).unwrap();

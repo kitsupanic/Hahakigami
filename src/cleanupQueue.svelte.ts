@@ -12,7 +12,7 @@ import { commonFolder, folderItems } from "./queueFolders";
 import { compactBytes } from "./uiFormat";
 
 /** A Cleanup queue review: the items the backend will move to the Trash, and the token that commits them. */
-export type QueueReview = { token: string; items: NodeView[] };
+type QueueReview = { token: string; items: NodeView[] };
 
 /** What the Cleanup queue asks of the backend. Production wraps Tauri; tests pass a fake. */
 export type QueuePort = {
@@ -38,7 +38,7 @@ export const tauriQueuePort: QueuePort = {
 };
 
 /** Tells the open cleanup report how its queue check went. */
-export type QueueReporter = (
+type QueueReporter = (
   state: CleanupReport["queueState"],
   view?: QueueView,
   error?: string | null,

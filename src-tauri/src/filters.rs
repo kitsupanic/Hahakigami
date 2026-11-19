@@ -1,8 +1,8 @@
 //! Metadata-only search and filters. Session ownership bounds this cache to one snapshot.
-use crate::sorting::{self, page, Order};
+use crate::sorting::{self, Order};
 #[cfg(test)]
-use disk_scan::Node;
-use disk_scan::{NodeKind, NodeRef, ScanState, Snapshot};
+use disk_scan::{Node, ScanState};
+use disk_scan::{NodeKind, NodeRef, Snapshot};
 use std::os::unix::ffi::OsStrExt;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -144,39 +144,21 @@ fn category(node: &NodeRef<'_>) -> Option<&'static str> {
         Some("other")
     }
 }
-struct Entry {
-    query: Query,
-    nodes_address: usize,
-    count: usize,
-    root: std::path::PathBuf,
-    ids: Vec<u32>,
-}
-#[derive(Default)]
-pub(crate) struct Cache {
-    entry: Option<Entry>,
-    #[cfg(test)]
-    builds: usize,
-}
+pub(crate) type Cache = sorting::ResultCache<Query>;
 impl Cache {
-    /// Owned payload buffers only; excludes stack fields and allocator overhead.
     #[cfg(any(test, feature = "performance-benchmark"))]
     pub(crate) fn retained_buffer_storage(&self) -> disk_scan::BufferStorage {
-        let Some(entry) = &self.entry else {
-            return disk_scan::BufferStorage::default();
-        };
-        let mut storage = disk_scan::BufferStorage {
-            length_bytes: entry.ids.len() * std::mem::size_of::<u32>()
-                + entry.root.as_os_str().len(),
-            capacity_bytes: entry.ids.capacity() * std::mem::size_of::<u32>()
-                + entry.root.capacity(),
-        };
-        storage.length_bytes += entry.query.text.len() + entry.query.category.len();
-        storage.capacity_bytes += entry.query.text.capacity() + entry.query.category.capacity();
-        if let Some(extension) = &entry.query.extension {
-            storage.length_bytes += extension.len();
-            storage.capacity_bytes += extension.capacity();
-        }
-        storage
+        self.storage_with_key(|query| {
+            let extension = query.extension.as_ref();
+            disk_scan::BufferStorage {
+                length_bytes: query.text.len()
+                    + query.category.len()
+                    + extension.map_or(0, |e| e.len()),
+                capacity_bytes: query.text.capacity()
+                    + query.category.capacity()
+                    + extension.map_or(0, |e| e.capacity()),
+            }
+        })
     }
     pub(crate) fn page(
         &mut self,
@@ -188,55 +170,31 @@ impl Cache {
         if query.scope_id.is_some_and(|id| snapshot.node(id).is_none()) {
             return Err("Unknown scope node".into());
         }
-        let address = snapshot.storage_identity();
-        // A cancelled or failed scan keeps its partial results unchanged, so they cache like a completed one.
-        let final_state = snapshot.state != ScanState::Running;
-        let reuse = final_state
-            && self.entry.as_ref().is_some_and(|e| {
-                e.query == *query
-                    && e.nodes_address == address
-                    && e.count == snapshot.node_count()
-                    && e.root == snapshot.root
-            });
-        if !reuse {
-            self.entry = None;
-            #[cfg(test)]
-            {
-                self.builds += 1;
-            }
-            let mut ids = Vec::new();
-            if let Some(scope) = query.scope_id {
-                crate::file_types::visit(snapshot, scope, |node| {
-                    if query.matches(&node) {
-                        ids.push(node.id);
-                    }
-                })?;
-            } else {
-                ids.extend(
-                    snapshot
-                        .iter_nodes()
-                        .filter(|n| query.matches(n))
-                        .map(|n| n.id),
-                );
-            }
-            sorting::sort_ids(snapshot, &mut ids, query.order)?;
-            if final_state {
-                self.entry = Some(Entry {
-                    query: query.clone(),
-                    nodes_address: address,
-                    count: snapshot.node_count(),
-                    root: snapshot.root.clone(),
-                    ids,
-                });
-            } else {
-                return Ok(page(&ids, offset, limit));
-            }
-        }
-        Ok(page(
-            &self.entry.as_ref().expect("cache populated").ids,
+        self.get_or_build(
+            snapshot,
+            query,
+            || {
+                let mut ids = Vec::new();
+                if let Some(scope) = query.scope_id {
+                    crate::file_types::visit(snapshot, scope, |node| {
+                        if query.matches(&node) {
+                            ids.push(node.id);
+                        }
+                    })?;
+                } else {
+                    ids.extend(
+                        snapshot
+                            .iter_nodes()
+                            .filter(|n| query.matches(n))
+                            .map(|n| n.id),
+                    );
+                }
+                sorting::sort_ids(snapshot, &mut ids, query.order)?;
+                Ok(ids)
+            },
             offset,
             limit,
-        ))
+        )
     }
 }
 
@@ -442,7 +400,7 @@ mod tests {
         assert_eq!(cache.builds, 1);
         assert_eq!(cache.page(&s, &q, 0, usize::MAX).unwrap().0.len(), 500);
         assert!(cache.page(&s, &q, usize::MAX, 500).unwrap().0.is_empty());
-        assert!(cache.entry.as_ref().is_some_and(|e| e.query == q));
+        assert!(cache.entry.as_ref().is_some_and(|e| e.key == q));
         s.state = ScanState::Running;
         cache.page(&s, &q, 0, 1).unwrap();
         cache.page(&s, &q, 0, 1).unwrap();
@@ -483,7 +441,7 @@ mod tests {
             (vec![0, 2, 3, 1], 4)
         );
         assert_eq!(cache.builds, 2);
-        assert!(cache.entry.as_ref().unwrap().query.search);
+        assert!(cache.entry.as_ref().unwrap().key.search);
         assert_eq!(cache.page(&s, &search, 1, 1).unwrap().0, vec![2]);
         assert_eq!(cache.builds, 2);
         let desc = Query::search("image".into(), Order::NameDescending).unwrap();

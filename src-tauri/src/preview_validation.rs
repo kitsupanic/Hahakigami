@@ -31,27 +31,7 @@ impl Item {
         {
             return Err("Preview path is outside the scan location.".into());
         }
-        let mut ancestors = Vec::new();
-        let mut parent = node.parent;
-        while let Some(id) = parent {
-            if ancestors.len() >= snapshot.node_count() {
-                return Err("Invalid preview ancestry.".into());
-            }
-            let ancestor = snapshot.node(id).ok_or("Invalid preview ancestry")?;
-            if ancestor.identity.kind != NodeKind::Directory || ancestor.excluded {
-                return Err("Preview has an excluded or invalid ancestor.".into());
-            }
-            ancestors.push((
-                ancestor.path()?,
-                Identity {
-                    device: ancestor.identity.device,
-                    inode: ancestor.identity.inode,
-                    kind: 1,
-                    birth: None,
-                },
-            ));
-            parent = ancestor.parent;
-        }
+        let mut ancestors = crate::safety::lineage(snapshot, node_id, "preview")?;
         ancestors.extend_from_slice(root_ancestors);
         // The recorded lineage must account for every lexical ancestor. This
         // rejects symlink substitutions without rejecting macOS firmlink paths.

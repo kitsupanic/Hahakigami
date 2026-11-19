@@ -25,17 +25,9 @@ const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Row {
     pub id: String,
-    pub name: String,
-    pub root_path: String,
     pub started_at_ms: u64,
-    pub completed_at_ms: u64,
     // Last write or refresh: the recency order.
     pub used_at_ms: u64,
-    pub entries: u64,
-    pub allocated_bytes: u64,
-    pub incomplete: bool,
-    pub errors: u64,
-    pub excluded: u64,
     pub file_bytes: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,6 +65,29 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
 pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path).and_then(|d| d.sync_all())
 }
+/// Writes `path` through a private temp file `<prefix><uuid>.tmp` in `dir` and renames it into place.
+/// `Ok(Some(warning))`: the file is published but the directory sync after the rename failed.
+pub(crate) fn atomic(
+    dir: &Path,
+    path: &Path,
+    prefix: &str,
+    write: impl FnOnce(File) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    let temp = dir.join(format!("{prefix}{}.tmp", uuid::Uuid::new_v4()));
+    let f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&temp)
+        .map_err(err)?;
+    let result = write(f).and_then(|()| fs::rename(&temp, path).map_err(err));
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result?;
+    Ok(sync_dir(dir).err().map(err))
+}
 impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -102,34 +117,13 @@ impl Store {
         serde_json::from_reader(BufReader::new(open(path).map_err(err)?.take(1024 * 1024)))
             .map_err(err)
     }
-    pub(crate) fn atomic(
-        &self,
-        path: &Path,
-        write: impl FnOnce(File) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let temp = self.root.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temp)
-            .map_err(err)?;
-        let result = (|| {
-            write(f)?;
-            fs::rename(&temp, path).map_err(err)?;
-            sync_dir(&self.root).map_err(err)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp);
-        }
-        result
-    }
+    // The sync-failure warning is dropped: `Cache::maintain` syncs the directory again before every use.
     fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
-        self.atomic(path, |mut f| {
+        atomic(&self.root, path, "", |mut f| {
             serde_json::to_writer(&mut f, value).map_err(err)?;
             f.sync_all().map_err(err)
         })
+        .map(drop)
     }
     /// The entries with a readable row and archive, newest first.
     pub fn list(&self) -> Result<Vec<Row>, String> {
@@ -165,7 +159,7 @@ impl Store {
         validate_metadata(m)?;
         let id = uuid::Uuid::new_v4().to_string();
         let archive = self.path(&id, "zst")?;
-        self.atomic(&archive, |f| {
+        atomic(&self.root, &archive, "", |f| {
             validated_encoding(
                 parallel,
                 || validate(s, self.node_limit),
@@ -191,24 +185,11 @@ impl Store {
                     writer.get_ref().sync_all().map_err(err)
                 },
             )
-        })?;
+        })?; // Warning dropped as in `write_json`.
         let row = Row {
             id: id.clone(),
-            name: s
-                .root
-                .file_name()
-                .unwrap_or(s.root.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
-            root_path: s.root.to_string_lossy().into_owned(),
             started_at_ms: m.started_at_ms,
-            completed_at_ms: m.completed_at_ms,
             used_at_ms: crate::now_ms(),
-            entries: s.stats.entries,
-            allocated_bytes: s.stats.allocated_bytes,
-            incomplete: s.stats.incomplete,
-            errors: s.stats.errors,
-            excluded: s.stats.excluded,
             file_bytes: open(&archive).map_err(err)?.metadata().map_err(err)?.len(),
         };
         if let Err(e) = self.write_json(&self.path(&id, "json")?, &row) {
@@ -573,7 +554,7 @@ mod tests {
         l.prepare().unwrap();
         let archive = l.root.join("invalid.zst");
         let encoded = std::sync::atomic::AtomicBool::new(false);
-        let result = l.atomic(&archive, |mut file| {
+        let result = atomic(&l.root, &archive, "", |mut file| {
             validated_encoding(
                 true,
                 || {
@@ -701,6 +682,18 @@ mod tests {
         assert!(l.list().unwrap().is_empty());
         l.delete(&row.id).unwrap();
         assert!(l.delete("not-an-id").is_err());
+    }
+    #[test]
+    fn rows_written_with_the_old_fields_still_load() {
+        let (_d, l, s, m) = fixture();
+        let row = l.save(&s, &m).unwrap();
+        let json = format!(
+            r#"{{"id":"{}","name":"n","rootPath":"/r","startedAtMs":{},"completedAtMs":2,"usedAtMs":{},"entries":3,"allocatedBytes":4,"incomplete":false,"errors":0,"excluded":0,"fileBytes":{}}}"#,
+            row.id, row.started_at_ms, row.used_at_ms, row.file_bytes
+        );
+        fs::write(l.path(&row.id, "json").unwrap(), json).unwrap();
+        assert_eq!(l.list().unwrap()[0].id, row.id);
+        assert!(l.load(&row.id).is_ok());
     }
     #[test]
     fn rows_are_listed_newest_first() {

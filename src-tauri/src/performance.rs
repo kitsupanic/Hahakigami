@@ -336,10 +336,11 @@ fn report(
         let maps = s.sorts.lock().unwrap();
         let ids = disk_scan::BufferStorage {
             length_bytes: maps.values().map(|ids| ids.len() * 4).sum(),
-            capacity_bytes: maps.values().map(|ids| ids.capacity() * 4).sum(),
+            // An `Arc<[u32]>` is allocated at exactly its length.
+            capacity_bytes: maps.values().map(|ids| ids.len() * 4).sum(),
         };
         json!({"id_buffers": ids,
-            "index_payload_estimate_bytes": maps.capacity() * std::mem::size_of::<((u32, bool), Vec<u32>)>()})
+            "index_payload_estimate_bytes": maps.capacity() * std::mem::size_of::<(u32, Arc<[u32]>)>()})
     };
     let issue_storage = {
         let issues = s.issues.lock().unwrap();
@@ -365,6 +366,8 @@ fn report(
 }
 
 pub fn native_main() -> Result<(), String> {
+    // As in `run`: benchmarks must scan with the app's descriptor limit, not the shell's.
+    budget::raise_descriptor_limit();
     let config = read_config()?;
     tauri::async_runtime::block_on(async {
         let (app, target) = mock(&config)?;

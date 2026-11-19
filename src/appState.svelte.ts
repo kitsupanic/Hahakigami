@@ -6,7 +6,7 @@ import type {
   NodeView,
   Page,
 } from "./types";
-export type Setter<T> = (value: T | ((previous: T) => T)) => void;
+type Setter<T> = (value: T | ((previous: T) => T)) => void;
 /** A raw reactive value with a setter that takes a value or an updater. */
 export function rawState<T>(initial: T) {
   let value = $state.raw(initial);

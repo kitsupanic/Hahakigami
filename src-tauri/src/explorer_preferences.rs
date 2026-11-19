@@ -1,5 +1,5 @@
 //! Small, independent explorer preferences; never changes scan settings.
-use crate::cache_store::sync_dir;
+use crate::cache_store::{atomic, sync_dir};
 use crate::sorting::Order;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -96,32 +96,17 @@ impl Preferences {
             .parent()
             .ok_or("Preference directory is unavailable.")?;
         fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-        let temp = directory.join(format!("explorer-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<(), std::io::Error> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&temp)?;
+        self.warning = atomic(directory, record, "explorer-", |mut file| {
             serde_json::to_writer(&mut file, &Record { version: 1, sort })
-                .map_err(std::io::Error::other)?;
-            file.sync_all()?;
+                .map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
             // Sync the directory before publication as well; a failure leaves the
             // previous preference untouched. Atomic rename is the commit point.
-            sync_dir(directory)?;
-            fs::rename(&temp, record)?;
-            // Publication succeeded. A directory-sync failure is a durability
-            // warning rather than a failed write which could falsely promise rollback.
-            self.warning = sync_dir(directory).err().map(|e| {
-                format!("Sort preference saved, but durability could not be confirmed: {e}")
-            });
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temp);
-            return Err(error.to_string());
-        }
+            sync_dir(directory).map_err(|e| e.to_string())
+        })?
+        // Publication succeeded. A directory-sync failure is a durability
+        // warning rather than a failed write which could falsely promise rollback.
+        .map(|e| format!("Sort preference saved, but durability could not be confirmed: {e}"));
         self.sort = sort;
         Ok(self.view())
     }

@@ -122,7 +122,12 @@ it("invalidates a queued Trash ticket and drains a refresh only after the whole 
       ? batch.promise
       : standard(command, args),
   );
-  app.setTrash({ queued: true, token: "old-ticket", items: [] });
+  app.setTrash({
+    queued: true,
+    scanId: "live",
+    token: "old-ticket",
+    items: [],
+  });
   const pending = app.removeQueues(["q1", "q2"]);
   const listCount = mock.invoke.mock.calls.filter(
     ([command]) => command === "list_cleanup_queue",

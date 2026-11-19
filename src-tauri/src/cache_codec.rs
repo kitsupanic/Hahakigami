@@ -12,6 +12,8 @@ use std::{
 };
 const MAGIC: &[u8; 8] = b"HAHCAC04";
 const FIELD_LIMIT: usize = 64 * 1024;
+// A crafted archive could otherwise keep ~4 GB of path/label overrides inside the decode budget.
+const OVERRIDE_BYTES_LIMIT: usize = 64 * 1024 * 1024;
 const HEADER_LIMIT: usize = 1024 * 1024;
 const RECORD_BYTES: usize = 61;
 pub(crate) const WRITE_BATCH: usize = 128 * 1024;
@@ -259,6 +261,9 @@ fn read_nodes(r: &mut impl Read, node_limit: usize) -> Result<Snapshot, String> 
         node.hard_link = flags & 8 != 0;
         node.excluded = flags & 16 != 0;
         builder.append_ref(&node)?;
+        if builder.override_bytes() > OVERRIDE_BYTES_LIMIT {
+            return Err("Cache path overrides exceed limit".into());
+        }
     }
     let mut extra = [0];
     if r.read(&mut extra).map_err(err)? != 0 {
@@ -324,6 +329,31 @@ mod tests {
         missing.extend_from_slice(&header);
         missing.extend_from_slice(&encoded[12 + length..]);
         assert!(decode(&mut missing.as_slice(), 8_000_000).is_err());
+    }
+
+    #[test]
+    fn decoding_rejects_path_overrides_beyond_the_cap() {
+        let (_d, mut s, m) = fixture();
+        let template = s.legacy_node(2).unwrap();
+        // Each path sits outside its parent, so the decoder must keep it as an override.
+        let name = "x".repeat(FIELD_LIMIT - 16);
+        let mut count = 0;
+        while count * name.len() <= OVERRIDE_BYTES_LIMIT {
+            let mut n = template.clone();
+            n.id = s.node_count() as u32;
+            n.parent = Some(0);
+            n.children.clear();
+            n.path = format!("/elsewhere{count}/{name}").into();
+            n.name = name.clone();
+            s.append_legacy_node(n).unwrap();
+            count += 1;
+        }
+        let mut encoded = Vec::new();
+        encode(&mut encoded, &s, &m).unwrap();
+        assert_eq!(
+            decode(&mut encoded.as_slice(), 8_000_000).unwrap_err(),
+            "Cache path overrides exceed limit"
+        );
     }
 
     #[test]

@@ -704,8 +704,8 @@ fn positive_map_filter_preserves_full_legacy_output_and_aggregate_sizes() {
                     let ids = legacy_map_order(&nodes, &node.children)
                         .into_iter()
                         .filter(|&id| nodes[id as usize].allocated_size > 0)
-                        .collect();
-                    cache.insert(node.id, ids);
+                        .collect::<Vec<_>>();
+                    cache.insert(node.id, ids.into());
                 }
             }
             let expected = get_map(app.state(), "fixture".into(), 0, limit, None)

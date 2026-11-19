@@ -359,7 +359,7 @@ it.each([false, true])(
   "closes an open Trash review (queued: %s) when the shown disk is ejected",
   async (queued) => {
     await scanDisk("Backup");
-    await act(() => app().setTrash({ token: "ticket", items: [node], queued }));
+    await act(() => app().setTrash({ scanId: "live", token: "ticket", items: [node], queued }));
     expect(container.querySelector("dialog, [role=dialog]")).not.toBeNull();
     mounted = ["/"];
     discovered = [disk, home];

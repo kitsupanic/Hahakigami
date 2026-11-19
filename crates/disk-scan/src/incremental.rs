@@ -489,13 +489,7 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
         on_workers(base_workers);
         scan_live_authorized(root, options, cancel, store.clone(), progress)?;
         return Ok(ReuseStats {
-            rescanned_directories: store
-                .read()
-                .unwrap()
-                .worker_stats
-                .iter()
-                .map(|s| s.directories)
-                .sum(),
+            rescanned_directories: store.read().unwrap().worker_directories(),
             fallback_reason: Some(reason.into()),
             ..Default::default()
         });
@@ -543,13 +537,7 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
         on_workers(base_workers);
         outcome = scan_live_authorized(retry_root, options, cancel, candidate.clone(), report);
         ReuseStats {
-            rescanned_directories: candidate
-                .read()
-                .unwrap()
-                .worker_stats
-                .iter()
-                .map(|s| s.directories)
-                .sum(),
+            rescanned_directories: candidate.read().unwrap().worker_directories(),
             fallback_reason: Some(reason.into()),
             storage,
             ..Default::default()
@@ -576,10 +564,7 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
         reuse.stats.rescanned_directories = candidate
             .read()
             .unwrap()
-            .worker_stats
-            .iter()
-            .map(|s| s.directories)
-            .sum::<u64>()
+            .worker_directories()
             .saturating_sub(reuse.reused_directories);
         reuse.stats
     };
@@ -591,13 +576,7 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
         final_snapshot.state = ScanState::Failed;
         issue(&mut final_snapshot, root_path, error);
     }
-    let event = Progress {
-        entries: final_snapshot.stats.entries,
-        directories: final_snapshot.stats.directories,
-        errors: final_snapshot.stats.errors,
-        excluded: final_snapshot.stats.excluded,
-        elapsed_ms: final_snapshot.stats.elapsed_ms,
-    };
+    let event = Progress::of(&final_snapshot.stats);
     *store.write().unwrap() = final_snapshot;
     progress(event);
     outcome.map(|()| stats)

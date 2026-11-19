@@ -214,16 +214,21 @@
     ...dimensions,
   });
   let completedLayout: typeof layoutInput | null = $state.raw(null);
-  let layoutCurrent = $derived.by(
-    () =>
-      !!completedLayout &&
-      completedLayout.nodes === nodes &&
-      completedLayout.rootId === rootId &&
-      completedLayout.mode === mode &&
-      completedLayout.colorMode === colorMode &&
-      completedLayout.width === dimensions.width &&
-      completedLayout.height === dimensions.height,
-  );
+  function sameLayout(
+    a: typeof layoutInput | null | undefined,
+    b: typeof layoutInput,
+  ) {
+    return (
+      !!a &&
+      a.nodes === b.nodes &&
+      a.rootId === b.rootId &&
+      a.mode === b.mode &&
+      a.colorMode === b.colorMode &&
+      a.width === b.width &&
+      a.height === b.height
+    );
+  }
+  let layoutCurrent = $derived(sameLayout(completedLayout, layoutInput));
   let renderedIds = $derived(new Set(shapes.map((shape) => shape.id)));
   let activeTarget = $derived.by(() =>
     hover ? createHoverTarget(hover, byId) : hovered,
@@ -408,16 +413,7 @@
   $effect(() => {
     if (!worker) return;
     const next = layoutInput;
-    if (
-      previousLayout &&
-      previousLayout.nodes === next.nodes &&
-      previousLayout.rootId === next.rootId &&
-      previousLayout.mode === next.mode &&
-      previousLayout.colorMode === next.colorMode &&
-      previousLayout.width === next.width &&
-      previousLayout.height === next.height
-    )
-      return;
+    if (sameLayout(previousLayout, next)) return;
     previousLayout = next;
     untrack(() => {
       clearHover();
