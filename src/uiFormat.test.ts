@@ -3,6 +3,7 @@ import {
   formatScanTimestamp,
   mapLabelColor,
   mapTileTones,
+  scanTime,
   usageColors,
 } from "./uiFormat";
 
@@ -75,3 +76,8 @@ it.each([NaN, Infinity, -Infinity, 8.64e15 + 1])(
     });
   },
 );
+
+it("rounds a scan time to tenths before choosing its unit", () => {
+  expect(scanTime(59940)).toBe("59.9 seconds");
+  expect(scanTime(59960)).toBe("1m 0s");
+});

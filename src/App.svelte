@@ -730,6 +730,7 @@
           scanBytes={summary.allocatedBytes}
           running={!!running || listLoading || !sortReady}
           onSelect={select}
+          onSelectRange={app.selectRange}
           onOpen={open}
           onPreview={previewRow}
           keyboardBlocked={previewDialog}

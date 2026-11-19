@@ -134,10 +134,12 @@ impl Reuse {
             if let Some(mark) = mark {
                 mark.matched = true;
             }
-            if subtree_dirty[index]
+            // Only known hard-link inodes are ever looked up in `touched`.
+            if (subtree_dirty[index]
                 || node
                     .parent
-                    .is_some_and(|p| direct_listing_dirty[p as usize])
+                    .is_some_and(|p| direct_listing_dirty[p as usize]))
+                && known_hardlinks.contains(&(node.identity.device, node.identity.inode))
             {
                 touched.insert((node.identity.device, node.identity.inode));
             }
@@ -339,9 +341,18 @@ fn valid_seed(snapshot: &Snapshot) -> bool {
         return false;
     }
     let mut links = vec![false; snapshot.node_count()];
-    let mut names = HashSet::with_capacity(snapshot.node_count());
+    // Sibling names are checked one folder at a time, so this set is bounded
+    // by the widest folder, not by the node count.
+    let mut names = HashSet::new();
     let ordinary_paths = cfg!(unix) && !snapshot.has_path_overrides();
     let mut path_cursor = snapshot.path_cursor();
+    let child_name = |id| {
+        if ordinary_paths {
+            snapshot.native_component(id)
+        } else {
+            snapshot.native_name(id)
+        }
+    };
     for (index, n) in snapshot.iter_nodes().enumerate() {
         if n.is_directory != (n.identity.kind == NodeKind::Directory) {
             return false;
@@ -364,18 +375,10 @@ fn valid_seed(snapshot: &Snapshot) -> bool {
             let Some(parent) = n.parent.filter(|p| (*p as usize) < index) else {
                 return false;
             };
-            let name = if ordinary_paths {
-                let Ok(name) = snapshot.native_component(n.id) else {
-                    return false;
-                };
-                name
-            } else {
-                let Ok(name) = snapshot.native_name(n.id) else {
-                    return false;
-                };
-                name
+            let Ok(name) = child_name(n.id) else {
+                return false;
             };
-            if !names.insert((parent, name)) || !snapshot.node(parent).unwrap().is_directory {
+            if !snapshot.node(parent).unwrap().is_directory {
                 return false;
             }
             if !ordinary_paths {
@@ -393,6 +396,7 @@ fn valid_seed(snapshot: &Snapshot) -> bool {
         let Ok(children) = snapshot.children(n.id) else {
             return false;
         };
+        names.clear();
         for &child in children {
             if child as usize <= index
                 || child as usize >= snapshot.node_count()
@@ -402,6 +406,12 @@ fn valid_seed(snapshot: &Snapshot) -> bool {
                 return false;
             }
             links[child as usize] = true;
+            let Ok(name) = child_name(child) else {
+                return false;
+            };
+            if !names.insert(name) {
+                return false;
+            }
         }
     }
     links.iter().skip(1).all(|linked| *linked)
