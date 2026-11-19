@@ -292,6 +292,24 @@ it("discards a scan whose disk was ejected before its start heard back", async (
   expect(scans.anyRunning).toBe(false);
 });
 
+it("discards a rescan whose disk was ejected while its old scan still had a slot", async () => {
+  await scans.start(hd);
+  const old = idOf("hd");
+  emit(old, "completed");
+  let release!: () => void;
+  startGate = new Promise<void>((resolve) => (release = resolve));
+  const rescan = scans.start(hd);
+  await settle();
+  const fresh = idOf("hd");
+  expect(scans.discard(hd)).toBe(old);
+  expect(discarded).toEqual([old]);
+  release();
+  await rescan;
+  expect(discarded).toEqual([old, fresh]);
+  expect(scans.slots).toEqual({});
+  expect(summaryAsked).not.toContain(fresh);
+});
+
 it("discards a scan whose disk was ejected before its first event", async () => {
   let release!: () => void;
   startGate = new Promise<void>((resolve) => (release = resolve));

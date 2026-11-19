@@ -76,7 +76,9 @@ fn rename_at(directory: &File, from: &std::ffi::CStr, to: &std::ffi::CStr) -> st
         Err(std::io::Error::last_os_error())
     }
 }
-fn record_nonregular(directory: &File) -> std::io::Result<bool> {
+/// Whether `queue.json` must be set aside before a recovery publish replaces it: it exists, and it is not a
+/// regular file or it belongs to a queue that could not be loaded (a newer version may have written it).
+fn record_needs_quarantine(directory: &File, blocked: bool) -> std::io::Result<bool> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     if unsafe {
         libc::fstatat(
@@ -94,7 +96,7 @@ fn record_nonregular(directory: &File) -> std::io::Result<bool> {
         return Err(error);
     }
     let stat = unsafe { stat.assume_init() };
-    Ok(stat.st_mode & libc::S_IFMT != libc::S_IFREG)
+    Ok(blocked || stat.st_mode & libc::S_IFMT != libc::S_IFREG)
 }
 /// Removes the `<uuid>.tmp` files a crash between `publish`'s write and its rename left behind (up to 16 MB
 /// each). Only regular files named `*.tmp` go: symlinks, directories and `quarantine-*` records stay. Best effort.
@@ -323,7 +325,7 @@ impl Queue {
             file.write_all(&bytes)?;
             file.sync_all()?;
             dir.sync_all()?;
-            if recovery && record_nonregular(&dir)? {
+            if recovery && record_needs_quarantine(&dir, self.blocked)? {
                 let name = CString::new(format!("quarantine-{}", uuid::Uuid::new_v4()))
                     .map_err(std::io::Error::other)?;
                 rename_at(&dir, c"queue.json", &name)?;
@@ -1087,6 +1089,40 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fs::read(preserved.join("keep")).unwrap(), b"preserved");
+    }
+    #[test]
+    fn clearing_a_blocked_queue_keeps_an_unreadable_regular_record_in_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        fs::create_dir_all(&storage).unwrap();
+        // A newer version's record: a regular file this version cannot read.
+        let newer = br#"{"version":2,"entries":[]}"#;
+        fs::write(storage.join("queue.json"), newer).unwrap();
+        let mut q = Queue::load(storage.clone());
+        assert!(q.blocked);
+        q.clear().unwrap();
+        assert!(!q.blocked);
+        let restored = Queue::load(storage.clone());
+        assert!(!restored.blocked && restored.entries.is_empty());
+        let quarantined = || -> Vec<PathBuf> {
+            fs::read_dir(&storage)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("quarantine-")
+                })
+                .collect()
+        };
+        let kept = quarantined();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(&kept[0]).unwrap(), newer);
+        // Clearing a queue that loaded fine replaces its own record: nothing more to keep.
+        let mut healthy = restored;
+        healthy.clear().unwrap();
+        assert_eq!(quarantined(), kept);
     }
     #[test]
     fn failed_clear_restores_quarantined_record_before_reporting_failure() {

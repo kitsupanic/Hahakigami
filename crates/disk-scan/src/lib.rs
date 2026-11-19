@@ -1011,6 +1011,7 @@ fn scan_live_internal_reuse(
                     cancel: &cancel,
                 };
                 let qos_error = diagnostics::apply_qos(options.qos);
+                diagnostics::disable_dataless_materialization();
                 let mut telemetry = diagnostics::Tracker::new(worker_id);
                 telemetry.stats.qos_error = qos_error;
                 #[cfg(unix)]

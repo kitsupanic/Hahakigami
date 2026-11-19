@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard,
+        Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, TryLockError,
     },
 };
 
@@ -23,6 +23,9 @@ pub(crate) const RESULTS_CHANGED: &str = "Results changed after cleanup. Rescan 
 /// The scan is still running, finishing, cancelled or failed: nothing that needs its results can go ahead.
 pub(crate) const NOT_COMPLETED: &str = "Wait for a completed scan first.";
 const GONE: &str = "This scan is no longer active.";
+/// How long a rescan waits for a read of the old results before it scans without them as a baseline. Ordinary
+/// reads (a list query, a queue refresh) end well within it; one stuck on a hung disk does not.
+const BASELINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Where a live scan is kept: one slot per disk (keyed by its root path), and one shared by every folder scan.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -176,10 +179,23 @@ impl Session {
         Ok(snapshot)
     }
     /// Moves the results out as the next scan's rescan baseline, when they can be one: a live scan of the same
-    /// root with a cache token and clean results. The scan is left empty.
+    /// root with a cache token and clean results. The scan is left empty. It waits at most `BASELINE_WAIT` for a
+    /// reader of the store (the queue view reads it across disk checks that can hang on a stuck volume): a store
+    /// still being read after that gives no baseline, and the scan falls back to the disk cache or a full walk.
+    /// The old session is dropped by the caller either way, so its results are freed when the last reader lets go.
     fn take_baseline(&self, root: &Path) -> Option<baseline::Taken> {
         let token = self.cache_token.lock().unwrap().clone()?;
-        let mut snapshot = self.store.write().unwrap();
+        let deadline = std::time::Instant::now() + BASELINE_WAIT;
+        let mut snapshot = loop {
+            match self.store.try_write() {
+                Ok(snapshot) => break snapshot,
+                Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(TryLockError::WouldBlock) => return None,
+                Err(TryLockError::Poisoned(e)) => panic!("{e}"),
+            }
+        };
         if snapshot.root != root || !baseline::eligible(&snapshot) {
             return None;
         }
@@ -225,9 +241,9 @@ pub(crate) struct Started {
 }
 
 impl Started {
-    /// The replaced scan's results as the rescan baseline, when they can be one. Waits for the old store's writer
-    /// lock, behind any read of it, so call it holding no lock another command needs. Call it before the scan
-    /// thread starts, so the baseline is taken before the new scan reads it.
+    /// The replaced scan's results as the rescan baseline, when they can be one. It does not wait for a read of
+    /// the old results: while one runs there is no baseline. Call it before the scan thread starts, so the
+    /// baseline is taken before the new scan reads it.
     pub(crate) fn take_previous(&mut self) -> Option<baseline::Taken> {
         let (old, root) = self.replaced.take()?;
         old.take_baseline(&root)
@@ -279,8 +295,8 @@ impl Slots {
     /// Puts a new scan in `key`'s slot. Refuses, changing nothing, while that slot's own scan runs or the
     /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan (waiting for any
     /// command holding it) and installs the new session, which counts as running from then on. The old results
-    /// are taken later, by `Started::take_previous`: that waits behind any read of them, so neither the slot table
-    /// nor the caller's locks are held for it. Other slots are never touched.
+    /// are taken later, by `Started::take_previous`, which gives up instead of waiting behind a read of them, so
+    /// neither the slot table nor the caller's locks are held for it. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.lock();
         live.draining.retain(|s| session_running(s));
@@ -565,28 +581,36 @@ mod tests {
     }
 
     #[test]
-    fn a_replace_does_not_wait_for_a_read_of_the_old_results_only_taking_them_does() {
+    fn neither_a_replace_nor_taking_the_old_results_waits_for_a_read_of_them() {
         let slots = Arc::new(slots());
         let (_dir, root) = dir();
         let old = ended(&root, scan_of(&root));
+        let seeded = old.store.read().unwrap().node_count();
         *old.cache_token.lock().unwrap() = Some(token());
         slots.install(disk(&root), old.clone());
-        // A long read of the old results: taking them as the baseline has to wait for it.
+        // A long read of the old results, like the queue view's across a disk check that hangs.
         let reader = old.store.read().unwrap();
         let replacing = {
             let (slots, root) = (slots.clone(), root.clone());
-            std::thread::spawn(move || slots.replace(disk(&root), request(&root)).unwrap())
+            std::thread::spawn(move || {
+                let mut started = slots.replace(disk(&root), request(&root)).unwrap();
+                let previous = started.take_previous();
+                (started, previous)
+            })
         };
-        // Fails instead of hanging when `replace` waits for the reader.
+        // Fails instead of hanging when either step waits for the reader.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !replacing.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "replace waited for a read of the old results"
+                "a start waited for a read of the old results"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let mut started = replacing.join().unwrap();
+        let (started, previous) = replacing.join().unwrap();
+        // No baseline: the results stay where they are, for the reader.
+        assert!(previous.is_none());
+        assert_eq!(reader.node_count(), seeded);
         // The new scan is installed and counts as running, so a gate that needs no scan refuses, and the old
         // one is gone, with nothing waiting on the reader.
         assert!(slots.require_idle("busy").is_err());
@@ -596,9 +620,22 @@ mod tests {
         ));
         assert_eq!(slots.find(&old.id).err().unwrap(), GONE);
         assert_eq!(slots.sessions().len(), 1);
+        drop(reader);
+    }
+
+    #[test]
+    fn taking_the_old_results_waits_out_a_short_read_of_them() {
+        let slots = Arc::new(slots());
+        let (_dir, root) = dir();
+        let old = ended(&root, scan_of(&root));
+        *old.cache_token.lock().unwrap() = Some(token());
+        slots.install(disk(&root), old.clone());
+        let mut started = slots.replace(disk(&root), request(&root)).unwrap();
+        // A read that ends well within BASELINE_WAIT, like a queue refresh during Scan all.
         let previous = std::thread::scope(|scope| {
+            let reader = old.store.read().unwrap();
             let taking = scope.spawn(|| started.take_previous());
-            assert!(!taking.is_finished());
+            std::thread::sleep(BASELINE_WAIT / 10);
             drop(reader);
             taking.join().unwrap()
         });

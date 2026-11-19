@@ -498,13 +498,25 @@ async fn start_scan<R: tauri::Runtime>(
     on_event: Channel<Summary>,
     app: tauri::AppHandle<R>,
 ) -> Result<String, String> {
+    // validate_target/ScanRoot::open can hang on an unresponsive mount. They run first, off the async workers
+    // and before the gate, so a stalled disk never keeps every exclusive operation refused: those wait only for
+    // starts in flight (ADR 0004). They touch no scan state.
+    let opened = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            open_scan_target(&app.state::<AppState>(), target_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
     // Starts share the gate, so scans on different slots can begin at the same time.
     let _activity = Activity::begin_shared(&state.activity)?;
     quick_look::close(app.clone(), state.preview.clone()).await?;
-    // validate_target/ScanRoot::open can hang on an unresponsive mount; keep them off the async workers.
+    // A target that failed to open is reported only now, so every start attempt still closes Quick Look.
+    let opened = opened?;
     // `_activity` stays held here until the blocking start returns.
     tauri::async_runtime::spawn_blocking(move || {
-        start_scan_impl(&app.state::<AppState>(), target_id, on_event)
+        register_scan(&app.state::<AppState>(), opened, on_event)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -773,21 +785,23 @@ fn run_scan(
     s.finishing.store(false, Ordering::Release);
     channel.report(s.summary());
 }
-fn start_scan_impl(
-    state: &AppState,
-    target_id: String,
-    on_event: impl Progress,
-) -> Result<String, String> {
+/// A scan target read from the disk and bound to a held descriptor, ready to register as a scan.
+struct OpenedTarget {
+    root: PathBuf,
+    disk: bool,
+    root_ancestors: Vec<(PathBuf, safety::Identity)>,
+    authorized_root: disk_scan::ScanRoot,
+    auto_scope: settings::AutoScope,
+}
+/// The part of a start that reads the disk, and can hang on an unresponsive mount: it holds no scan lock and
+/// touches no session, so it runs before the Activity gate. What registration needs is re-checked by
+/// `register_scan` under its own locks: the access gate, then `Slots::replace` (which refuses a slot that is
+/// scanning). The held descriptor, not the path, is what the scan walks, so the target changing meanwhile cannot
+/// redirect it.
+fn open_scan_target(state: &AppState, target_id: String) -> Result<OpenedTarget, String> {
     // Refuse before the target is touched (opening a protected folder can prompt). Checked again before
     // registration, under the lock that registration holds.
     state.access_setup.lock().unwrap().require_scan_allowed()?;
-    let scheduling_conditions = platform::scheduling_conditions();
-    let scan_settings = state
-        .scan_settings
-        .lock()
-        .unwrap()
-        .automatic_info_for_conditions(settings::AutoScope::Volume, scheduling_conditions);
-    let qos = scan_settings.qos;
     let (resolved_id, root, disk) = {
         let targets = state.targets.lock().unwrap();
         let (target, root) = targets
@@ -820,6 +834,43 @@ fn start_scan_impl(
     } else {
         settings::AutoScope::Folder
     };
+    Ok(OpenedTarget {
+        root,
+        disk,
+        root_ancestors,
+        authorized_root,
+        auto_scope,
+    })
+}
+/// Opens the target and registers its scan, as `start_scan` does past the Activity gate and Quick Look close.
+#[cfg(test)]
+fn start_scan_impl(
+    state: &AppState,
+    target_id: String,
+    on_event: impl Progress,
+) -> Result<String, String> {
+    register_scan(state, open_scan_target(state, target_id)?, on_event)
+}
+/// Registers the scan of an opened target in its slot and starts its thread. Call it holding the Activity gate.
+fn register_scan(
+    state: &AppState,
+    opened: OpenedTarget,
+    on_event: impl Progress,
+) -> Result<String, String> {
+    let OpenedTarget {
+        root,
+        disk,
+        root_ancestors,
+        authorized_root,
+        auto_scope,
+    } = opened;
+    let scheduling_conditions = platform::scheduling_conditions();
+    let scan_settings = state
+        .scan_settings
+        .lock()
+        .unwrap()
+        .automatic_info_for_conditions(settings::AutoScope::Volume, scheduling_conditions);
+    let qos = scan_settings.qos;
     let (workers, cached_validation_workers, worker_source) = state
         .scan_settings
         .lock()
@@ -847,7 +898,7 @@ fn start_scan_impl(
         },
     )?;
     // The session is registered and counts as running, so restart and setup refuse without this lock. Taking
-    // the old results can wait behind a read of them, and must not hold up other starts or the access status.
+    // the old results is not part of the access status, so other starts and the status need not wait for it.
     drop(access);
     let previous = started.take_previous();
     let slots::Started {
@@ -1682,34 +1733,48 @@ async fn clear_cleanup_queue(state: State<'_, AppState>) -> Result<cleanup_queue
         .map_err(|e| e.to_string())??;
     queue_response(&state).await
 }
+/// The recorded root of a queue entry, for a rescan of it.
+fn queued_root(state: &AppState, entry_id: &str) -> Result<safety::CheckedItem, String> {
+    let q = state.cleanup_queue.lock().unwrap();
+    q.require_mutable()?;
+    Ok(q.entries
+        .iter()
+        .find(|c| c.id == entry_id)
+        .ok_or("Unknown cleanup queue entry.")?
+        .root_checked())
+}
 #[tauri::command]
 async fn cleanup_queue_target(
     state: State<'_, AppState>,
     entry_id: String,
 ) -> Result<platform::Target, String> {
+    // validate_target, statfs and statvfs can hang on an unresponsive mount: they run off the async workers and
+    // before the gate, so a stalled disk never keeps every other operation refused.
+    let root = queued_root(&state, &entry_id)?;
+    let (root, target) = tauri::async_runtime::spawn_blocking(move || {
+        validate_target(&root)?;
+        platform::ensure_local_volume(&root.path)?;
+        let name = root
+            .path
+            .file_name()
+            .unwrap_or(root.path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        // Flag a disk root like the Disks list does, so its scan uses the disk's own slot.
+        let mut target = platform::target(&root.path, name);
+        target.volume = platform::is_disk_path(&root.path);
+        Ok::<_, String>((root, target))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let _activity = Activity::begin(&state.activity)?;
-    let root = {
-        let q = state.cleanup_queue.lock().unwrap();
-        q.require_mutable()?;
-        q.entries
-            .iter()
-            .find(|c| c.id == entry_id)
-            .ok_or("Unknown cleanup queue entry.")?
-            .root_checked()
-    };
-    validate_target(&root)?;
-    platform::ensure_local_volume(&root.path)?;
-    let name = root
-        .path
-        .file_name()
-        .unwrap_or(root.path.as_os_str())
-        .to_string_lossy()
-        .into_owned();
+    // The queue may have changed while the disk was read; the exclusive gate now keeps it from changing.
+    let recorded = queued_root(&state, &entry_id)?;
+    if recorded.path != root.path || recorded.identity != root.identity {
+        return Err("Unknown cleanup queue entry.".into());
+    }
     // Retain the recorded guard. register() rereads authority and could accept a replacement
     // occurring between validation and registration; start_scan validates this original guard.
-    // Flag a disk root like the Disks list does, so its scan uses the disk's own slot.
-    let mut target = platform::target(&root.path, name);
-    target.volume = platform::is_disk_path(&root.path);
     Ok(retain_target(&state, target, root))
 }
 #[tauri::command]

@@ -3440,7 +3440,7 @@ fn a_rescan_takes_only_its_own_disks_baseline_and_leaves_other_disks_intact() {
 }
 
 #[test]
-fn a_start_waiting_for_a_read_of_the_old_results_leaves_other_starts_and_setup_unblocked() {
+fn a_start_does_not_wait_for_a_read_of_the_old_results_and_scans_without_a_baseline() {
     let app = app(AppState::default());
     let state = app.state::<AppState>();
     let (_a_dir, a_root) = disk_root();
@@ -3454,30 +3454,29 @@ fn a_start_waiting_for_a_read_of_the_old_results_leaves_other_starts_and_setup_u
         full_scan_at_ms: now_ms(),
     });
     std::thread::scope(|scope| {
-        // A read of the old results: taking them as the baseline waits for it. Dropped on a failure too.
+        // A read of the old results that never ends, like the queue view's across a hung disk check. Dropped on
+        // a failure too.
         let reader = old.store.read().unwrap();
         let starting = scope.spawn(|| start_recorded(&state, &a, Recorder::default()).unwrap());
-        // The old scan is invalidated once the new one is registered, and the start then waits for the reader.
+        // Fails instead of hanging when the start waits for the reader.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while old.is_valid() {
+        while !starting.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the start never registered"
+                "the start waited for a read of the old results"
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!starting.is_finished());
-        assert!(
-            state.access_setup.try_lock().is_ok(),
-            "the start holds the access setup lock while it waits for the old results"
-        );
-        // Restart and setup stay refused: the registered scan counts as running.
-        assert!(setup_idle(&state).is_err());
+        let (id, events) = starting.join().unwrap();
+        // The old scan is gone and keeps its results (no baseline was taken); the new one runs on its own.
+        assert!(!old.is_valid());
+        assert_eq!(reader.node_count(), 2);
+        assert!(state.access_setup.try_lock().is_ok());
         let (_, other) = start_recorded(&state, &b, Recorder::default()).unwrap();
         other.wait_end();
-        drop(reader);
-        let (_, events) = starting.join().unwrap();
         events.wait_end();
+        assert!(state.scans.find(&id).is_ok());
+        assert!(setup_idle(&state).is_ok());
     });
 }
 
@@ -3895,6 +3894,39 @@ fn scan_starts_share_the_activity_gate_and_exclusive_operations_exclude_them() {
 }
 
 #[test]
+fn a_start_stalled_reading_its_target_does_not_hold_the_activity_gate() {
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let (_dir, root) = disk_root();
+    let target = register_disk(&state, &root);
+    let handle = app.handle().clone();
+    std::thread::scope(|scope| {
+        // Stalls the start where it looks the target up, as an unresponsive mount stalls validation. Dropped on
+        // a failure too.
+        let stall = state.targets.lock().unwrap();
+        let starting = scope.spawn(|| {
+            tauri::async_runtime::block_on(start_scan(
+                handle.state(),
+                target.id.clone(),
+                Channel::new(|_| Ok(())),
+                handle.clone(),
+            ))
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!starting.is_finished(), "the start did not stall");
+        // Cleanup, queue edits and restart are not refused for as long as the disk stalls.
+        drop(Activity::begin(&state.activity).expect("a stalled start holds the activity gate"));
+        drop(stall);
+        let id = starting.join().unwrap().unwrap();
+        while scan_running(&state) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.scans.find(&id).is_ok());
+        assert!(!state.activity.busy());
+    });
+}
+
+#[test]
 fn a_queue_scan_of_a_disk_root_gets_a_disk_target_and_a_folder_does_not() {
     tauri::async_runtime::block_on(async {
         let app = app(AppState::default());
@@ -3925,6 +3957,46 @@ fn a_queue_scan_of_a_disk_root_gets_a_disk_target_and_a_folder_does_not() {
         assert!(target.volume);
         assert!(!target.home);
         assert!(state.targets.lock().unwrap()[&target.id].0.volume);
+    });
+}
+
+#[test]
+fn a_queue_scan_target_reads_the_disk_off_the_activity_gate() {
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let guard = |path: &str| cleanup_queue::Guard {
+        path: path.into(),
+        identity: safety::Identity::read(Path::new(path)).unwrap(),
+    };
+    state
+        .cleanup_queue
+        .lock()
+        .unwrap()
+        .add(vec![cleanup_queue::Candidate {
+            id: uuid::Uuid::new_v4().to_string(),
+            item: guard("/usr"),
+            ancestors: vec![guard("/")],
+            root: guard("/"),
+            root_ancestors: vec![],
+            allocated_bytes: 1,
+            last_error: None,
+            volume: None,
+        }])
+        .unwrap();
+    let entry = state.cleanup_queue.lock().unwrap().entries[0].id.clone();
+    let handle = app.handle().clone();
+    std::thread::scope(|scope| {
+        // Stalls the command where it looks the entry up, as an unresponsive mount stalls what follows. Dropped
+        // on a failure too.
+        let stall = state.cleanup_queue.lock().unwrap();
+        let targeting = scope
+            .spawn(|| tauri::async_runtime::block_on(cleanup_queue_target(handle.state(), entry)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!targeting.is_finished(), "the command did not stall");
+        drop(Activity::begin(&state.activity).expect("a stalled command holds the activity gate"));
+        drop(stall);
+        assert_eq!(targeting.join().unwrap().unwrap().path, "/");
+        assert!(!state.activity.busy());
     });
 }
 

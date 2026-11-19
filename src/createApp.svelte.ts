@@ -482,15 +482,6 @@ export default function createApp() {
       quickLook.status.scanId === summary?.scanId &&
       quickLook.status.nodeId === previewNode?.id,
   );
-  // Entries are matched against the scan of their own disk, so any slot's scan changing can change a status.
-  $effect(() => {
-    const identity = summary?.scanId,
-      state = summary?.state,
-      slotStates = scans.signature;
-    untrack(() => {
-      if (!performanceBuild) void refreshQueue();
-    });
-  });
   // The slot whose live results are on screen.
   const displayedSlot = $derived(
     summary
@@ -1018,6 +1009,14 @@ export default function createApp() {
   const scanIdentity = $derived(summary?.scanId);
   const scanEntries = $derived(summary?.entries);
   const scanState = $derived(summary?.state);
+  // Entries are matched against the scan of their own disk, so any slot's scan changing can change a status.
+  // Reads the deriveds, not `summary`: that is replaced on every progress event.
+  $effect(() => {
+    [scanIdentity, scanState, scans.signature];
+    untrack(() => {
+      if (!performanceBuild) void refreshQueue();
+    });
+  });
   const scanPhase = $derived(summary?.scanPhase);
   $effect(() => {
     [scanIdentity, scanEntries, scanState, scanPhase, focus];

@@ -254,11 +254,10 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     /** Ejects a disk's scan: the backend frees it, the slot is dropped. Returns its id, or null with no scan. */
     discard(place: Target) {
       const slot = slots[slotKey(place)];
-      if (!slot) {
-        const pending = unfiled.get(slotKey(place));
-        if (pending) pending.ejected = true;
-        return null;
-      }
+      // A rescan's start can be pending while the slot still holds the old scan.
+      const pending = unfiled.get(slotKey(place));
+      if (pending) pending.ejected = true;
+      if (!slot) return null;
       void port.discardScan(slot.scanId).catch(() => {});
       if (slotScanning(slot)) draining = [...draining, slot.scanId];
       drop(slot.scanId);
