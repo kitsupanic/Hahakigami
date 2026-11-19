@@ -1353,14 +1353,14 @@
                   <button
                     class="primary welcome-scan"
                     aria-describedby="welcome-note"
-                    aria-busy={busy}
+                    aria-busy={!!target && app.scanStarting(target)}
                     title={target
                       ? `Scan ${locationName(target.name, target.path)}`
                       : "Scan selected location"}
                     disabled={!app.can.rescan}
                     onclick={() => void start(target)}
                     ><Icon name="refresh" size={17} /><span
-                      >{busy
+                      >{target && app.scanStarting(target)
                         ? "Starting scan…"
                         : app.targetsLoading
                           ? "Loading locations…"

@@ -925,7 +925,7 @@ export default function createApp() {
       return null;
     quickLook.dismiss();
     // -1 never matches the current generation, so this start never takes the view.
-    const g = how.takeView ? ++generation.current : -1;
+    let g = how.takeView ? ++generation.current : -1;
     // Selecting or opening another place since the press leaves the view to that place.
     const pressed = { id: target?.id, home: homeOpen };
     let taken = false;
@@ -938,7 +938,13 @@ export default function createApp() {
       ready: performanceClock,
       // After taking the view, the start stops being `home` (accepted closes it).
       current: () => (taken || homeOpen === pressed.home) && samePlace(),
-      accepted(id) {
+      accepted(id, replaced) {
+        // The backend just replaced the scan on screen, so its id is dead: this start's scan takes its place.
+        if (replaced !== undefined && !homeOpen && activeId.current === replaced) {
+          g = generation.current;
+          pressed.id = target?.id;
+          pressed.home = homeOpen;
+        }
         // Only the newest start takes the view; the others update their sidebar rows.
         if (!samePlace() || homeOpen !== pressed.home) return;
         taken = true;
@@ -1484,7 +1490,7 @@ export default function createApp() {
       );
       cleanupReport = report;
       setTrash(null);
-      await refreshQueue();
+      void refreshQueue();
       // An unconfirmed reply may still have moved files, so it invalidates too.
       if (
         report.movedCount ||
@@ -1509,7 +1515,7 @@ export default function createApp() {
         ),
         message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
       };
-      await refreshQueue();
+      void refreshQueue();
     } finally {
       setBusy(false);
     }
@@ -1987,6 +1993,8 @@ export default function createApp() {
       const disk = listedDisk(path);
       return disk ? scans.busy(disk) : scans.folderBusy();
     },
+    /** A start of this place has not heard back from the backend yet. */
+    scanStarting: (place: Target) => scans.starting(place),
     get sessionBlocked() {
       return sessionBlocked;
     },

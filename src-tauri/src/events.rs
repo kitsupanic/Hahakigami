@@ -310,7 +310,12 @@ mod native {
             && flags & !(0x20000 | 0x100 | 0x400 | 0x2000 | 0x4000 | 0x8000 | 0x80000) == 0
     }
     const HARD_LINK: u32 = 0x30_0000; // hard link and last hard link
+
+    // MAX_EVENTS counts events under the root. The stream covers the whole volume, so events elsewhere
+    // (Spotlight, caches, logs) only count toward MAX_SEEN_EVENTS, which bounds the inode each can add to
+    // `shared_inodes`.
     const MAX_EVENTS: usize = 10_000;
+    const MAX_SEEN_EVENTS: usize = 1_000_000;
     #[repr(C)]
     struct Context {
         version: isize,
@@ -383,6 +388,7 @@ mod native {
     struct Collected {
         changes: Changes,
         examined: usize,
+        in_scope: usize,
         max_id: u64,
         done: bool,
         error: Option<String>,
@@ -538,6 +544,13 @@ mod native {
                 return;
             }
         };
+        if in_scope {
+            collected.in_scope += 1;
+            if collected.in_scope > MAX_EVENTS {
+                collected.error = Some("Filesystem event history exceeds the event limit".into());
+                return;
+            }
+        }
         if flag & HARD_LINK != 0 {
             let Some(inode) = inode.filter(|inode| *inode != 0) else {
                 collected.error =
@@ -656,7 +669,7 @@ mod native {
         }
         for i in 0..count {
             collected.examined += 1;
-            if collected.examined > MAX_EVENTS {
+            if collected.examined > MAX_SEEN_EVENTS {
                 collected.error = Some("Filesystem event history exceeds the event limit".into());
                 break;
             }
@@ -1362,6 +1375,38 @@ mod native {
                 Some(42),
             );
             assert!(collected.error.is_some());
+        }
+        #[test]
+        fn events_elsewhere_on_the_volume_do_not_use_up_the_event_limit() {
+            let state = State {
+                root: PathBuf::from("/private/tmp/root"),
+                since: 10,
+                collected: Mutex::new(Collected::default()),
+                ready: Condvar::new(),
+                abort: AtomicBool::new(false),
+            };
+            let mut collected = Collected::default();
+            let deliver = |collected: &mut Collected, path: &str, i: u64| {
+                collect_event(
+                    &state,
+                    collected,
+                    Path::new(path),
+                    0x10100,
+                    i,
+                    Some(i + 100),
+                );
+            };
+            for i in 0..=MAX_EVENTS as u64 {
+                deliver(&mut collected, "/private/tmp/other/file", i + 1);
+            }
+            assert!(collected.error.is_none());
+            assert!(collected.changes.paths.is_empty());
+            for i in 0..MAX_EVENTS as u64 {
+                deliver(&mut collected, "/private/tmp/root/file", i + 1);
+            }
+            assert!(collected.error.is_none());
+            deliver(&mut collected, "/private/tmp/root/file", 1);
+            assert!(collected.error.is_some_and(|e| e.contains("event limit")));
         }
         #[test]
         fn external_shared_events_resolve_only_matching_cached_inodes() {

@@ -2642,7 +2642,7 @@ fn native_validation_worker_sweep() {
         .unwrap();
         Arc::try_unwrap(store).unwrap().into_inner().unwrap()
     };
-    let first_full = full(3);
+    let first_full = Arc::new(full(3));
     assert!(clean(&first_full), "baseline must be complete and clean");
     // Public replay flushes pending history; resolving it preserves ambiguous hard-link refresh.
     let volume = baseline::Fsevents

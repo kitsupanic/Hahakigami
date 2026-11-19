@@ -120,6 +120,7 @@ pub(crate) struct Request<'a> {
 }
 
 /// How the scan starts.
+#[allow(clippy::large_enum_variant)] // Built and moved once per scan; the seed is now an `Arc`, so only `Prepared` is big.
 pub(crate) enum Start {
     /// The speculative rescan already is the finished result. `seed` stays because a scan cancelled
     /// before it uses the result falls back to reconciling from the baseline.
@@ -327,39 +328,37 @@ impl Baselines {
                 if !eligible(&cached.snapshot) {
                     return Err("Clone sharing or uncertain accounting requires a full scan".into());
                 }
-                Ok(prepare_rescan(
+                // Shared, not copied: the speculative rescan and the seed both read this tree.
+                let snapshot = Arc::new(cached.snapshot);
+                let prepared = prepare_rescan(
                     root,
                     cancel,
                     abort,
                     options,
                     #[cfg(feature = "performance-benchmark")]
                     timing,
-                    cached,
-                ))
+                    &snapshot,
+                );
+                Ok((snapshot, cached.token, prepared))
             })
         )
-        .and_then(|((cached, prepared), changes)| {
-            let changes = span!(
-                timing,
-                "alias_resolution",
-                changes.resolve(&cached.snapshot)
-            )?;
-            Ok((cached, prepared, changes))
+        .and_then(|((snapshot, prior, prepared), changes)| {
+            let changes = span!(timing, "alias_resolution", changes.resolve(&snapshot))?;
+            Ok((snapshot, prior, prepared, changes))
         });
         match loaded {
-            Ok((cached, prepared, changes))
+            Ok((snapshot, prior, prepared, changes))
                 if journal
                     .history(root)
                     .is_some_and(|now| now.epoch == token.epoch) =>
             {
-                let prior = cached.token;
                 let prepared = if cancel.load(Ordering::Acquire) {
                     None
                 } else {
                     choose_prepared(&changes, prepared)
                 };
                 let seed = disk_scan::IncrementalSeed {
-                    snapshot: cached.snapshot,
+                    snapshot,
                     dirty_paths: changes.paths,
                     dirty_directories: changes.directories,
                 };
@@ -457,17 +456,13 @@ fn prepare_rescan(
     abort: &AtomicBool,
     options: disk_scan::ScanOptions,
     #[cfg(feature = "performance-benchmark")] timing: Timing<'_>,
-    cached: Taken,
-) -> (Taken, Option<PreparedRescan>) {
-    if !cached.snapshot.incremental_accounting_eligible()
-        || cached.snapshot.iter_nodes().any(|node| node.hard_link)
-    {
-        return (cached, None);
+    cached: &Arc<Snapshot>,
+) -> Option<PreparedRescan> {
+    if !cached.incremental_accounting_eligible() || cached.iter_nodes().any(|node| node.hard_link) {
+        return None;
     }
-    let Ok(authority) = root.reopen() else {
-        return (cached, None);
-    };
-    let store = Arc::new(RwLock::new(Snapshot::empty(cached.snapshot.root.clone())));
+    let authority = root.reopen().ok()?;
+    let store = Arc::new(RwLock::new(Snapshot::empty(cached.root.clone())));
     let stopped = || scan_cancel.load(Ordering::Relaxed) || abort.load(Ordering::Relaxed);
     let cancel = Arc::new(AtomicBool::new(stopped()));
     let result = span!(
@@ -484,13 +479,13 @@ fn prepare_rescan(
                 }
             },
             disk_scan::IncrementalSeed {
-                snapshot: cached.snapshot.clone(),
+                snapshot: cached.clone(),
                 dirty_paths: vec![],
                 dirty_directories: vec![]
             },
         )
     );
-    let prepared = result
+    result
         .ok()
         .filter(|stats| stats.fallback_reason.is_none())
         .and_then(|stats| {
@@ -500,8 +495,7 @@ fn prepare_rescan(
                 && snapshot.incremental_accounting_eligible()
                 && !stopped())
             .then_some(PreparedRescan { snapshot, stats })
-        });
-    (cached, prepared)
+        })
 }
 
 #[cfg(test)]
@@ -1385,28 +1379,21 @@ mod tests {
                 .unwrap();
         let volume = local_volume(&authority).expect("local native fixture volume");
         let since = events::current_id().expect("native FSEvents cursor");
-        let token = Token {
-            cursor: since,
-            epoch: "native-fixture".into(),
-            full_scan_at_ms: now_ms(),
-        };
-        let ((cached, prepared), changes) = events::replay_with_abortable_load_on_volume(
+        let cached = Arc::new(baseline.clone());
+        let (prepared, changes) = events::replay_with_abortable_load_on_volume(
             &root,
             &volume,
             since,
             &s.cancel,
             |abort| {
-                let (cached, prepared) = prepare_rescan(
+                let prepared = prepare_rescan(
                     &authority,
                     &s.cancel,
                     abort,
                     disk_scan::ScanOptions::default(),
                     #[cfg(feature = "performance-benchmark")]
                     &NO_TIMING,
-                    Taken {
-                        snapshot: baseline.clone(),
-                        token,
-                    },
+                    &cached,
                 );
                 let candidate = prepared.as_ref().expect("clean speculative reconstruction");
                 assert_eq!(
@@ -1431,11 +1418,11 @@ mod tests {
                 );
                 // The live event stream must include this write after private construction.
                 std::fs::write(&file, b"larger content written after private preparation").unwrap();
-                Ok((cached, prepared))
+                Ok(prepared)
             },
         )
         .unwrap();
-        let changes = changes.resolve(&cached.snapshot).unwrap();
+        let changes = changes.resolve(&cached).unwrap();
         assert!(
             !changes.paths.is_empty() || !changes.directories.is_empty(),
             "late write must invalidate preparation: {changes:?}"
@@ -1460,7 +1447,7 @@ mod tests {
             store.clone(),
             |_| {},
             disk_scan::IncrementalSeed {
-                snapshot: cached.snapshot,
+                snapshot: cached,
                 dirty_paths: changes.paths,
                 dirty_directories: changes.directories,
             },

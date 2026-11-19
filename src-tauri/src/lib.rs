@@ -698,14 +698,7 @@ fn run_scan(
     } else {
         disk_scan::scan_live_authorized(root, options, s.cancel.clone(), s.store.clone(), callback)
             .map(|_| disk_scan::ReuseStats {
-                rescanned_directories: s
-                    .store
-                    .read()
-                    .unwrap()
-                    .worker_stats
-                    .iter()
-                    .map(|row| row.directories)
-                    .sum(),
+                rescanned_directories: s.store.read().unwrap().worker_directories(),
                 ..Default::default()
             })
     };

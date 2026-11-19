@@ -51,8 +51,8 @@ export type StartView = {
   ready?: Promise<unknown>;
   /** True while this start may still take the view: no newer start or navigation overtook it. */
   current(): boolean;
-  /** The scan has an id (its first event or the reply, once). Its slot is already filed. */
-  accepted(scanId: string): void;
+  /** The scan has an id (its first event or the reply, once). Its slot is already filed; `replaced` is the id the slot held before. */
+  accepted(scanId: string, replaced?: string): void;
   /** An event of this start's scan, after its slot recorded it. `restarted`: Scan all cancelled it to start again. */
   event(summary: ScanSummary, restarted: boolean): void;
   /** The scan's summary fetched after its id arrived, when no event beat it. */
@@ -169,9 +169,10 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
       }
       // The backend replaced this slot's scan at once; other slots keep theirs. The slot is tracked
       // whatever the user opened since, so a start that another one overtook is not lost.
+      const replaced = slots[slotKey(place)]?.scanId;
       put(slotKey(place), { target: place, scanId: id, summary: null });
       trackBatch(slotKey(place));
-      view.accepted(id);
+      view.accepted(id, replaced);
     };
     let updates = 0;
     const channel = port.channel();
@@ -235,10 +236,6 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     get anyRunning() {
       return anyRunning;
     },
-    /** A start has not heard back from the backend yet. */
-    get starting() {
-      return starts > 0;
-    },
     get scanningAll() {
       return scanningAll;
     },
@@ -247,6 +244,8 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
     },
     /** Whether a scan of this place would meet its own slot scanning. */
     busy: (place: Target) => slotBusy(slotKey(place)),
+    /** A start of this place has not heard back from the backend yet. */
+    starting: (place: Target) => unfiled.has(slotKey(place)),
     /** The folder slot's scan runs. */
     folderBusy: () => slotBusy(FOLDER_SLOT),
     /** Starts a scan; a busy slot is a no-op. Rejects with the backend's refusal when the app does not deal with it. */

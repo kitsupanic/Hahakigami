@@ -246,7 +246,7 @@ pub struct Snapshot {
     pub enumeration_tail: Option<TailStats>,
 }
 impl Snapshot {
-    pub(crate) fn worker_directories(&self) -> u64 {
+    pub fn worker_directories(&self) -> u64 {
         self.worker_stats.iter().map(|s| s.directories).sum()
     }
     pub fn clone_attribution(&self, id: u32) -> Option<(bool, u64)> {
@@ -832,13 +832,8 @@ fn record_node_scope(s: &mut Snapshot, path: &Path, excluded: &mut bool, permitt
     }
 }
 fn io_issue(s: &mut Snapshot, path: PathBuf, error: std::io::Error) {
-    let (path, error) = match error
-        .get_ref()
-        .and_then(|cause| cause.downcast_ref::<EntryMetadataError>())
-    {
-        Some(context) => (context.path.clone(), &context.error),
-        None => (path, &error),
-    };
+    let path = entry_error_path(&error).map_or(path, Path::to_path_buf);
+    let error = native_entry_error(&error);
     if restriction::metadata(&path, error.kind(), error.raw_os_error()) {
         s.stats.restricted_system_issues += 1;
     }
@@ -1527,6 +1522,8 @@ pub fn aggregate(s: &mut Snapshot) {
     if let Some(root) = s.node(0) {
         s.stats.allocated_bytes = root.allocated_size;
     }
+    s.tree.names.shrink_to_fit();
+    s.tree.children.shrink_to_fit();
 }
 
 #[cfg(test)]
@@ -1706,7 +1703,7 @@ mod tests {
         assert_eq!(s.stats.walk_ms, 0);
     }
     #[test]
-    fn scan_reports_enumeration_tail_without_persisting_it() {
+    fn scan_reports_enumeration_tail() {
         let dir = std::env::temp_dir().join(format!("tail-diagnostics-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
@@ -1722,8 +1719,6 @@ mod tests {
         let tail = s.enumeration_tail.as_ref().expect("tail diagnostics");
         assert!(tail.walk_end_us > 0);
         assert!(!tail.slow_listings.is_empty() && tail.slow_listings.len() <= 8);
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(!json.contains("enumeration_tail") && !json.contains("slow_listings"));
     }
     #[test]
     fn expensive_dirty_branches_precede_existing_cached_work() {
@@ -2184,7 +2179,7 @@ mod tests {
                 store.clone(),
                 |_| {},
                 IncrementalSeed {
-                    snapshot: seed,
+                    snapshot: Arc::new(seed),
                     dirty_paths,
                     dirty_directories: vec![],
                 },
@@ -2794,14 +2789,11 @@ mod tests {
         assert!(snapshot.stats.incomplete);
     }
     #[test]
-    fn legacy_stats_snapshot_and_progress_default_exclusion_fields() {
-        let snapshot = Snapshot::empty(PathBuf::from("/fixture"));
-        let mut json = serde_json::to_value(&snapshot).unwrap();
-        json.as_object_mut().unwrap().remove("exclusions");
-        json["stats"].as_object_mut().unwrap().remove("excluded");
-        let old: Snapshot = serde_json::from_value(json).unwrap();
-        assert_eq!(old.stats.excluded, 0);
-        assert!(old.exclusions.is_empty());
+    fn legacy_stats_and_progress_default_exclusion_fields() {
+        let mut json = serde_json::to_value(ScanStats::default()).unwrap();
+        json.as_object_mut().unwrap().remove("excluded");
+        let old: ScanStats = serde_json::from_value(json).unwrap();
+        assert_eq!(old.excluded, 0);
         let progress: Progress =
             serde_json::from_str(r#"{"entries":1,"directories":1,"errors":0,"elapsed_ms":0}"#)
                 .unwrap();
