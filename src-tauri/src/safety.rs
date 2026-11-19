@@ -78,9 +78,9 @@ pub enum Volume {
     NoUuid,
 }
 impl Volume {
-    pub fn read(of: crate::platform::VolumeOf) -> Result<Self, String> {
+    pub fn read(path: &Path) -> Result<Self, String> {
         Ok(
-            match crate::platform::volume_uuid(of).map_err(|e| e.to_string())? {
+            match crate::platform::volume_uuid(path).map_err(|e| e.to_string())? {
                 Some(uuid) => Self::Uuid(uuid),
                 None => Self::NoUuid,
             },
@@ -242,9 +242,7 @@ pub fn verify(
 ) -> Result<(), String> {
     verify_paths(item, root, home, mounts)?;
     match &item.volume {
-        Some(volume) if Volume::read(crate::platform::VolumeOf::Path(&item.path))? == *volume => {
-            Ok(())
-        }
+        Some(volume) if Volume::read(&item.path)? == *volume => Ok(()),
         _ => Err("The volume at this location changed. Rescan before cleanup.".into()),
     }
 }
@@ -437,7 +435,7 @@ mod tests {
             path: p.clone(),
             identity: Identity::read(&p).unwrap(),
             ancestors: ancestors(&p).unwrap(),
-            volume: Some(Volume::read(crate::platform::VolumeOf::Path(&root)).unwrap()),
+            volume: Some(Volume::read(&root).unwrap()),
         };
         assert!(verify(&item, &root, None, &[]).is_ok());
         std::fs::rename(&p, root.join("old")).unwrap();
@@ -457,7 +455,7 @@ mod tests {
             path: f.clone(),
             identity: Identity::read(&f).unwrap(),
             ancestors: ancestors(&f).unwrap(),
-            volume: Some(Volume::read(crate::platform::VolumeOf::Path(&root)).unwrap()),
+            volume: Some(Volume::read(&root).unwrap()),
         };
         std::fs::rename(&p, root.join("old")).unwrap();
         std::os::unix::fs::symlink(root.join("old"), &p).unwrap();
@@ -528,7 +526,7 @@ mod tests {
             path: p.clone(),
             identity: Identity::read(&p).unwrap(),
             ancestors: ancestors(&p).unwrap(),
-            volume: Some(Volume::read(crate::platform::VolumeOf::Path(&root)).unwrap()),
+            volume: Some(Volume::read(&root).unwrap()),
         };
         assert!(verify(&item, &root, None, &[]).is_ok());
         // Same path and identities, but recorded on another (reformatted) volume.

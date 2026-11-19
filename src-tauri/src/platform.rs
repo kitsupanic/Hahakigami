@@ -544,14 +544,10 @@ mod tests {
     }
 }
 
-/// Where `volume_uuid` reads: a path (not following a final symlink).
-pub enum VolumeOf<'a> {
-    Path(&'a Path),
-}
-/// The UUID of the filesystem holding `of`: Ok(None) when that filesystem has none, Err when it cannot be read.
+/// The UUID of the filesystem holding `path` (not following a final symlink): Ok(None) when that filesystem has none, Err when it cannot be read.
 /// One getattrlist call on the object itself: never a statfs of other paths.
 #[cfg(target_os = "macos")]
-pub fn volume_uuid(of: VolumeOf) -> std::io::Result<Option<String>> {
+pub fn volume_uuid(path: &Path) -> std::io::Result<Option<String>> {
     let mut attributes = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -563,7 +559,6 @@ pub fn volume_uuid(of: VolumeOf) -> std::io::Result<Option<String>> {
     };
     let attributes = (&mut attributes as *mut libc::attrlist).cast();
     let mut buffer = [0u8; 20];
-    let VolumeOf::Path(path) = of;
     let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(std::io::Error::other)?;
     let result = unsafe {
@@ -586,7 +581,7 @@ pub fn volume_uuid(of: VolumeOf) -> std::io::Result<Option<String>> {
     }
 }
 #[cfg(not(target_os = "macos"))]
-pub fn volume_uuid(_of: VolumeOf) -> std::io::Result<Option<String>> {
+pub fn volume_uuid(_path: &Path) -> std::io::Result<Option<String>> {
     Ok(None)
 }
 #[cfg(any(target_os = "macos", test))]
@@ -618,7 +613,7 @@ mod volume_tests {
     #[cfg(target_os = "macos")]
     fn volume_uuid_reads_host_filesystem_and_rejects_missing_paths() {
         let path = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-        assert!(volume_uuid(VolumeOf::Path(&path)).unwrap().is_some());
-        assert!(volume_uuid(VolumeOf::Path(&path.join("missing-hahakigami"))).is_err());
+        assert!(volume_uuid(&path).unwrap().is_some());
+        assert!(volume_uuid(&path.join("missing-hahakigami")).is_err());
     }
 }

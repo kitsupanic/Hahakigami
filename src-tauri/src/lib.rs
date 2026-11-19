@@ -578,10 +578,7 @@ fn scan_volumes(snapshot: &Snapshot) -> HashMap<u32, safety::Volume> {
         .into_iter()
         .filter_map(|id| {
             let path = snapshot.path(id).ok()?;
-            Some((
-                id,
-                safety::Volume::read(platform::VolumeOf::Path(&path)).ok()?,
-            ))
+            Some((id, safety::Volume::read(&path).ok()?))
         })
         .collect()
 }
@@ -1810,18 +1807,24 @@ async fn commit_cleanup_queue<R: tauri::Runtime>(
 fn open_full_disk_access() -> Result<(), String> {
     platform::full_disk_access()
 }
-// Async so waiting on the lock held across a native cleanup never blocks the main thread.
+// Off the async workers: the lock is held across a native cleanup, which can hang on a slow disk.
 #[tauri::command]
 async fn full_disk_access_status(
     state: State<'_, AppState>,
 ) -> Result<access_setup::SetupInfo, String> {
-    Ok(state.access_setup.lock().unwrap().info())
+    let access_setup = state.access_setup.clone();
+    tauri::async_runtime::spawn_blocking(move || access_setup.lock().unwrap().info())
+        .await
+        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn scan_without_full_disk_access(
     state: State<'_, AppState>,
 ) -> Result<access_setup::SetupInfo, String> {
-    Ok(state.access_setup.lock().unwrap().allow_scan_anyway())
+    let access_setup = state.access_setup.clone();
+    tauri::async_runtime::spawn_blocking(move || access_setup.lock().unwrap().allow_scan_anyway())
+        .await
+        .map_err(|e| e.to_string())
 }
 fn setup_idle(state: &AppState) -> Result<(), String> {
     state
