@@ -397,6 +397,8 @@ mod native {
         since: u64,
         collected: Mutex<Collected>,
         ready: Condvar,
+        /// Set once the replay has failed, for the cache loader to stop early.
+        abort: AtomicBool,
     }
     fn wait_for_replay(
         state: &State,
@@ -646,6 +648,7 @@ mod native {
         let array = paths.cast_const();
         if array.is_null() || CFArrayGetCount(array) != count as isize {
             collected.error = Some("Malformed filesystem event array".into());
+            state.abort.store(true, Ordering::Relaxed);
             state.ready.notify_one();
             return;
         }
@@ -675,6 +678,10 @@ mod native {
             if collected.error.is_some() {
                 break;
             }
+        }
+        // The loader may be what `wait_for_replay` is waiting on: tell it to stop now.
+        if collected.error.is_some() {
+            state.abort.store(true, Ordering::Relaxed);
         }
         state.ready.notify_one();
     }
@@ -822,10 +829,10 @@ mod native {
             since,
             collected: Mutex::new(Collected::default()),
             ready: Condvar::new(),
+            abort: AtomicBool::new(false),
         });
-        let abort = AtomicBool::new(false);
         let loaded = std::thread::scope(|scope| {
-            let mut worker = Some(scope.spawn(|| load(&abort)));
+            let mut worker = Some(scope.spawn(|| load(&state.abort)));
             let mut loaded = None;
             // Every early stream failure still joins the loader explicitly, so
             // loader panics become errors rather than escaping the scoped join.
@@ -909,7 +916,7 @@ mod native {
                 Ok(())
             })();
             if replay_result.is_err() {
-                abort.store(true, Ordering::Relaxed);
+                state.abort.store(true, Ordering::Relaxed);
             }
             if let Some(worker) = worker {
                 loaded = Some(
@@ -1016,6 +1023,56 @@ mod native {
             assert!(stopped.load(Ordering::Relaxed));
         }
         #[test]
+        fn an_error_from_the_stream_tells_the_loader_to_stop() {
+            // History is done, so the flush waits on the loader; the stream then fails.
+            let state = State {
+                root: PathBuf::from("/private/tmp/root"),
+                since: 10,
+                collected: Mutex::new(Collected {
+                    done: true,
+                    ..Collected::default()
+                }),
+                ready: Condvar::new(),
+                abort: AtomicBool::new(false),
+            };
+            let stopped = AtomicBool::new(false);
+            let error = std::thread::scope(|scope| {
+                let state = &state;
+                let (send, receive) = std::sync::mpsc::channel();
+                scope.spawn(move || {
+                    receive.recv().unwrap();
+                    // A batch with no path array: the callback records an error.
+                    unsafe {
+                        callback(
+                            ptr::null(),
+                            (state as *const State).cast_mut().cast(),
+                            1,
+                            ptr::null_mut(),
+                            ptr::null(),
+                            ptr::null(),
+                        )
+                    };
+                });
+                wait_for_replay(
+                    state,
+                    &AtomicBool::new(false),
+                    Duration::from_secs(5),
+                    || {
+                        send.send(()).unwrap();
+                        let give_up = Instant::now() + Duration::from_secs(2);
+                        while !state.abort.load(Ordering::Relaxed) && Instant::now() < give_up {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        stopped.store(state.abort.load(Ordering::Relaxed), Ordering::Relaxed);
+                        0
+                    },
+                )
+                .unwrap_err()
+            });
+            assert_eq!(error, "Malformed filesystem event array");
+            assert!(stopped.load(Ordering::Relaxed));
+        }
+        #[test]
         fn invalid_history_does_not_start_loader() {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().canonicalize().unwrap();
@@ -1050,6 +1107,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             assert!(
                 wait_for_replay(&state, &AtomicBool::new(true), Duration::ZERO, || 0)
@@ -1077,6 +1135,7 @@ mod native {
                     ..Collected::default()
                 }),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             std::thread::scope(|scope| {
                 let (send, receive) = std::sync::mpsc::channel();
@@ -1110,6 +1169,7 @@ mod native {
                     ..Collected::default()
                 }),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             std::thread::scope(|scope| {
                 let (send, receive) = std::sync::mpsc::channel();
@@ -1235,6 +1295,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             let mut collected = state.collected.lock().unwrap();
             collect_event(
@@ -1276,6 +1337,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             let mut collected = Collected::default();
             collect_event(
@@ -1332,6 +1394,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             let mut collected = Collected::default();
             collect_event(
@@ -1373,6 +1436,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             let mut collected = Collected::default();
             collect_event(
@@ -1417,6 +1481,7 @@ mod native {
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
+                abort: AtomicBool::new(false),
             };
             for flags in [0x100000, 0x200000, 0x510900] {
                 for inode in [None, Some(0)] {

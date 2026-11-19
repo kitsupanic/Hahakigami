@@ -3439,6 +3439,48 @@ fn a_rescan_takes_only_its_own_disks_baseline_and_leaves_other_disks_intact() {
     assert!(state.scans.find(&new_a).is_ok());
 }
 
+#[test]
+fn a_start_waiting_for_a_read_of_the_old_results_leaves_other_starts_and_setup_unblocked() {
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let (_a_dir, a_root) = disk_root();
+    let (_b_dir, b_root) = disk_root();
+    let a = register_disk(&state, &a_root);
+    let b = register_disk(&state, &b_root);
+    let old = install_in(&state, Slot::Disk(a_root.clone()), "a", snapshot(a_root));
+    *old.cache_token.lock().unwrap() = Some(baseline::Token {
+        cursor: 1,
+        epoch: "epoch".into(),
+        full_scan_at_ms: now_ms(),
+    });
+    std::thread::scope(|scope| {
+        // A read of the old results: taking them as the baseline waits for it. Dropped on a failure too.
+        let reader = old.store.read().unwrap();
+        let starting = scope.spawn(|| start_recorded(&state, &a, Recorder::default()).unwrap());
+        // The old scan is invalidated once the new one is registered, and the start then waits for the reader.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while old.is_valid() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the start never registered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!starting.is_finished());
+        assert!(
+            state.access_setup.try_lock().is_ok(),
+            "the start holds the access setup lock while it waits for the old results"
+        );
+        // Restart and setup stay refused: the registered scan counts as running.
+        assert!(setup_idle(&state).is_err());
+        let (_, other) = start_recorded(&state, &b, Recorder::default()).unwrap();
+        other.wait_end();
+        drop(reader);
+        let (_, events) = starting.join().unwrap();
+        events.wait_end();
+    });
+}
+
 /// Starts a scan of `target` as `start_scan` does past its gate, reporting to a fresh `Recorder`.
 fn start(
     app: &tauri::App<tauri::test::MockRuntime>,
@@ -3703,6 +3745,24 @@ fn a_cancelled_scan_gives_its_share_back_and_leaves_other_scans_running() {
     assert!(!other.cancel.load(Ordering::Acquire));
     assert!(other.is_valid());
     assert!(session_running(&other));
+}
+
+#[test]
+fn a_cancel_and_the_start_of_the_cache_write_are_ordered() {
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let (_a_dir, a_root) = disk_root();
+    let (_b_dir, b_root) = disk_root();
+    let writing = install_in(&state, Slot::Disk(a_root.clone()), "a", snapshot(a_root));
+    let cancelled = install_in(&state, Slot::Disk(b_root.clone()), "b", snapshot(b_root));
+    // Once the write began, a cancel is refused and does not flag the scan.
+    assert!(writing.begin_caching());
+    assert!(cancel_scan(app.state(), "a".into()).is_err());
+    assert!(!writing.cancel.load(Ordering::Acquire));
+    // A cancel that was accepted first stops the write before it starts.
+    cancel_scan(app.state(), "b".into()).unwrap();
+    assert!(!cancelled.begin_caching());
+    assert_ne!(cancelled.scan_details.lock().unwrap().phase, "caching");
 }
 
 #[test]

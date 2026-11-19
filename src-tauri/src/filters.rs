@@ -1,5 +1,5 @@
 //! Metadata-only search and filters. Session ownership bounds this cache to one snapshot.
-use crate::sorting::{self, Order};
+use crate::sorting::{self, page, Order};
 #[cfg(test)]
 use disk_scan::Node;
 use disk_scan::{NodeKind, NodeRef, ScanState, Snapshot};
@@ -238,11 +238,6 @@ impl Cache {
             limit,
         ))
     }
-}
-fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
-    let start = offset.min(ids.len());
-    let end = start.saturating_add(limit.min(500)).min(ids.len());
-    (ids[start..end].to_vec(), ids.len())
 }
 
 #[cfg(test)]

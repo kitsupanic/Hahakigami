@@ -91,6 +91,8 @@ export default function createApp() {
   let map = $derived(explorer.map);
   let mapColorMode = $state<"folder" | "fileType">("folder");
   const queryFileTypeMap = latestOnly();
+  const queryMap = latestOnly();
+  const queryRefresh = latestOnly();
   const queryList = latestOnly();
   function changeMapColorMode(value: "folder" | "fileType") {
     mapColorMode = value;
@@ -213,7 +215,11 @@ export default function createApp() {
       const disk = location.volume ? listedDisk(location.path) : undefined;
       if (!disk)
         setTargets((old) => [
-          ...old.filter((t) => t.id !== location.id),
+          // The backend gives a recreated folder a new id and drops the old one.
+          ...old.filter(
+            (t) =>
+              t.id !== location.id && (t.volume || t.path !== location.path),
+          ),
           location,
         ]);
       setTarget(disk ?? location);
@@ -654,7 +660,12 @@ export default function createApp() {
         setTargets((previous) =>
           previous.some((item) => item.id === chosen.id)
             ? previous
-            : [...previous, chosen],
+            : [
+                ...previous.filter(
+                  (item) => item.volume || item.path !== chosen.path,
+                ),
+                chosen,
+              ],
         );
       }
       return chosen;
@@ -1019,7 +1030,8 @@ export default function createApp() {
         nodeId: snapshot.rootId,
       })
         .then((n) => {
-          if (!ignore) {
+          // Progress events re-run this effect every ~100 ms; a reply for the same scan still applies until focus is set.
+          if (!ignore || (summary?.scanId === snapshot.scanId && !focus)) {
             setFocus(n);
             setCrumbs([n]);
           }
@@ -1051,19 +1063,24 @@ export default function createApp() {
         summary?.scanId === scanId &&
         revision === version &&
         selectionIdentity === ids;
-      void Promise.all(
-        selection.map(({ id }) =>
-          invoke<NodeView>("get_node", { scanId, nodeId: id }),
-        ),
-      )
-        .then((nodes) => {
-          if (!current()) return;
-          const fresh = new Map(nodes.map((node) => [node.id, node]));
-          setSelection((old) => old.map((node) => fresh.get(node.id) ?? node));
-        })
-        .catch((failure) => {
-          if (current()) fail(failure);
-        });
+      const nodeIds = selection.map(({ id }) => id);
+      queryRefresh(() =>
+        Promise.all(
+          nodeIds.map((id) =>
+            invoke<NodeView>("get_node", { scanId, nodeId: id }),
+          ),
+        )
+          .then((nodes) => {
+            if (!current()) return;
+            const fresh = new Map(nodes.map((node) => [node.id, node]));
+            setSelection((old) =>
+              old.map((node) => fresh.get(node.id) ?? node),
+            );
+          })
+          .catch((failure) => {
+            if (current()) fail(failure);
+          }),
+      );
       return () => {
         ignore = true;
       };
@@ -1128,7 +1145,7 @@ export default function createApp() {
           });
       };
       if (queryColorMode === "fileType") queryFileTypeMap(loadMap);
-      else void loadMap();
+      else queryMap(loadMap);
       return () => {
         ignore = true;
         if (mapRequest === performanceMapQueryEpoch) {
@@ -1274,7 +1291,8 @@ export default function createApp() {
     listScrollRestore = { id: ++scrollRestoreId, top: snapshot.scroll };
     resultsReturn = returnPoint;
     if (sortChanged) void persistSort(snapshot.sort);
-    if (!snapshot.crumbs.length) await loadCrumbs(snapshot.focus, snapshot.scanId, nav);
+    if (!snapshot.crumbs.length)
+      await loadCrumbs(snapshot.focus, snapshot.scanId, nav);
   }
   function canNavigateHistory(history: NavigationView[]) {
     return !!(
@@ -1652,10 +1670,7 @@ export default function createApp() {
     },
     get stopScan() {
       return (
-        !!summary &&
-        running &&
-        !cancelling &&
-        summary.scanPhase !== "caching"
+        !!summary && running && !cancelling && summary.scanPhase !== "caching"
       );
     },
     get chooseFolder() {
@@ -1879,20 +1894,11 @@ export default function createApp() {
     get setCrumbs() {
       return setCrumbs;
     },
-    get setPage() {
-      return setPage;
-    },
-    get setMap() {
-      return setMap;
-    },
     get setSelection() {
       return setSelection;
     },
     get setMode() {
       return setMode;
-    },
-    get setQuery() {
-      return setQuery;
     },
     get setOffset() {
       return setOffset;
@@ -1909,35 +1915,8 @@ export default function createApp() {
     get setTrash() {
       return setTrash;
     },
-    get setFilters() {
-      return setFilters;
-    },
-    get setDebouncedQuery() {
-      return setDebouncedQuery;
-    },
-    get setListLoading() {
-      return setListLoading;
-    },
-    get setSort() {
-      return setSort;
-    },
-    get setSortReady() {
-      return setSortReady;
-    },
-    get setSortSaving() {
-      return setSortSaving;
-    },
-    get setSortWarning() {
-      return setSortWarning;
-    },
-    get setAccess() {
-      return setAccess;
-    },
     get setAccessOpen() {
       return setAccessOpen;
-    },
-    get setAccessBusy() {
-      return setAccessBusy;
     },
     get setAccessError() {
       return setAccessError;
@@ -1979,9 +1958,6 @@ export default function createApp() {
     },
     get revision() {
       return revision;
-    },
-    get restrictedIssues() {
-      return restrictedIssues;
     },
     get otherIssues() {
       return otherIssues;

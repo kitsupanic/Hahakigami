@@ -164,10 +164,11 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
   const ready = $derived(view.entries.filter((e) => e.status === "ready"));
   // A review is addressed to the scan on screen, so it covers only the ready entries the backend matched
   // to that scan (their own root, or a disk scan that covers them).
-  const readyHere = $derived.by(() => {
-    const scanId = hooks.shownScanId();
-    return ready.filter((entry) => !!scanId && entry.matchedScanId === scanId);
-  });
+  // Read through its own derived so progress events, which rebuild the hooks' source, don't recompute `groups`.
+  const shownId = $derived(hooks.shownScanId());
+  const readyHere = $derived(
+    ready.filter((entry) => !!shownId && entry.matchedScanId === shownId),
+  );
   const bytes = $derived(
     view.entries.reduce((sum, entry) => sum + entry.allocatedBytes, 0),
   );

@@ -189,6 +189,25 @@ fn session_running(s: &Session) -> bool {
     s.finishing.load(Ordering::Acquire) || s.store.read().unwrap().state == ScanState::Running
 }
 impl Session {
+    /// Cancel and the start of the cache write are ordered by the `scan_details` lock: a cancel is either
+    /// refused (the write began) or stops the write (`begin_caching` finds it).
+    fn request_cancel(&self) -> Result<(), String> {
+        let details = self.scan_details.lock().unwrap();
+        if details.phase == "caching" {
+            return Err("The scan is finishing its rescan cache. Wait for completion.".into());
+        }
+        self.cancel.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+    /// Enters the caching phase, or returns false when the scan was cancelled and nothing may be written.
+    fn begin_caching(&self) -> bool {
+        let mut details = self.scan_details.lock().unwrap();
+        if self.cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        details.phase = "caching".into();
+        true
+    }
     fn actual_workers(&self) -> usize {
         self.scan_details
             .lock()
@@ -269,16 +288,20 @@ impl Session {
         }
     }
 }
-fn issue_index<'a>(
-    session: &'a Session,
-    snapshot: &Snapshot,
-) -> std::sync::MutexGuard<'a, (u64, Vec<PathBuf>)> {
-    let mut index = session.issues.lock().unwrap();
+/// Rebuilds `index` (the error count and the sorted error paths) when the snapshot's errors changed.
+fn refresh_issue_index(index: &mut (u64, Vec<PathBuf>), snapshot: &Snapshot) {
     if index.0 != snapshot.stats.errors || index.1.len() != snapshot.errors.len() {
         index.0 = snapshot.stats.errors;
         index.1 = snapshot.errors.iter().map(|e| e.path.clone()).collect();
         index.1.sort_unstable();
     }
+}
+fn issue_index<'a>(
+    session: &'a Session,
+    snapshot: &Snapshot,
+) -> std::sync::MutexGuard<'a, (u64, Vec<PathBuf>)> {
+    let mut index = session.issues.lock().unwrap();
+    refresh_issue_index(&mut index, snapshot);
     index
 }
 
@@ -704,18 +727,20 @@ fn run_scan(
             &s.cancel,
             scanned,
             || {
-                s.scan_details.lock().unwrap().phase = "caching".into();
+                if !s.begin_caching() {
+                    return None;
+                }
                 channel.report(s.summary());
                 let completed_at_ms = now_ms();
                 s.completed_at_ms.store(completed_at_ms, Ordering::Release);
-                cache_store::ScanMetadata {
+                Some(cache_store::ScanMetadata {
                     started_at_ms: s.started_at_ms,
                     completed_at_ms,
                     workers: s.actual_workers(),
                     worker_mode: "auto".into(),
                     worker_source: s.worker_source.clone(),
                     qos: s.qos,
-                }
+                })
             },
             #[cfg(feature = "performance-benchmark")]
             &timing,
@@ -809,11 +834,7 @@ fn start_scan_impl(
     } else {
         Slot::Folder
     };
-    let slots::Started {
-        session: s,
-        previous,
-        grant,
-    } = state.scans.replace(
+    let mut started = state.scans.replace(
         key,
         Request {
             root,
@@ -825,6 +846,13 @@ fn start_scan_impl(
             qos,
         },
     )?;
+    // The session is registered and counts as running, so restart and setup refuse without this lock. Taking
+    // the old results can wait behind a read of them, and must not hold up other starts or the access status.
+    drop(access);
+    let previous = started.take_previous();
+    let slots::Started {
+        session: s, grant, ..
+    } = started;
     let baselines = state.baselines.clone();
     let id = s.id.clone();
     let (unstarted, unstarted_events) = (s.clone(), on_event.clone());
@@ -850,12 +878,7 @@ fn start_scan_impl(
 }
 #[tauri::command]
 fn cancel_scan(state: State<'_, AppState>, scan_id: String) -> Result<(), String> {
-    let s = state.scans.find(&scan_id)?;
-    if s.scan_details.lock().unwrap().phase == "caching" {
-        return Err("The scan is finishing its rescan cache. Wait for completion.".into());
-    }
-    s.cancel.store(true, Ordering::Relaxed);
-    Ok(())
+    state.scans.find(&scan_id)?.request_cancel()
 }
 /// Drops a live scan whose disk was ejected: stops it if it is running, then frees its slot.
 /// A scan that has not ended yet keeps counting as running until it does.

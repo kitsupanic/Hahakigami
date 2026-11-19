@@ -27,6 +27,8 @@ fn default_limit() -> usize {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PageInput {
+    /// Refused if a newer scan has replaced the scan with this `scanId`.
+    scan_id: Option<u64>,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_limit")]
@@ -159,7 +161,7 @@ impl Mcp {
 
     #[tool(description = "Read scan issues explaining incomplete coverage, paginated.")]
     async fn issues(&self, Parameters(input): Parameters<PageInput>) -> CallToolResult {
-        self.execute(move |service| service.issues(input.offset, input.limit))
+        self.execute(move |service| service.issues(input.scan_id, input.offset, input.limit))
             .await
     }
 }

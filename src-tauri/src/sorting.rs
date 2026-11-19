@@ -236,7 +236,7 @@ impl Cache {
         ))
     }
 }
-fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
+pub(crate) fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
     let start = offset.min(ids.len());
     let end = start.saturating_add(limit.min(500)).min(ids.len());
     (ids[start..end].to_vec(), ids.len())

@@ -11,7 +11,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 // Lossless fast mode for disposable caches.
@@ -73,12 +72,6 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
 /// Persist directory entries (renames, removals) to disk.
 pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path).and_then(|d| d.sync_all())
-}
-fn now_ms() -> Result<u64, String> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(err)?
-        .as_millis() as u64)
 }
 impl Store {
     pub fn new(root: PathBuf) -> Self {
@@ -210,7 +203,7 @@ impl Store {
             root_path: s.root.to_string_lossy().into_owned(),
             started_at_ms: m.started_at_ms,
             completed_at_ms: m.completed_at_ms,
-            used_at_ms: now_ms()?,
+            used_at_ms: crate::now_ms(),
             entries: s.stats.entries,
             allocated_bytes: s.stats.allocated_bytes,
             incomplete: s.stats.incomplete,
@@ -264,7 +257,7 @@ impl Store {
             return Err("Cache metadata changed during cursor refresh".into());
         }
         open(&self.path(id, "zst")?).map_err(err)?;
-        row.used_at_ms = now_ms()?;
+        row.used_at_ms = crate::now_ms();
         self.write_json(&path, &row)
     }
     pub fn delete(&self, id: &str) -> Result<(), String> {

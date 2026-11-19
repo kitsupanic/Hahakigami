@@ -373,11 +373,9 @@ fn run_open<const N: usize>(args: [&std::ffi::OsStr; N]) -> Result<(), String> {
     }
 }
 
-pub fn trash(path: &Path, is_directory: bool) -> Result<(), String> {
-    trash_with_receipt(path, is_directory).map(|_| ())
-}
-
-fn trash_with_receipt(path: &Path, is_directory: bool) -> Result<Option<PathBuf>, String> {
+/// Moves `path` to the Trash and returns where it landed (None if macOS did not say). The path is resolved again
+/// here, so callers that checked it earlier must check the receipt too.
+pub fn trash(path: &Path, is_directory: bool) -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
     {
         use objc2_foundation::{NSFileManager, NSURL};
@@ -546,7 +544,7 @@ mod tests {
             .path()
             .join(format!("hahakigami-recovery-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&original, b"disposable recovery fixture").unwrap();
-        let recycled = trash_with_receipt(&original, false)
+        let recycled = trash(&original, false)
             .expect("native Trash move")
             .expect("native Trash receipt");
         assert!(!original.exists());

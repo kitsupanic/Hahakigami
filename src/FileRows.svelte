@@ -1,6 +1,7 @@
 <script lang="ts">
   import { bytes, type NodeView, type Page } from "./types";
   import Icon from "./Icon.svelte";
+  import { latestOnly } from "./latestQuery";
   import { normalizePath, parentPath } from "./branchColors";
   import { createQueueMarker, type QueuePath } from "./queueMarkers";
   import { compactBytes, usageColor } from "./uiFormat";
@@ -96,6 +97,7 @@
   let expanded = new Set<number>();
   let requests = new Map<number, number>();
   let pending = new Map<number, Promise<void>>();
+  const queryBranches = latestOnly();
   function load(id: number) {
     const promise = fetchBranch(id);
     pending.set(id, promise);
@@ -127,7 +129,7 @@
   $effect(() => {
     revision;
     untrack(() => {
-      for (const id of expanded) void load(id);
+      queryBranches(() => Promise.all([...expanded].map(load)).then(() => {}));
     });
   });
   let firstId = $derived(items[0]?.id);

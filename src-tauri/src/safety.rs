@@ -208,10 +208,11 @@ pub fn ancestors(path: &Path) -> Result<Vec<(PathBuf, Identity)>, String> {
 }
 
 pub fn protected(path: &Path, root: &Path, home: Option<&Path>, mounts: &[PathBuf]) -> bool {
+    // A mount point, or a folder with a mount anywhere inside it: Trash would leave that volume mounted.
     if path == root
         || path == Path::new("/")
         || home.is_some_and(|h| path == h)
-        || mounts.iter().any(|p| p == path)
+        || mounts.iter().any(|p| p.starts_with(path))
     {
         return true;
     }
@@ -309,14 +310,74 @@ mod tests {
     #[test]
     fn protects_roots_and_system() {
         let home = Path::new("/Users/test");
-        let root = Path::new("/");
-        assert!(protected(home, root, Some(home), &[]));
-        assert!(protected(Path::new("/System/thing"), root, Some(home), &[]));
+        let root = Path::new("/Users/test/proj");
+        // No mounts here: a mount below a path would protect it too and hide a deleted rule.
+        let blocked = |path: &str| protected(Path::new(path), root, Some(home), &[]);
+        // Each of these is refused by one rule of `protected` alone.
+        assert!(blocked("/Users/test/proj"), "the scan root");
+        assert!(blocked("/"), "/");
+        assert!(blocked("/Users/test"), "the home folder");
+        assert!(blocked("/Users/test/Library"), "the home Library");
+        for system in [
+            "/System", "/Library", "/bin", "/sbin", "/usr", "/etc", "/private", "/dev",
+        ] {
+            assert!(blocked(system), "{system}");
+            assert!(blocked(&format!("{system}/thing")), "{system}/thing");
+        }
+        for folder in ["/Users", "/Volumes", "/Applications"] {
+            assert!(blocked(folder), "{folder}");
+        }
+        // Ordinary paths pass: only those folders themselves are protected, not what is inside.
+        for path in [
+            "/Users/test/Downloads/x",
+            "/Users/x/Downloads/file",
+            "/Volumes/Ext/dir",
+            "/Applications/Some.app",
+            "/Users/test/Library/Caches",
+        ] {
+            assert!(!blocked(path), "{path}");
+        }
+        // Without a home folder, its two rules do not apply.
+        assert!(!protected(Path::new("/Users/test"), root, None, &[]));
+        assert!(!protected(
+            Path::new("/Users/test/Library"),
+            root,
+            None,
+            &[]
+        ));
+    }
+    #[test]
+    fn protects_mount_points_and_folders_holding_one() {
+        let home = Path::new("/Users/test");
+        let root = Path::new("/Users/test/proj");
+        let mounts = [
+            PathBuf::from("/Users/test/dev/vm/mnt"),
+            PathBuf::from("/Volumes/Ext"),
+        ];
+        let blocked = |path: &str| protected(Path::new(path), root, Some(home), &mounts);
+        assert!(blocked("/Users/test/dev/vm/mnt"), "a mount point");
+        assert!(blocked("/Volumes/Ext"), "a volume's mount point");
+        assert!(blocked("/Users/test/dev/vm"), "the parent of a mount point");
+        assert!(
+            blocked("/Users/test/dev"),
+            "a folder holding a mount deeper in"
+        );
+        // Inside a mount, beside one, or a longer name: not protected (components, not text).
+        for path in [
+            "/Volumes/Ext/dir",
+            "/Users/test/dev/vm/mnt/inner",
+            "/Users/test/dev/vm/mn",
+            "/Users/test/dev2",
+        ] {
+            assert!(!blocked(path), "{path}");
+        }
+        // The "/" mount is under no path but "/".
+        let with_root_mount = [PathBuf::from("/")];
         assert!(!protected(
             Path::new("/Users/test/Downloads/x"),
             root,
             Some(home),
-            &[]
+            &with_root_mount
         ));
     }
     #[test]
