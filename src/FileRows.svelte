@@ -2,8 +2,12 @@
   import { bytes, type NodeView, type Page } from "./types";
   import Icon from "./Icon.svelte";
   import { latestOnly } from "./latestQuery";
-  import { normalizePath, parentPath } from "./branchColors";
-  import { createQueueMarker, type QueuePath } from "./queueMarkers";
+  import { parentPath } from "./branchColors";
+  import {
+    createQueueMarker,
+    normalizePath,
+    type QueuePath,
+  } from "./queueMarkers";
   import { compactBytes, usageColor } from "./uiFormat";
   import {
     createHoverTarget,

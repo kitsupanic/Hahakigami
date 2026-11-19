@@ -623,6 +623,32 @@ fn enumerate_once(
     let _ = (accounting_warnings, clone_observations, bulk_buffer);
     descriptor::enumerate(fd, path, cancel)
 }
+/// Reopens a directory by walking recorded child names down from the held root. A renamed root
+/// or ancestor cannot hide the subtree, which an absolute-path walk from `/` would.
+#[cfg(unix)]
+fn open_from_root(
+    store: &RwLock<Snapshot>,
+    id: u32,
+    root: &std::os::fd::OwnedFd,
+    gate: &descriptor::OpenGate,
+) -> std::io::Result<std::os::fd::OwnedFd> {
+    let mut names = vec![];
+    let root_identity = {
+        let s = store.read().unwrap();
+        let mut next = Some(id);
+        while let Some(i) = next.filter(|i| *i != 0) {
+            let n = s.node(i).unwrap();
+            names.push((descriptor::ChildName::new(n.native_name())?, n.identity));
+            next = n.parent;
+        }
+        s.node(0).unwrap().identity
+    };
+    let mut fd = descriptor::reopen(root, &root_identity)?;
+    for (name, identity) in names.iter().rev() {
+        fd = descriptor::open_child_name_gated(&fd, name, identity, gate)?;
+    }
+    Ok(fd)
+}
 struct Work {
     id: u32,
     #[cfg(unix)]
@@ -990,6 +1016,8 @@ fn scan_live_internal_reuse(
         DIRECTORY_OPEN_PERMITS,
         options.workers.clamp(1, MAX_WORKERS),
     );
+    #[cfg(unix)]
+    let root_fd = &root_parent.as_ref().expect("retained root").fd;
     std::thread::scope(|scope| {
         for worker_id in 1..=options.workers.clamp(1, MAX_WORKERS) {
             let queue = queue.clone();
@@ -1084,7 +1112,7 @@ fn scan_live_internal_reuse(
                         )),
                         _ => {
                             telemetry.stats.absolute_reopens += 1;
-                            descriptor::open(&path, &expected).map(retain)
+                            open_from_root(&store, id, root_fd, open_gate).map(retain)
                         }
                     };
                     #[cfg(unix)]
@@ -1448,11 +1476,7 @@ fn scan_live_internal_reuse(
     #[cfg(unix)]
     let validation = {
         let s = store.read().unwrap();
-        clones::validate(
-            &s,
-            &root_parent.as_ref().expect("retained root").fd,
-            &cancel,
-        )
+        clones::validate(&s, root_fd, &cancel, options.qos)
     };
     #[cfg(not(unix))]
     let validation = clones::validate_unverified(&store.read().unwrap(), &cancel);
@@ -2397,6 +2421,46 @@ mod tests {
                 fs::remove_dir_all(outside).unwrap();
             }
         }
+    }
+    #[test]
+    #[cfg(unix)]
+    fn exhausted_descriptor_budget_still_reaches_subtrees_of_a_renamed_root() {
+        let p = fixture();
+        let target = p.join("root");
+        fs::create_dir_all(target.join("a/b/c")).unwrap();
+        fs::write(target.join("a/b/c/f"), b"x").unwrap();
+        let authority =
+            ScanRoot::open(target.clone(), platform_identity(&target).unwrap()).unwrap();
+        fs::rename(&target, p.join("renamed")).unwrap();
+        let store = Arc::new(RwLock::new(Snapshot::empty(target)));
+        // One descriptor is the held root, so every deeper directory is reopened without a parent.
+        scan_live_authorized(
+            authority,
+            ScanOptions {
+                workers: 2,
+                descriptor_limit: Some(1),
+                ..ScanOptions::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+            store.clone(),
+            |_| {},
+        )
+        .unwrap();
+        let s = store.read().unwrap();
+        assert_eq!(s.state, ScanState::Completed);
+        assert!(!s.stats.incomplete);
+        assert_eq!(s.stats.errors, 0);
+        assert_eq!(s.node_count(), 5);
+        assert!(s.iter_nodes().any(|n| n.display_name() == "f"));
+        assert!(
+            s.worker_stats
+                .iter()
+                .map(|w| w.absolute_reopens)
+                .sum::<u64>()
+                >= 2
+        );
+        drop(s);
+        fs::remove_dir_all(p).unwrap();
     }
     #[test]
     #[cfg(unix)]

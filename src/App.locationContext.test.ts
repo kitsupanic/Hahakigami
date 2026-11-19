@@ -198,7 +198,8 @@ it("preserves the displayed workspace when scan startup rejects", async () => {
     starting = app().start(beta);
   });
   expect(app().summary).toBe(previous.summary);
-  expect(app().busy).toBe(true);
+  expect(app().busy).toBe(false);
+  expect(app().queueRootBusy(beta.path)).toBe(true);
   await act(async () => {
     pending.reject(new Error("Target changed. Choose the folder again."));
     await starting;

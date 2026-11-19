@@ -1,7 +1,7 @@
 <script lang="ts">
   import ScanIssues from "./ScanIssues.svelte";
   import WorkerDiagnostics from "./WorkerDiagnostics.svelte";
-  import { coverageLabel } from "./scanCoverage";
+  import { coverageLabel, issueSplit } from "./scanCoverage";
   import { dismissPopover } from "./dialogFocus";
   import { bytes, type ScanSummary } from "./types";
   import { compactBytes, scanTime } from "./uiFormat";
@@ -22,10 +22,8 @@
     lead?: Snippet;
   } = $props();
 
-  let restricted = $derived(
-    Math.min(summary.errors, Math.max(0, summary.restrictedSystemIssues ?? 0)),
-  );
-  let other = $derived(Math.max(0, summary.errors - restricted));
+  let restricted = $derived(issueSplit(summary).restricted);
+  let other = $derived(issueSplit(summary).other);
   // Restricted system locations and excluded mounts are expected, so only real problems surface here.
   let hasCoverage = $derived(!!coverageLabel(summary));
   let soFar = $derived(summary.state === "running" ? " so far" : "");

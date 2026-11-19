@@ -1,9 +1,9 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{atomic, open, sync_dir, ScanMetadata, Store};
+use crate::cache_store::{atomic, open, sync_dir, unusable, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    fs, io,
     io::{BufReader, Read},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -105,12 +105,15 @@ impl Cache {
         self.store.path(id, "cursor")
     }
     fn record(&self, id: &str) -> Result<Record, String> {
-        let file = open(&self.path(id)?).map_err(|e| e.to_string())?;
-        if file.metadata().map_err(|e| e.to_string())?.len() > 16 * 1024 {
-            return Err("Invalid cache record".into());
+        self.read_record(id).map_err(|e| e.to_string())
+    }
+    /// `Err` is `unusable` for a missing or invalid record; any other error is a failed read, not a verdict.
+    fn read_record(&self, id: &str) -> io::Result<Record> {
+        let file = open(&self.path(id).map_err(io::Error::other)?)?;
+        if file.metadata()?.len() > 16 * 1024 {
+            return Err(io::Error::other("Invalid cache record"));
         }
-        let r: Record = serde_json::from_reader(BufReader::new(file.take(16 * 1024)))
-            .map_err(|e| e.to_string())?;
+        let r: Record = serde_json::from_reader(BufReader::new(file.take(16 * 1024)))?;
         if r.version != 3
             || r.accounting.model != disk_scan::AccountingModel::FullClonesV1
             || !r.accounting.checks_complete
@@ -123,7 +126,7 @@ impl Cache {
             || r.token.full_scan_at_ms == 0
             || r.token.full_scan_at_ms > r.started_at_ms
         {
-            return Err("Unsupported cache record".into());
+            return Err(io::Error::other("Unsupported cache record"));
         }
         Ok(r)
     }
@@ -214,16 +217,20 @@ impl Cache {
     fn maintain(&self) -> Result<(), String> {
         let entries = self.store.list()?;
         let now = crate::now_ms();
-        // An entry `recent` refuses can never seed a scan again: keep only readable, unexpired ones,
-        // so the sweep below deletes the rest (row, record and archive share the ID's stem).
-        let ids: std::collections::HashSet<_> = entries
-            .iter()
-            .filter(|row| {
-                self.record(&row.id)
-                    .is_ok_and(|r| recent(&r.token, r.started_at_ms, now))
-            })
-            .map(|row| row.id.as_str())
-            .collect();
+        // An entry `recent` refuses or whose record is missing or invalid can never seed a scan again: keep
+        // only the others, so the sweep below deletes the rest (row, record and archive share the ID's stem).
+        // A record that merely failed to read (EMFILE, EIO) is not dead: stop and delete nothing.
+        let mut ids = std::collections::HashSet::new();
+        for row in &entries {
+            match self.read_record(&row.id) {
+                Ok(r) if recent(&r.token, r.started_at_ms, now) => {
+                    ids.insert(row.id.as_str());
+                }
+                Ok(_) => (),
+                Err(e) if unusable(&e) => (),
+                Err(e) => return Err(e.to_string()),
+            }
+        }
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -316,20 +323,38 @@ impl Cache {
         }
         let mut count = 0usize;
         let mut bytes = 0u64;
-        let mut entries = self.store.list()?;
+        // The new entry is published: from here only its own failures fail the save. An old entry that cannot
+        // be read or removed is skipped, and the next `save` enforces the caps on it again.
+        let Ok(mut entries) = self.store.list() else {
+            return Ok(());
+        };
         entries.sort_by_key(|entry| entry.id != row.id);
         for entry in entries {
-            let actual_bytes = self.archive_bytes(&entry.id)?;
-            let record = self.record(&entry.id);
+            let new = entry.id == row.id;
+            let Ok(actual_bytes) = self.archive_bytes(&entry.id) else {
+                if new {
+                    return Err("Could not read the saved rescan cache".into());
+                }
+                continue;
+            };
+            let record = match self.read_record(&entry.id) {
+                Ok(r) => Some(r),
+                Err(e) if unusable(&e) => None,
+                Err(_) => continue,
+            };
             let same = record
                 .as_ref()
-                .is_ok_and(|r| r.root == s.root.as_os_str().as_bytes());
-            let discard = record.is_err()
-                || (entry.id != row.id && same)
+                .is_some_and(|r| r.root == s.root.as_os_str().as_bytes());
+            let discard = record.is_none()
+                || (!new && same)
                 || count >= self.count_limit
                 || bytes.saturating_add(actual_bytes) > self.bytes_limit;
             if discard {
-                self.remove(&entry.id)?;
+                if let Err(e) = self.remove(&entry.id) {
+                    if new {
+                        return Err(e);
+                    }
+                }
             } else {
                 count += 1;
                 bytes += actual_bytes;
@@ -907,6 +932,77 @@ mod tests {
             assert!(!c.root.join(format!("{expired}.{suffix}")).exists());
             assert!(c.root.join(format!("{kept}.{suffix}")).exists());
         }
+    }
+    #[test]
+    fn maintenance_deletes_only_entries_that_can_never_be_read() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Cache::new(d.path().join("cache"));
+        let s = fixture(&d.path().join("source"));
+        let token = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: crate::now_ms(),
+        };
+        c.save(&s, &metadata(), &token).unwrap();
+        let id = c.store.list().unwrap().remove(0).id;
+        let cursor = c.root.join(format!("{id}.cursor"));
+        // A read that fails this time is not a verdict on the entry; one that fails every time is.
+        use std::io::Error;
+        for transient in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::EIO,
+            libc::EAGAIN,
+            libc::EINTR,
+        ] {
+            assert!(!crate::cache_store::unusable(&Error::from_raw_os_error(
+                transient
+            )));
+        }
+        for dead in [libc::ENOENT, libc::ELOOP, libc::EACCES, libc::EPERM] {
+            assert!(crate::cache_store::unusable(&Error::from_raw_os_error(
+                dead
+            )));
+        }
+        assert!(crate::cache_store::unusable(&Error::other(
+            "not a regular file"
+        )));
+        // A record that parses to nothing is dead: the entry goes.
+        fs::write(&cursor, b"not json").unwrap();
+        c.maintain().unwrap();
+        for suffix in ["json", "zst", "cursor"] {
+            assert!(!c.root.join(format!("{id}.{suffix}")).exists());
+        }
+    }
+    // An immutable old record cannot be removed (macOS `uchg`), standing in for a failed removal.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_save_succeeds_when_an_old_entry_cannot_be_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Cache::new(d.path().join("cache"));
+        let s = fixture(&d.path().join("source"));
+        let token = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: crate::now_ms(),
+        };
+        c.save(&s, &metadata(), &token).unwrap();
+        let old = c.store.list().unwrap().remove(0).id;
+        let cursor = c.root.join(format!("{old}.cursor"));
+        let flag = |arg: &str| {
+            assert!(std::process::Command::new("chflags")
+                .args([arg])
+                .arg(&cursor)
+                .status()
+                .unwrap()
+                .success())
+        };
+        flag("uchg");
+        // Same root: the new entry replaces the old one, whose removal fails.
+        let saved = c.save(&s, &metadata(), &token);
+        flag("nouchg");
+        saved.unwrap();
+        assert_eq!(c.store.list().unwrap().len(), 1);
     }
 }
 

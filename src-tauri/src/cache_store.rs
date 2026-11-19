@@ -57,9 +57,18 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
             if f.metadata()?.is_file() {
                 Ok(f)
             } else {
-                Err(io::Error::other("cache file is not regular"))
+                Err(io::Error::other("not a regular file"))
             }
         })
+}
+/// Whether a failed read means the file can never be used rather than that the read failed this time. Only the
+/// listed errors pass on their own; any other (missing, a symlink, malformed, EACCES) would refuse it on every read,
+/// so a caller may discard it.
+pub(crate) fn unusable(e: &io::Error) -> bool {
+    !matches!(
+        e.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::EIO | libc::EAGAIN | libc::EINTR | libc::ENOMEM)
+    )
 }
 /// Persist directory entries (renames, removals) to disk.
 pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
@@ -113,9 +122,11 @@ impl Store {
         }
         Ok(self.root.join(format!("{id}.{suffix}")))
     }
-    fn json<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<T, String> {
-        serde_json::from_reader(BufReader::new(open(path).map_err(err)?.take(1024 * 1024)))
-            .map_err(err)
+    // A parse error becomes an `io::Error` without an OS code (`unusable`); a failed read keeps its own.
+    fn json<T: serde::de::DeserializeOwned>(&self, path: &Path) -> io::Result<T> {
+        Ok(serde_json::from_reader(BufReader::new(
+            open(path)?.take(1024 * 1024),
+        ))?)
     }
     // The sync-failure warning is dropped: `Cache::maintain` syncs the directory again before every use.
     fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
@@ -125,19 +136,29 @@ impl Store {
         })
         .map(drop)
     }
-    /// The entries with a readable row and archive, newest first.
+    /// The entries with a readable row and archive, newest first. A file that cannot be read this time
+    /// (not one that is missing or malformed) fails the listing instead of dropping its entry.
     pub fn list(&self) -> Result<Vec<Row>, String> {
         self.prepare()?;
         let mut entries = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(err)? {
             let path = entry.map_err(err)?.path();
             if path.extension().is_some_and(|s| s == "json") {
-                if let Ok(row) = self.json::<Row>(&path) {
-                    if self.path(&row.id, "json").is_ok_and(|p| p == path)
-                        && self.path(&row.id, "zst").is_ok_and(|p| open(&p).is_ok())
-                    {
-                        entries.push(row)
-                    }
+                let row = match self.json::<Row>(&path) {
+                    Ok(row) => row,
+                    Err(e) if unusable(&e) => continue,
+                    Err(e) => return Err(err(e)),
+                };
+                if !self.path(&row.id, "json").is_ok_and(|p| p == path) {
+                    continue;
+                }
+                let Ok(archive) = self.path(&row.id, "zst") else {
+                    continue;
+                };
+                match open(&archive) {
+                    Ok(_) => entries.push(row),
+                    Err(e) if unusable(&e) => (),
+                    Err(e) => return Err(err(e)),
                 }
             }
         }
@@ -200,7 +221,7 @@ impl Store {
     }
     pub fn load(&self, id: &str) -> Result<(Snapshot, ScanMetadata), String> {
         self.prepare()?;
-        let _: Row = self.json(&self.path(id, "json")?)?;
+        let _: Row = self.json(&self.path(id, "json")?).map_err(err)?;
         let mut file = BufReader::new(open(&self.path(id, "zst")?).map_err(err)?);
         let mut header = [0; 5];
         file.read_exact(&mut header).map_err(err)?;
@@ -233,7 +254,7 @@ impl Store {
     pub fn touch(&self, id: &str, started_at_ms: u64) -> Result<(), String> {
         self.prepare()?;
         let path = self.path(id, "json")?;
-        let mut row: Row = self.json(&path)?;
+        let mut row: Row = self.json(&path).map_err(err)?;
         if row.id != id || row.started_at_ms != started_at_ms {
             return Err("Cache metadata changed during cursor refresh".into());
         }
@@ -600,10 +621,10 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let native = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
-        assert!(l.load(&row.id).unwrap_err().contains("not regular"));
+        assert!(l.load(&row.id).unwrap_err().contains("not a regular file"));
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        assert!(l.load(&row.id).unwrap_err().contains("not regular"));
+        assert!(l.load(&row.id).unwrap_err().contains("not a regular file"));
     }
     #[test]
     fn cache_checksum_truncation_and_trailing_data_are_rejected() {

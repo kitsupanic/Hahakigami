@@ -362,38 +362,45 @@ it("retains existing rows and selection while a background revision is pending",
   );
 });
 
-it("runs one list request at a time during a live scan and applies the latest", async () => {
+it("does not re-run a live search every revision tick, only when the scan ends", async () => {
   await click("Rescan Home");
   await search("image");
   await advance();
-  const previous = mock.invoke.getMockImplementation()!;
-  const resolvers: ((page: Page) => void)[] = [];
-  mock.invoke.mockImplementation(
-    (command: string, args: Record<string, unknown>) =>
-      command === "search_nodes"
-        ? new Promise<Page>((done) => resolvers.push(done))
-        : previous(command, args),
-  );
   const channel = calls("start_scan").at(-1)![1].onEvent as {
     onmessage: (event: ScanSummary) => void;
   };
+  // The first running event changes the state, which refreshes once; later ticks must not.
+  await act(async () =>
+    channel.onmessage({ ...summary(), state: "running", elapsedMs: 1000 }),
+  );
+  await flush();
   const before = calls("search_nodes").length;
   for (const elapsedMs of [2000, 3000, 4000])
     await act(async () =>
       channel.onmessage({ ...summary(), state: "running", elapsedMs }),
     );
   await flush();
-  expect(calls("search_nodes").length - before).toBe(1);
-  const latest: NodeView = { ...image, id: 3, name: "latest-hit.jpg" };
-  await act(async () => resolvers[0]({ items: [image], total: 1 }));
-  await flush();
-  // Only the newest superseded request runs next, not one per revision.
-  expect(calls("search_nodes").length - before).toBe(2);
-  await act(async () => resolvers[1]({ items: [latest], total: 1 }));
-  await flush();
-  expect(container.querySelector(".file-row-name")?.textContent).toContain(
-    "latest-hit.jpg",
+  expect(calls("search_nodes").length - before).toBe(0);
+  await act(async () =>
+    channel.onmessage({ ...summary(), state: "completed", elapsedMs: 5000 }),
   );
+  await flush();
+  expect(calls("search_nodes").length - before).toBe(1);
+});
+
+it("keeps refreshing a plain folder listing on every live tick", async () => {
+  await click("Rescan Home");
+  await advance();
+  const channel = calls("start_scan").at(-1)![1].onEvent as {
+    onmessage: (event: ScanSummary) => void;
+  };
+  const before = calls("get_children").length;
+  for (const elapsedMs of [2000, 3000])
+    await act(async () =>
+      channel.onmessage({ ...summary(), state: "running", elapsedMs }),
+    );
+  await flush();
+  expect(calls("get_children").length - before).toBeGreaterThanOrEqual(2);
 });
 
 it("clamps a filtered page when live or final size aggregation shrinks its total", async () => {

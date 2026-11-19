@@ -44,9 +44,10 @@ export default function createFileTypes(context: {
   const extension = $derived(
     choice?.scanId === scanId ? (choice?.extension ?? null) : null,
   );
-  // Live scans refresh at most once per two seconds, plus every final state.
+  // Live scans refresh at most once per ten seconds, plus every final state: each query walks the
+  // whole tree under the scan's read lock.
   const revision = $derived(
-    `${context.summary?.state}:${Math.floor((context.summary?.elapsedMs ?? 0) / 2000)}`,
+    `${context.summary?.state}:${Math.floor((context.summary?.elapsedMs ?? 0) / 10000)}`,
   );
   const statsKey = $derived(`${scanId}:${nodeId}:${revision}:${retry}`);
   const highlightKey = $derived(`${statsKey}:${JSON.stringify(extension)}`);

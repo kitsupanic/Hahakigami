@@ -1,11 +1,10 @@
 //! Small, independent explorer preferences; never changes scan settings.
-use crate::cache_store::{atomic, sync_dir};
+use crate::cache_store::{atomic, open, sync_dir};
 use crate::sorting::Order;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::Read,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 #[derive(Clone, Serialize)]
@@ -48,13 +47,7 @@ impl Preferences {
         remove_stale_temps(config);
         let record = config.join("explorer-preferences.json");
         let read = (|| -> Result<Order, std::io::Error> {
-            let file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(&record)?;
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::other("Preference file is not regular"));
-            }
+            let file = open(&record)?;
             let mut bytes = Vec::new();
             file.take(4097).read_to_end(&mut bytes)?;
             if bytes.len() > 4096 {

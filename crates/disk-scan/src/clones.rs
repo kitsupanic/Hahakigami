@@ -68,14 +68,15 @@ pub(crate) fn validate(
     s: &Snapshot,
     root: &std::os::fd::OwnedFd,
     cancel: &std::sync::atomic::AtomicBool,
+    qos: crate::ScanQos,
 ) -> Validation {
     #[cfg(target_os = "macos")]
     {
-        native::validate(s, root, cancel)
+        native::validate(s, root, cancel, qos)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = root;
+        let _ = (root, qos);
         validate_unverified(s, cancel)
     }
 }
@@ -727,13 +728,19 @@ mod native {
             && a.reference_count == b.reference_count
             && a.may_share_blocks == b.may_share_blocks
     }
-    pub(super) fn validate(s: &Snapshot, root: &OwnedFd, cancel: &AtomicBool) -> Validation {
-        validate_with_hook(s, root, cancel, || {})
+    pub(super) fn validate(
+        s: &Snapshot,
+        root: &OwnedFd,
+        cancel: &AtomicBool,
+        qos: crate::ScanQos,
+    ) -> Validation {
+        validate_with_hook(s, root, cancel, qos, || {})
     }
     fn validate_with_hook(
         s: &Snapshot,
         root: &OwnedFd,
         cancel: &AtomicBool,
+        qos: crate::ScanQos,
         before: impl FnOnce(),
     ) -> Validation {
         validate_core(
@@ -742,7 +749,10 @@ mod native {
             cancel,
             before,
             |_| {},
-            ValidationStrategy::automatic(),
+            ValidationStrategy {
+                qos,
+                ..ValidationStrategy::automatic()
+            },
         )
     }
     #[cfg(test)]
@@ -781,6 +791,7 @@ mod native {
         bulk: bool,
         adaptive: bool,
         reader: BulkReader,
+        qos: crate::ScanQos,
     }
     impl ValidationStrategy {
         fn automatic() -> Self {
@@ -788,6 +799,7 @@ mod native {
                 bulk: true,
                 adaptive: true,
                 reader: read_bulk,
+                qos: crate::ScanQos::Automatic,
             }
         }
         #[cfg(test)]
@@ -796,6 +808,7 @@ mod native {
                 bulk: false,
                 adaptive: false,
                 reader: read_bulk,
+                qos: crate::ScanQos::Automatic,
             }
         }
         #[cfg(test)]
@@ -804,6 +817,7 @@ mod native {
                 bulk: true,
                 adaptive: false,
                 reader,
+                qos: crate::ScanQos::Automatic,
             }
         }
         fn use_batch(&self, wanted: usize, children: usize) -> bool {
@@ -1236,7 +1250,8 @@ mod native {
         };
         let mut scheduler_bytes = 0;
         if workers == 1 {
-            // Runs on the calling scan thread, which may not have the policy yet.
+            // Runs on the calling scan thread, which may not have the policies yet.
+            crate::diagnostics::apply_qos(ctx.strategy.qos);
             crate::diagnostics::disable_dataless_materialization();
             let mut worker = MemberWorker::new(cache_limit);
             validate_members(&ctx, claims, &mut statuses, &mut before_file, &mut worker);
@@ -1263,6 +1278,7 @@ mod native {
                         let tasks = &tasks;
                         let next = &next;
                         scope.spawn(move || {
+                            crate::diagnostics::apply_qos(ctx.strategy.qos);
                             crate::diagnostics::disable_dataless_materialization();
                             let mut worker = MemberWorker::new(ctx.cache_limit);
                             while !ctx.cancel.load(Ordering::Relaxed) {
@@ -1757,7 +1773,13 @@ mod native {
             let mut automatic = original.clone();
             automatic.accounting.revalidation_direct_queries = 0;
             automatic.accounting.revalidation_bulk_queries = 0;
-            validate(&automatic, &fd, &AtomicBool::new(false)).apply(&mut automatic);
+            validate(
+                &automatic,
+                &fd,
+                &AtomicBool::new(false),
+                crate::ScanQos::Automatic,
+            )
+            .apply(&mut automatic);
             crate::aggregate(&mut automatic);
             assert_eq!(
                 automatic.stats.allocated_bytes,
@@ -1867,11 +1889,11 @@ mod native {
             let raw = s.tree.clones.clone();
             let allocated = s.stats.allocated_bytes;
             let fd = crate::descriptor::open(&s.root, &s.node(0).unwrap().identity).unwrap();
-            validate(&s, &fd, &AtomicBool::new(false)).apply(&mut s);
+            validate(&s, &fd, &AtomicBool::new(false), crate::ScanQos::Automatic).apply(&mut s);
             crate::aggregate(&mut s);
             assert_eq!(s.tree.clones, raw);
             assert_eq!(s.stats.allocated_bytes, allocated);
-            let cancelled = validate(&s, &fd, &AtomicBool::new(true));
+            let cancelled = validate(&s, &fd, &AtomicBool::new(true), crate::ScanQos::Automatic);
             assert!(cancelled
                 .statuses
                 .iter()
@@ -2235,7 +2257,13 @@ mod native {
                 let serial = run(1, read_bulk);
                 let parallel = run(worker_count, read_bulk);
                 let mut automatic = original.clone();
-                validate(&automatic, &fd, &AtomicBool::new(false)).apply(&mut automatic);
+                validate(
+                    &automatic,
+                    &fd,
+                    &AtomicBool::new(false),
+                    crate::ScanQos::Automatic,
+                )
+                .apply(&mut automatic);
                 crate::aggregate(&mut automatic);
                 assert_eq!(
                     automatic.stats.allocated_bytes,
@@ -2319,7 +2347,13 @@ mod native {
                 // Low budgets force one worker, with bounded deep fallback.
                 let mut constrained = original.clone();
                 constrained.descriptor_limit = Some(3);
-                validate(&constrained, &fd, &AtomicBool::new(false)).apply(&mut constrained);
+                validate(
+                    &constrained,
+                    &fd,
+                    &AtomicBool::new(false),
+                    crate::ScanQos::Automatic,
+                )
+                .apply(&mut constrained);
                 assert_eq!(constrained.accounting.revalidation_workers, 1);
                 assert!(constrained.accounting.checks_complete);
                 std::fs::remove_dir_all(p).unwrap();
@@ -2540,7 +2574,7 @@ mod native {
             let (p, mut s, fd) = real_clone_fixture("parent-reuse");
             s.accounting.revalidation_parent_walks = 0;
             s.accounting.revalidation_queries = 0;
-            let v = validate(&s, &fd, &AtomicBool::new(false));
+            let v = validate(&s, &fd, &AtomicBool::new(false), crate::ScanQos::Automatic);
             v.apply(&mut s);
             assert_eq!(s.accounting.revalidation_parent_walks, 1);
             assert_eq!(s.accounting.revalidation_queries, 4);
@@ -3162,7 +3196,7 @@ mod native {
             }
             s.accounting.revalidation_queries = 0;
             let prior = s.tree.clones.clone();
-            let v = validate(&s, &fd, &AtomicBool::new(true));
+            let v = validate(&s, &fd, &AtomicBool::new(true), crate::ScanQos::Automatic);
             assert_eq!(s.tree.clones, prior);
             assert_eq!(v.statuses.capacity(), prior.len());
             v.apply(&mut s);
@@ -3181,7 +3215,7 @@ mod native {
                 .unwrap_err()
                 .to_string()
                 .contains("link count"));
-            let v = validate(&s, &fd, &AtomicBool::new(false));
+            let v = validate(&s, &fd, &AtomicBool::new(false), crate::ScanQos::Automatic);
             v.apply(&mut s);
             assert!(!s.accounting.checks_complete);
             assert!(s
@@ -3230,7 +3264,7 @@ mod native {
             for id in ids {
                 s.update_node(id, |n| n.hard_link = false).unwrap();
             }
-            let v = validate(&s, &fd, &AtomicBool::new(false));
+            let v = validate(&s, &fd, &AtomicBool::new(false), crate::ScanQos::Automatic);
             v.apply(&mut s);
             assert!(!s.accounting.checks_complete);
             assert!(!s.accounting.warnings.is_empty());
@@ -3257,10 +3291,16 @@ mod native {
             let shared = store.clone();
             let thread = std::thread::spawn(move || {
                 let s = shared.read().unwrap();
-                validate_with_hook(&s, &fd, &AtomicBool::new(false), || {
-                    entered.send(()).unwrap();
-                    resume.recv().unwrap();
-                });
+                validate_with_hook(
+                    &s,
+                    &fd,
+                    &AtomicBool::new(false),
+                    crate::ScanQos::Automatic,
+                    || {
+                        entered.send(()).unwrap();
+                        resume.recv().unwrap();
+                    },
+                );
             });
             ready
                 .recv_timeout(std::time::Duration::from_secs(2))

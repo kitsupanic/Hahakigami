@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { coverageLabel } from "./scanCoverage";
+  import { coverageLabel, issueSplit } from "./scanCoverage";
   import ScanDetails from "./ScanDetails.svelte";
   import type { ScanSummary } from "./types";
   import { formatScanTimestamp, scanTime } from "./uiFormat";
@@ -17,10 +17,8 @@
   } = $props();
   let running = $derived(summary.state === "running");
   let completed = $derived(summary.state === "completed");
-  let restricted = $derived(
-    Math.min(summary.errors, Math.max(0, summary.restrictedSystemIssues ?? 0)),
-  );
-  let otherIssues = $derived(Math.max(0, summary.errors - restricted));
+  let restricted = $derived(issueSplit(summary).restricted);
+  let otherIssues = $derived(issueSplit(summary).other);
   let partial = $derived(!!coverageLabel(summary));
   let status = $derived(
     running

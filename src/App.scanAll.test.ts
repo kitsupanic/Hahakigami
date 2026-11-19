@@ -379,14 +379,20 @@ it("does not start a disk again while a single start of it is in flight", async 
   startGate = new Promise<void>((resolve) => (release = resolve));
   const single = app().start(hd);
   await settle();
-  expect(app().can.scanAllDisks).toBe(false);
-  expect(headerButton().disabled).toBe(true);
-  expect(welcomeButton().disabled).toBe(true);
-  await act(() => app().scanAllDisks());
-  expect(calls("start_scan")).toHaveLength(1);
-  release();
-  await act(async () => void (await single));
+  // Only that disk is blocked: the other disks can still be scanned.
+  expect(app().can.scanAllDisks).toBe(true);
+  expect(headerButton().disabled).toBe(false);
+  let all!: Promise<void>;
+  await act(() => {
+    all = app().scanAllDisks();
+  });
   await settle();
+  expect(startedFor("hd")).toHaveLength(1);
+  expect(startedFor("backup")).toHaveLength(1);
+  release();
+  await act(async () => void (await Promise.all([single, all])));
+  await settle();
+  expect(startedFor("hd")).toHaveLength(1);
   expect(app().can.scanAllDisks).toBe(true);
 });
 
@@ -427,4 +433,16 @@ it("lets the disk on screen win over a different selected disk", async () => {
   expect(app().summary?.scanId).toBe(old);
   await report(old, "cancelled");
   expect(app().summary?.scanId).toBe(idOf("backup"));
+});
+
+it("looks the disks up again when Scan all is refused because another volume sits at a disk's path", async () => {
+  refused.set("usb", "The chosen folder changed. Choose it again before scanning.");
+  await click(welcomeButton());
+  discovered = [hd, backup, { ...usb, id: "usb-swapped" }];
+  const before = calls("discover_targets").length;
+  // The mount table lists the same paths, so only the refusal can trigger the lookup.
+  await act(() => window.dispatchEvent(new Event("focus")));
+  await settle();
+  expect(calls("discover_targets")).toHaveLength(before + 1);
+  expect(app().targets.map((item) => item.id)).toContain("usb-swapped");
 });

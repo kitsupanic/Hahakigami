@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { SvelteMap } from "svelte/reactivity";
 import type { ScanSummary, Target } from "./types";
 
 /** The slot every folder scan shares; a disk's slot is keyed by its path. */
@@ -110,9 +111,10 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
   // Starts that have not heard back from the backend yet. Several can overlap, one per slot.
   let starts = $state.raw(0);
   // Scans run side by side, one per slot: a scan can only start if its own slot is not scanning.
+  // A start still waiting on the backend (a sleeping disk) holds only its own slot.
   function slotBusy(key: string) {
     const slot = slots[key];
-    return !!slot && slotScanning(slot);
+    return unfiled.has(key) || (!!slot && slotScanning(slot));
   }
   // Slots scanned since every scan last ended: the batch the Disks header reports on. A restarted slot
   // keeps its entry, so a restart counts once. It resets when nothing runs or starts.
@@ -142,7 +144,7 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
   const restarting = new Map<string, () => void>();
   // Disk starts that have no id yet, by slot key. An eject then can only mark the start, which
   // discards its scan once the id arrives instead of filing a slot for a disk that is gone.
-  const unfiled = new Map<string, { ejected: boolean }>();
+  const unfiled = new SvelteMap<string, { ejected: boolean }>();
 
   async function run(
     place: Target,
@@ -288,6 +290,8 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
               }
               // Ejected while waiting: nothing to scan.
               if (!disks().some((item) => item.id === disk.id)) return;
+              // Already starting on its own: nothing to restart.
+              if (unfiled.has(key)) return;
               if (slotBusy(key)) return report("The scan did not stop in time.");
               await run(disk, { takeView: options.takeView(key), batch: true });
             } catch (e) {

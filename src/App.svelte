@@ -319,7 +319,6 @@
   const previewDialog = $derived(app.previewDialog);
   const previewNode = $derived(app.previewNode);
   const previewVisible = $derived(app.previewVisible);
-  const revision = $derived(app.revision);
   const inspected = $derived(app.inspected);
   const detailsSubject = $derived(
     selection.length > 1 ? null : (selection[0] ?? inspected),
