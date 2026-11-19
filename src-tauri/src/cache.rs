@@ -248,7 +248,9 @@ impl Cache {
                 if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                     continue;
                 }
-                fs::remove_file(&path).map_err(|e| e.to_string())?;
+                // One undeletable leftover (EPERM, `uchg`) must not fail every later
+                // pass; the next one retries it, as the prune loop in `save` does.
+                let _ = fs::remove_file(&path);
             }
         }
         sync_dir(&self.root).map_err(|e| e.to_string())
@@ -1000,8 +1002,11 @@ mod tests {
         flag("uchg");
         // Same root: the new entry replaces the old one, whose removal fails.
         let saved = c.save(&s, &metadata(), &token);
+        // The undeletable leftover is still there: the next pass must not fail on it.
+        let again = c.save(&s, &metadata(), &token);
         flag("nouchg");
         saved.unwrap();
+        again.unwrap();
         assert_eq!(c.store.list().unwrap().len(), 1);
     }
 }

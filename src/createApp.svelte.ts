@@ -141,12 +141,10 @@ export default function createApp() {
   let queueOpen = $state(false);
   // Home shows the welcome page without discarding the loaded or running scan.
   let homeOpen = $state(false);
-  let cleanupOutcome = $state("");
   let cleanupReport = $state.raw<CleanupReport | null>(null);
   let cleanupReportId = 0;
   function dismissCleanupReport() {
     cleanupReport = null;
-    cleanupOutcome = "";
   }
   function updateReportQueue(
     id: number | undefined,
@@ -186,7 +184,7 @@ export default function createApp() {
   const queueBusy = $derived(cleanupQueue.busy);
   const refreshQueue = cleanupQueue.refresh;
   function showQueue(value: boolean) {
-    if (busy || trash || queueBusy || choosingFolder) return;
+    if (value && (busy || trash || queueBusy || choosingFolder)) return;
     quickLook.dismiss();
     queueOpen = value;
     if (value) {
@@ -246,7 +244,9 @@ export default function createApp() {
     const scanId = summary.scanId;
     try {
       const review = await cleanupQueue.prepare(scanId);
-      if (summary?.scanId === scanId) setTrash({ ...review, scanId, queued: true });
+      // The user may have left the queue page while the review loaded.
+      if (queueOpen && summary?.scanId === scanId)
+        setTrash({ ...review, scanId, queued: true });
     } catch (e) {
       fail(e);
     } finally {
@@ -1094,7 +1094,10 @@ export default function createApp() {
         summary?.scanId === scanId &&
         revision === version &&
         selectionIdentity === ids;
-      const nodeIds = selection.map(({ id }) => id);
+      // A running scan ticks every second: refresh only the newest picks, the rest at the final state.
+      const nodeIds = (
+        summary.state === "running" ? selection.slice(-20) : selection
+      ).map(({ id }) => id);
       queryRefresh(() =>
         Promise.all(
           nodeIds.map((id) =>
@@ -1405,6 +1408,17 @@ export default function createApp() {
     if (current) rememberView(current);
     void restoreView(snapshot, null);
   }
+  function selectRange(nodes: NodeView[]) {
+    nodes = nodes.filter((n) => n.kind !== "aggregate");
+    if (!nodes.length) return;
+    if (
+      nodes.length > 1 ||
+      selection.length !== 1 ||
+      selection[0].id !== nodes[0].id
+    )
+      quickLook.dismiss();
+    setSelection(nodes);
+  }
   function select(n: NodeView, multi = false) {
     if (n.kind === "aggregate") return;
     if (multi || selection.length !== 1 || selection[0].id !== n.id)
@@ -1452,13 +1466,16 @@ export default function createApp() {
     const rescanTarget = liveTarget;
     setBusy(true);
     try {
-      const result = await invoke<unknown>(
+      const result = await invoke<{ staleScanIds?: string[] } | null>(
         review.queued ? "commit_cleanup_queue" : "commit_trash",
         {
           scanId,
           token: review.token,
         },
       );
+      // Other scans whose root overlaps a moved item; the backend already invalidated them.
+      const stale = result?.staleScanIds;
+      if (Array.isArray(stale)) for (const id of stale) scans.drop(id);
       const report = cleanupResult(
         ++cleanupReportId,
         review.queued ? "queue" : "selection",
@@ -1466,9 +1483,6 @@ export default function createApp() {
         result,
       );
       cleanupReport = report;
-      cleanupOutcome = report.movedCount
-        ? `Moved ${report.movedCount} ${report.movedCount === 1 ? "item" : "items"} to Trash.`
-        : "";
       setTrash(null);
       await refreshQueue();
       // An unconfirmed reply may still have moved files, so it invalidates too.
@@ -1495,7 +1509,6 @@ export default function createApp() {
         ),
         message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
       };
-      cleanupOutcome = "";
       await refreshQueue();
     } finally {
       setBusy(false);
@@ -1763,9 +1776,6 @@ export default function createApp() {
     finishListScrollRestore,
     changeQuery,
     returnToResults,
-    get cleanupOutcome() {
-      return cleanupOutcome;
-    },
     get cleanupReport() {
       return cleanupReport;
     },
@@ -1800,7 +1810,6 @@ export default function createApp() {
     },
     showQueue,
     refreshQueue,
-    addQueue,
     scanQueue,
     prepareQueue,
     removeQueues: cleanupQueue.remove,
@@ -2065,6 +2074,9 @@ export default function createApp() {
     },
     get open() {
       return open;
+    },
+    get selectRange() {
+      return selectRange;
     },
     get select() {
       return select;

@@ -791,6 +791,35 @@ const statusOf = (id: string) =>
     .find((entry) => entry.querySelector("strong")?.textContent === id)
     ?.getAttribute("data-status");
 
+it("drops the other scans the backend invalidated after a Trash and keeps the rest", async () => {
+  await scanDisk("Macintosh HD");
+  await scanDisk("Backup");
+  await scanFolder(photos);
+  const fallback = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "prepare_cleanup_queue")
+      return { token: "ticket", items: [node] };
+    if (command === "commit_cleanup_queue")
+      return {
+        trashed: 1,
+        failures: [],
+        persistenceWarning: null,
+        outcomes: [{ reviewIndex: 0, status: "trashed" }],
+        invalidated: true,
+        staleScanIds: ["scan-disk-1"],
+      };
+    return fallback(command, args);
+  });
+  await act(() => app().showQueue(true));
+  await settle();
+  await act(() => app().prepareQueue());
+  await settle();
+  await act(() => app().commitTrash());
+  await settle();
+  expect(app().scanSlots["/"]).toBeUndefined();
+  expect(app().scanSlots["/Volumes/Backup"].scanId).toBe("scan-backup-2");
+});
+
 it("shows queue entries from several disks, each with its own status, and reviews only the disk on screen", async () => {
   await scanDisk("Macintosh HD");
   await scanDisk("Backup");

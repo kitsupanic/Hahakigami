@@ -11,7 +11,8 @@ export function compactBytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
 
 /** The reported scan duration, shared by the recorded summary and diagnostics. */
 export function scanTime(ms: number) {
-  const seconds = Math.max(0, ms) / 1000;
+  // Round to tenths first so 59.96 s reads "1m 0s", not "60.0 seconds".
+  const seconds = Math.round(Math.max(0, ms) / 100) / 10;
   if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
   const whole = Math.floor(seconds);
   if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;

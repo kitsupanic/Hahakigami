@@ -28,6 +28,7 @@
     revision,
     onLoadChildren,
     onSelect,
+    onSelectRange,
     onOpen,
     onPreview,
     keyboardBlocked = false,
@@ -51,6 +52,8 @@
     revision?: string;
     onLoadChildren?: (nodeId: number) => Promise<Page>;
     onSelect: (n: NodeView, multi: boolean) => void;
+    /** Replaces the selection with a whole Shift range in one update. */
+    onSelectRange?: (nodes: NodeView[]) => void;
     onOpen: (n: NodeView) => void;
     onPreview?: (n: NodeView) => boolean;
     keyboardBlocked?: boolean;
@@ -339,7 +342,8 @@
         Math.min(anchor, target),
         Math.max(anchor, target) + 1,
       );
-      range.forEach((row, index) => onSelect(row.node, index > 0));
+      if (onSelectRange) onSelectRange(range.map((row) => row.node));
+      else range.forEach((row, index) => onSelect(row.node, index > 0));
     } else if (!event.metaKey && !event.ctrlKey) {
       selectionAnchor = destination.node.id;
       onSelect(destination.node, false);

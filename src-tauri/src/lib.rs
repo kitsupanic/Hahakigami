@@ -1631,9 +1631,13 @@ async fn reveal_node(
     let s = state.scans.find(&scan_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _held = s.hold(Need::Live)?;
-        let snapshot = s.store.read().unwrap();
-        let n = snapshot.node(node_id).ok_or("Unknown node")?;
-        platform::reveal(&n.path()?)
+        // Copied out so the store is not read-locked while Finder opens, which can take seconds.
+        let path = {
+            let snapshot = s.store.read().unwrap();
+            let n = snapshot.node(node_id).ok_or("Unknown node")?;
+            n.path()?
+        };
+        platform::reveal(&path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1673,11 +1677,12 @@ async fn commit_cleanup<R: tauri::Runtime>(
     let s = state.scans.find(&scan_id)?;
     let access_setup = state.access_setup.clone();
     let queue = state.cleanup_queue.clone();
+    let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, o)| o).collect();
     tauri::async_runtime::spawn_blocking(move || {
         let _activity = activity;
         // Restart waits for an in-flight native cleanup.
         let _access = access_setup.lock().unwrap();
-        cleanup::commit(&s, &queue, &token, queued, cleanup::native_trash)
+        cleanup::commit(&s, &queue, &token, queued, &others, cleanup::native_trash)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -3049,8 +3049,10 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
     };
     let (s, token) = reviewed();
     let mut trash = Recording::failing(&[&b], "injected native Trash failure");
-    let result =
-        cleanup::commit(&s, &state.cleanup_queue, &token, false, |i| trash.trash(i)).unwrap();
+    let result = cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| {
+        trash.trash(i)
+    })
+    .unwrap();
     assert_eq!(result.trashed, 1);
     assert_eq!(result.failures, vec!["injected native Trash failure"]);
     // Every item is offered to the Trash in review order.
@@ -3099,8 +3101,10 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
         } else {
             Recording::failing(&all, "all failed")
         };
-        let result =
-            cleanup::commit(&s, &state.cleanup_queue, &token, false, |i| trash.trash(i)).unwrap();
+        let result = cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| {
+            trash.trash(i)
+        })
+        .unwrap();
         assert_eq!(trash.calls.len(), items.len());
         assert_eq!(result.trashed, if succeeds { items.len() } else { 0 });
         assert_eq!(result.failures.len(), items.len() - result.trashed);
@@ -3125,9 +3129,15 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
     // A commit with the wrong token leaves the valid ticket usable.
     let (s, token) = reviewed();
     let mut trash = Recording::ok();
-    assert!(cleanup::commit(&s, &state.cleanup_queue, "wrong", false, |i| trash.trash(i)).is_err());
+    assert!(
+        cleanup::commit(&s, &state.cleanup_queue, "wrong", false, &[], |i| trash
+            .trash(i))
+        .is_err()
+    );
     assert!(trash.calls.is_empty());
-    let result = cleanup::commit(&s, &state.cleanup_queue, &token, false, |i| trash.trash(i));
+    let result = cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| {
+        trash.trash(i)
+    });
     assert_eq!(result.err(), None);
     assert_eq!(trash.calls.len(), items.len());
     // One replaced item fails the whole batch before anything moves.
@@ -3136,7 +3146,9 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
     std::fs::write(&b, b"replacement").unwrap();
     let mut trash = Recording::ok();
     assert_eq!(
-        cleanup::commit(&s, &state.cleanup_queue, &token, false, |i| trash.trash(i)).err(),
+        cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| trash
+            .trash(i))
+        .err(),
         Some("The selected item changed. Rescan before cleanup.".into())
     );
     assert!(trash.calls.is_empty());
@@ -3185,6 +3197,7 @@ fn cleanup_queue_direct_success_partial_failure_and_persistence_warning() {
             &app.state::<AppState>().cleanup_queue,
             &review.token,
             false,
+            &[],
             |i| trash.trash(i),
         )
         .unwrap();
@@ -3237,6 +3250,7 @@ fn cleanup_queue_direct_success_partial_failure_and_persistence_warning() {
             &app.state::<AppState>().cleanup_queue,
             &review.token,
             false,
+            &[],
             |i| trash.trash(i),
         )
         .unwrap();
@@ -4030,7 +4044,7 @@ fn a_cleanup_invalidates_only_the_session_it_cleaned() {
         let b = install_in(&state, Slot::Disk(b_root.clone()), "b", snapshot(b_root));
         let review = prepare_trash(app.state(), "a".into(), ids).await.unwrap();
         let mut trash = Recording::ok();
-        let result = cleanup::commit(&a, &state.cleanup_queue, &review.token, false, |i| {
+        let result = cleanup::commit(&a, &state.cleanup_queue, &review.token, false, &[], |i| {
             trash.trash(i)
         })
         .unwrap();
@@ -4044,6 +4058,59 @@ fn a_cleanup_invalidates_only_the_session_it_cleaned() {
             .unwrap()
             .contains(slots::RESULTS_CHANGED));
         assert!(state.scans.find("b").is_ok());
+    });
+}
+
+#[test]
+fn a_cleanup_also_invalidates_the_completed_scans_that_overlap_a_moved_item() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        // `outer` is scanned before `disk` exists inside it, like `/` beside `/Volumes/Backup`: an ancestor root
+        // that does not hold the item must stay valid.
+        let (_dir, outer) = disk_root();
+        let outer_scan = snapshot(outer.clone());
+        let disk = outer.join("disk");
+        std::fs::create_dir(&disk).unwrap();
+        let folder = disk.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("big"), b"big").unwrap();
+        let (_other_dir, other_root) = disk_root();
+        // Trashing `folder/big` from the disk scan: the folder scan of `folder` holds it, the other root does not.
+        let scan = snapshot(disk.clone());
+        let id = scan
+            .iter_nodes()
+            .find(|n| n.parent.is_some() && scan.path(n.id).unwrap().ends_with("big"))
+            .unwrap()
+            .id;
+        let disk_scan = install_in(&state, Slot::Disk(disk.clone()), "disk", scan);
+        let overlapping = install_in(&state, Slot::Folder, "folder", snapshot(folder.clone()));
+        let unrelated = install_in(
+            &state,
+            Slot::Disk(other_root.clone()),
+            "other",
+            snapshot(other_root),
+        );
+        let ancestor = install_in(&state, Slot::Disk(outer), "outer", outer_scan);
+        let review = prepare_trash(app.state(), "disk".into(), vec![id])
+            .await
+            .unwrap();
+        let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, s)| s).collect();
+        let mut trash = Recording::ok();
+        let result = cleanup::commit(
+            &disk_scan,
+            &state.cleanup_queue,
+            &review.token,
+            false,
+            &others,
+            |i| trash.trash(i),
+        )
+        .unwrap();
+        assert!(result.invalidated);
+        assert_eq!(result.stale_scan_ids, vec!["folder".to_string()]);
+        assert!(!overlapping.is_valid());
+        assert!(unrelated.is_valid());
+        assert!(ancestor.is_valid());
     });
 }
 
@@ -4534,7 +4601,7 @@ fn a_cleanup_of_one_disk_and_the_state_of_its_scan_leave_the_other_disks_entries
         // A real cleanup of disk A (native trash injected) invalidates A's scan, drops A's entry
         // and leaves B's entry ready.
         let mut trash = Recording::ok();
-        let result = cleanup::commit(&a, &state.cleanup_queue, &review.token, true, |i| {
+        let result = cleanup::commit(&a, &state.cleanup_queue, &review.token, true, &[], |i| {
             trash.trash(i)
         })
         .unwrap();
@@ -4626,7 +4693,7 @@ fn a_folder_queued_item_is_ready_through_a_scan_of_its_disk_and_cleaned_through_
         assert_eq!(review.items[0].path, n.item.to_string_lossy());
         // Commit through the disk scan (native trash injected): the entry goes, only that scan is invalidated.
         let mut trash = Recording::ok();
-        let result = cleanup::commit(&disk, &state.cleanup_queue, &review.token, true, |i| {
+        let result = cleanup::commit(&disk, &state.cleanup_queue, &review.token, true, &[], |i| {
             trash.trash(i)
         })
         .unwrap();
@@ -4696,7 +4763,7 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
             .unwrap();
         own.ticket.lock().unwrap().as_mut().unwrap().items[0].volume = other();
         let mut trash = Recording::ok();
-        let result = cleanup::commit(&own, &state.cleanup_queue, &review.token, false, |i| {
+        let result = cleanup::commit(&own, &state.cleanup_queue, &review.token, false, &[], |i| {
             trash.trash(i)
         });
         assert_eq!(

@@ -1,4 +1,4 @@
-export type FullDiskAccessStatus = "on" | "off" | "unknown";
+type FullDiskAccessStatus = "on" | "off" | "unknown";
 export interface FullDiskAccess {
   status: FullDiskAccessStatus;
   scanAnyway: boolean;

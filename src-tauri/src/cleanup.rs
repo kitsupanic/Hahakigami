@@ -32,6 +32,8 @@ pub(crate) struct TrashResult {
     pub(crate) outcomes: Vec<TrashOutcome>,
     /// The scan was invalidated: something moved, so its results no longer match the disk.
     pub(crate) invalidated: bool,
+    /// Ids of the other live scans a moved item overlaps, invalidated too: the frontend drops their slots.
+    pub(crate) stale_scan_ids: Vec<String>,
 }
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -187,12 +189,14 @@ fn issue(
 }
 
 /// Spends the ticket `token` on `s`: verifies every item on disk, moves each one with `trash`, records the
-/// outcomes in the queue and invalidates `s` if anything moved. `queued` says which review the caller expects.
+/// outcomes in the queue and invalidates `s` if anything moved, and with it each of the `others` (the live scans)
+/// that a reviewed item overlaps. `queued` says which review the caller expects.
 pub(crate) fn commit(
     s: &Session,
     queue: &Mutex<Queue>,
     token: &str,
     queued: bool,
+    others: &[Arc<Session>],
     trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<TrashResult, String> {
     let held = s.hold(Need::LiveCompleted)?;
@@ -233,6 +237,8 @@ pub(crate) fn commit(
     if result.trashed > 0 || moved_unconfirmed {
         s.invalidate();
         result.invalidated = true;
+        // Every reviewed path counts, moved or not: over-invalidating is safe, a stale scan is not.
+        result.stale_scan_ids = invalidate_overlapping(s, others, &ticket.items);
     }
     let mut queue = queue.lock().unwrap();
     result.persistence_warning = queue
@@ -240,6 +246,30 @@ pub(crate) fn commit(
         .err()
         .or_else(|| queue.warning.clone());
     Ok(result)
+}
+/// Invalidates the completed, valid scans among `others` that a reviewed item overlaps (the scan holds the item, or
+/// the scan's root lies in a moved folder) and returns their ids. A path prefix alone is not enough: the `/` scan
+/// never walks into `/Volumes/Backup` or another mount, so it holds no item trashed there.
+// shortcut: a scan still running, finishing or with a busy store is skipped, so it keeps results that miss the
+// move until the user rescans it. Upgrade by invalidating it too once a running scan can be told apart.
+fn invalidate_overlapping(
+    s: &Session,
+    others: &[Arc<Session>],
+    items: &[safety::CheckedItem],
+) -> Vec<String> {
+    let mut stale = vec![];
+    for other in others.iter().filter(|o| o.id != s.id) {
+        let Some(snapshot) = other.try_peek_completed() else {
+            continue;
+        };
+        if items.iter().any(|i| {
+            snapshot.root.starts_with(&i.path) || safety::node_at(&snapshot, &i.path).is_some()
+        }) {
+            other.invalidate();
+            stale.push(other.id.clone());
+        }
+    }
+    stale
 }
 type Execution = (TrashResult, Vec<PathBuf>, Vec<(PathBuf, String)>, bool);
 fn execute(
@@ -259,6 +289,7 @@ fn execute(
         persistence_warning: None,
         outcomes: vec![],
         invalidated: false,
+        stale_scan_ids: vec![],
     };
     let mut successful = vec![];
     let mut failures = vec![];
@@ -520,7 +551,7 @@ mod tests {
         let state = AppState::default();
         let (s, token) = reviewed(&state, &root);
         let queue = Mutex::new(Queue::default());
-        let result = commit(&s, &queue, &token, false, |item| {
+        let result = commit(&s, &queue, &token, false, &[], |item| {
             // The folder changed under the move: the reviewed item left its path, another one was trashed.
             std::fs::rename(&item.path, other_root.join("moved")).unwrap();
             confirm_trashed(item, Some(&other))
@@ -545,7 +576,7 @@ mod tests {
         // Parked on the store read, commit is past its queue check: the queue must be free meanwhile.
         let store = s.store.write().unwrap();
         let (free, result) = std::thread::scope(|scope| {
-            let work = scope.spawn(|| commit(&s, &queue, &token, false, |_| Ok(())));
+            let work = scope.spawn(|| commit(&s, &queue, &token, false, &[], |_| Ok(())));
             std::thread::sleep(Duration::from_millis(200));
             let free = queue.try_lock().is_ok();
             drop(store);

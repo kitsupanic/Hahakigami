@@ -171,6 +171,16 @@ impl Session {
         self.check_valid()?;
         self.completed()
     }
+    /// `peek_completed` that never waits: None while the store is busy (a reader parked on a hung disk) or the
+    /// scan is not a valid completed one. For cleanup's look at the other scans, which must not stall on them.
+    pub(crate) fn try_peek_completed(&self) -> Option<RwLockReadGuard<'_, Snapshot>> {
+        if !self.is_valid() {
+            return None;
+        }
+        let snapshot = self.store.try_read().ok()?;
+        (!self.finishing.load(Ordering::Acquire) && snapshot.state == ScanState::Completed)
+            .then_some(snapshot)
+    }
     fn completed(&self) -> Result<RwLockReadGuard<'_, Snapshot>, String> {
         let snapshot = self.store.read().unwrap();
         if self.finishing.load(Ordering::Acquire) || snapshot.state != ScanState::Completed {
