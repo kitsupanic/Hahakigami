@@ -188,7 +188,6 @@ it("counts a scan that has not reported yet as scanning", async () => {
   expect(scans.slots["/"].summary).toBeNull();
   expect(scans.busy(hd)).toBe(true);
   expect(scans.anyRunning).toBe(true);
-  expect(scans.starting).toBe(false);
   emit(idOf("hd"), "running", 7);
   expect(scans.slots["/"].summary?.entries).toBe(7);
 });
@@ -197,10 +196,8 @@ it("rejects with the backend's refusal unless the app deals with it", async () =
   refused.set("hd", "Other scans are holding every file.");
   await expect(scans.start(hd)).rejects.toThrow("holding every");
   expect(scans.slots).toEqual({});
-  expect(scans.starting).toBe(false);
   dealtWith = true;
   await expect(scans.start(hd)).resolves.toBeUndefined();
-  expect(scans.starting).toBe(false);
 });
 
 it("starts nothing when the app's gates say no", async () => {
@@ -208,7 +205,6 @@ it("starts nothing when the app's gates say no", async () => {
   await scans.start(hd);
   expect(started).toHaveLength(0);
   expect(scans.slots).toEqual({});
-  expect(scans.starting).toBe(false);
 });
 
 it("counts starts that wait on the backend, and files a scan that reports before its start returns", async () => {
@@ -217,13 +213,12 @@ it("counts starts that wait on the backend, and files a scan that reports before
   const first = scans.start(hd);
   const second = scans.start(backup);
   await settle();
-  expect(scans.starting).toBe(true);
+  expect(scans.busy(hd)).toBe(true);
   emit(idOf("hd"), "running", 4);
   expect(scans.slots["/"].scanId).toBe(idOf("hd"));
   expect(scans.slots["/"].summary?.entries).toBe(4);
   release();
   await Promise.all([first, second]);
-  expect(scans.starting).toBe(false);
   expect(Object.keys(scans.slots).sort()).toEqual(["/", "/Volumes/Backup"]);
 });
 

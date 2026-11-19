@@ -2,7 +2,8 @@
 use super::*;
 
 pub struct IncrementalSeed {
-    pub snapshot: Snapshot,
+    /// Shared so a caller that keeps the baseline does not deep-copy the tree.
+    pub snapshot: Arc<Snapshot>,
     pub dirty_paths: Vec<PathBuf>,
     /// Listings to reread without invalidating otherwise unchanged descendants.
     pub dirty_directories: Vec<PathBuf>,
@@ -84,7 +85,7 @@ impl Reuse {
             listing: bool,
             direct_listing: bool,
             requested: bool,
-            matched: bool,
+            node: Option<u32>,
         }
         // Keep Path's normalized equality for journal events, but translate all
         // event categories in one lookup per node. Unknown requested paths still
@@ -132,7 +133,7 @@ impl Reuse {
             direct_listing_dirty[index] =
                 node.is_directory && mark.as_ref().is_some_and(|m| m.direct_listing);
             if let Some(mark) = mark {
-                mark.matched = true;
+                mark.node = Some(node.id);
             }
             // Only known hard-link inodes are ever looked up in `touched`.
             if (subtree_dirty[index]
@@ -144,7 +145,68 @@ impl Reuse {
                 touched.insert((node.identity.device, node.identity.inode));
             }
         }
-        let ambiguous_alias_history = marks.values().any(|m| m.requested && !m.matched);
+        let ambiguous_alias_history = marks.values().any(|m| m.requested && m.node.is_none());
+        // An event path whose parent has no node is either a new directory or a cached directory spelled
+        // differently (case-insensitive or Unicode-equivalent names), whose cached listing would hide the
+        // change. C is the first unmatched component below the nearest cached ancestor M. A new directory
+        // has no cached listing and M's is dirty already. A child of M that C matches case-insensitively is
+        // dirtied whole. The loop below spreads either to descendants; such a path also matches no node, so
+        // every cached alias is already dirty and `touched` needs nothing more.
+        let fold = |name: &std::ffi::OsStr| match name.to_str() {
+            Some(name) => name.to_lowercase().into_bytes(),
+            None => name.as_encoded_bytes().to_ascii_lowercase(),
+        };
+        let mut children_by_fold: HashMap<u32, HashMap<Vec<u8>, Vec<u32>>> = HashMap::new();
+        for (path, _) in marks.iter().filter(|(_, m)| m.requested) {
+            let parent_unmatched = path
+                .parent()
+                .and_then(|parent| marks.get(parent))
+                .is_some_and(|m| m.node.is_none());
+            let cached = path
+                .ancestors()
+                .skip(1)
+                .find_map(|a| Some((a, marks.get(a)?.node?)));
+            let Some((ancestor, id)) = cached.filter(|_| parent_unmatched) else {
+                continue;
+            };
+            let widen = [id];
+            let non_ascii: Vec<u32>;
+            let dirty: &[u32] = match path.strip_prefix(ancestor).unwrap().components().next() {
+                Some(std::path::Component::Normal(name)) => {
+                    let index = children_by_fold.entry(id).or_insert_with(|| {
+                        let mut index: HashMap<_, Vec<u32>> = HashMap::new();
+                        for child in seed.snapshot.node(id).map_or(&[][..], |n| n.children()) {
+                            if let Some(child_node) = seed.snapshot.node(*child) {
+                                index
+                                    .entry(fold(child_node.native_name()))
+                                    .or_default()
+                                    .push(*child);
+                            }
+                        }
+                        index
+                    });
+                    match index.get(&fold(name)) {
+                        Some(variants) => variants,
+                        None if name.is_ascii() => &[],
+                        // shortcut: no normalization crate to tell NFC from NFD, so every non-ASCII child
+                        // may be the one spelled differently (both forms of a non-ASCII name stay non-ASCII,
+                        // bar a few singletons such as U+037E); compare normalized names once one is a dependency.
+                        None => {
+                            non_ascii = index
+                                .iter()
+                                .filter(|(folded, _)| !folded.is_ascii())
+                                .flat_map(|(_, children)| children.iter().copied())
+                                .collect();
+                            &non_ascii
+                        }
+                    }
+                }
+                _ => &widen,
+            };
+            for &node in dirty {
+                subtree_dirty[node as usize] = true;
+            }
+        }
         let preparation_marks_payload_capacity_bytes = marks.capacity()
             * std::mem::size_of::<(PathBuf, DirtyMark)>()
             + marks.keys().map(|p| p.capacity()).sum::<usize>();
@@ -246,7 +308,7 @@ impl Reuse {
             estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload and owned path buffers, excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing buffer, not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
             ..Default::default()
         };
-        let seed = Arc::new(seed.snapshot);
+        let seed = seed.snapshot;
         Self {
             priorities,
             listings,
@@ -691,7 +753,7 @@ mod tests {
                 |_| {},
                 IncrementalSeed {
                     dirty_directories,
-                    snapshot: seed,
+                    snapshot: Arc::new(seed),
                     dirty_paths,
                 },
             )
@@ -713,7 +775,7 @@ mod tests {
             .len() as u64
             + 1;
         let reuse = Reuse::new(IncrementalSeed {
-            snapshot,
+            snapshot: Arc::new(snapshot),
             dirty_paths: vec![],
             dirty_directories: vec![dirty.clone()],
         });
@@ -725,6 +787,78 @@ mod tests {
         assert!(!reuse.priorities.contains_key(&f.0.join("clean/deep")));
         assert!(reuse.listings.contains_key(&f.0.join("clean/deep")));
         assert!(!reuse.listings.contains_key(&dirty));
+    }
+    #[test]
+    fn event_path_with_an_unmatched_parent_dirties_only_what_it_may_spell() {
+        let f = Fixture::new();
+        for dir in ["build/out", "build/other", "build/caf\u{e9}"] {
+            fs::create_dir_all(f.0.join(dir)).unwrap();
+            fs::write(f.0.join(dir).join("kept"), b"cached").unwrap();
+        }
+        let snapshot = Arc::new(f.full());
+        // Which of these keep a reusable cached listing: build, out, other, an NFC cafe, clean/deep.
+        let reusable = |paths: &[&str], directories: &[&str]| {
+            let join = |names: &[&str]| names.iter().map(|n| f.0.join(n)).collect();
+            let reuse = Reuse::new(IncrementalSeed {
+                snapshot: snapshot.clone(),
+                dirty_paths: join(paths),
+                dirty_directories: join(directories),
+            });
+            [
+                "build",
+                "build/out",
+                "build/other",
+                "build/caf\u{e9}",
+                "clean/deep",
+            ]
+            .map(|d| reuse.listings.contains_key(&f.0.join(d)))
+        };
+        // Exact spelling, a new file, and a new directory with a file dirty only the listings above them.
+        assert_eq!(
+            reusable(&["build/out/kept"], &[]),
+            [false, false, true, true, true]
+        );
+        assert_eq!(
+            reusable(&["build/new.bin"], &[]),
+            [false, true, true, true, true]
+        );
+        assert_eq!(
+            reusable(&["build/new/sub/a"], &[]),
+            [false, true, true, true, true]
+        );
+        // `OUT` has no node but matches `out` case-insensitively: only that child is dirtied whole.
+        assert_eq!(
+            reusable(&["build/OUT/new.bin"], &[]),
+            [false, false, true, true, true]
+        );
+        assert_eq!(
+            reusable(&[], &["build/OUT/deep/er"]),
+            [false, false, true, true, true]
+        );
+        assert_eq!(
+            reusable(&["build/CAF\u{c9}/new.bin"], &[]),
+            [false, true, true, false, true]
+        );
+        assert_eq!(
+            reusable(&["Build/out/new.bin"], &[]),
+            [false, false, false, false, true]
+        );
+        // A non-ASCII name no child matches may be an NFD spelling of a non-ASCII child: only those are dirtied.
+        assert_eq!(
+            reusable(&["build/cafe\u{301}/new.bin"], &[]),
+            [false, true, true, false, true]
+        );
+        assert_eq!(
+            reusable(&["build/\u{65b0}/a"], &[]),
+            [false, true, true, false, true]
+        );
+        // A new directory is walked fresh, never taken from a cached listing.
+        fs::create_dir_all(f.0.join("build/new/sub")).unwrap();
+        fs::write(f.0.join("build/new/sub/a"), b"fresh").unwrap();
+        let (actual, stats) = f.incremental((*snapshot).clone(), vec![f.0.join("build/new/sub/a")]);
+        assert_eq!(stats.fallback_reason, None);
+        assert!(stats.reused_entries > 0);
+        compare(&actual, &f.full());
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -774,7 +908,7 @@ mod tests {
             (vec![f.0.join("unknown")], vec![]),
         ] {
             let reuse = Reuse::new(IncrementalSeed {
-                snapshot: f.full(),
+                snapshot: Arc::new(f.full()),
                 dirty_paths: paths,
                 dirty_directories: directories,
             });
@@ -819,7 +953,7 @@ mod tests {
                 store.clone(),
                 |_| {},
                 IncrementalSeed {
-                    snapshot,
+                    snapshot: Arc::new(snapshot),
                     dirty_paths,
                     dirty_directories: vec![],
                 },
@@ -1231,7 +1365,7 @@ mod tests {
                 .map(|n| n.path.clone())
                 .collect();
             let reuse = Reuse::new(IncrementalSeed {
-                snapshot: snapshot.clone(),
+                snapshot: Arc::new(snapshot.clone()),
                 dirty_paths: paths.into_iter().collect(),
                 dirty_directories: directories.into_iter().collect(),
             });
@@ -1316,7 +1450,7 @@ mod tests {
             })
             .collect();
         let mut reuse = Reuse::new(IncrementalSeed {
-            snapshot: seed.clone(),
+            snapshot: Arc::new(seed.clone()),
             dirty_paths: vec![],
             dirty_directories: vec![],
         });
@@ -1409,7 +1543,7 @@ mod tests {
                 .filter(|n| n.path.parent() == Some(f.0.join("clean/deep").as_path()))
                 .count() as u64;
             let mut staged = Reuse::new(IncrementalSeed {
-                snapshot: seed.clone(),
+                snapshot: Arc::new(seed.clone()),
                 dirty_paths: vec![],
                 dirty_directories: vec![],
             });
@@ -1588,7 +1722,7 @@ mod tests {
             },
             IncrementalSeed {
                 dirty_directories: vec![],
-                snapshot: seed,
+                snapshot: Arc::new(seed),
                 dirty_paths: vec![f.0.join("dirty/link"), f.0.join("clean/deep/kept")],
             },
         )
@@ -1628,7 +1762,7 @@ mod tests {
         let original_source_identity = platform_identity(&source).unwrap();
         let seed_for_reuse = seed.clone();
         let planned = Reuse::new(IncrementalSeed {
-            snapshot: seed_for_reuse,
+            snapshot: Arc::new(seed_for_reuse),
             dirty_paths: vec![destination.clone()],
             dirty_directories: vec![],
         });
@@ -1659,7 +1793,7 @@ mod tests {
                 }
             },
             IncrementalSeed {
-                snapshot: seed,
+                snapshot: Arc::new(seed),
                 dirty_paths: vec![destination],
                 dirty_directories: vec![],
             },
@@ -1771,7 +1905,7 @@ mod tests {
                 }
             },
             IncrementalSeed {
-                snapshot: seed,
+                snapshot: Arc::new(seed),
                 dirty_paths: vec![new],
                 dirty_directories: vec![],
             },
@@ -1835,7 +1969,7 @@ mod tests {
             },
             IncrementalSeed {
                 dirty_directories: vec![],
-                snapshot: seed,
+                snapshot: Arc::new(seed),
                 dirty_paths: vec![],
             },
         )
@@ -1874,7 +2008,7 @@ mod tests {
             |_| {},
             IncrementalSeed {
                 dirty_directories: vec![],
-                snapshot: seed,
+                snapshot: Arc::new(seed),
                 dirty_paths: vec![],
             },
         )
@@ -1990,7 +2124,7 @@ mod tests {
         });
         assert!(valid_seed(&seed));
         let mut reuse = Reuse::new(IncrementalSeed {
-            snapshot: seed.clone(),
+            snapshot: Arc::new(seed.clone()),
             dirty_paths: vec![],
             dirty_directories: vec![],
         });

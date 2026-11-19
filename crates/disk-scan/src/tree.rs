@@ -711,18 +711,6 @@ impl Snapshot {
     pub fn has_path_overrides(&self) -> bool {
         !self.tree.paths.is_empty()
     }
-    /// Restore the serialized header root without rewriting any recorded native path.
-    /// Validation of the header against node zero remains the caller's responsibility.
-    pub fn restore_legacy_root(&mut self, root: PathBuf) -> Result<(), String> {
-        if self.root.as_os_str() != root.as_os_str() && self.node_count() > 0 {
-            let recorded_root = self.path(0)?;
-            if lookup(&self.tree.paths, 0).is_none() {
-                self.tree.paths.insert(0, (0, recorded_root));
-            }
-        }
-        self.root = root;
-        Ok(())
-    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_node(&mut self, id: u32, n: Node) -> Result<(), String> {
         if id as usize >= self.node_count() {
@@ -762,176 +750,6 @@ impl Snapshot {
         self.tree.labels.push((id, n.name));
         self.tree.labels.sort_by_key(|e| e.0);
         Ok(())
-    }
-}
-impl serde::Serialize for Snapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{SerializeSeq, SerializeStruct};
-        struct Nodes<'a>(&'a Snapshot);
-        impl serde::Serialize for Nodes<'_> {
-            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                let mut seq = s.serialize_seq(Some(self.0.node_count()))?;
-                for id in 0..self.0.node_count() {
-                    seq.serialize_element(
-                        &self
-                            .0
-                            .legacy_node(id as u32)
-                            .map_err(serde::ser::Error::custom)?,
-                    )?;
-                }
-                seq.end()
-            }
-        }
-        let mut s = serializer.serialize_struct("Snapshot", 11)?;
-        s.serialize_field("root", &self.root)?;
-        s.serialize_field("nodes", &Nodes(self))?;
-        s.serialize_field("stats", &self.stats)?;
-        s.serialize_field("state", &self.state)?;
-        s.serialize_field("errors", &self.errors)?;
-        s.serialize_field("exclusions", &self.exclusions)?;
-        s.serialize_field("worker_stats", &self.worker_stats)?;
-        s.serialize_field("finalization_us", &self.finalization_us)?;
-        s.serialize_field("descriptor_limit", &self.descriptor_limit)?;
-        s.serialize_field("descriptor_peak", &self.descriptor_peak)?;
-        s.serialize_field("accounting", &self.accounting)?;
-        s.end()
-    }
-}
-impl<'de> serde::Deserialize<'de> for Snapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
-        struct Nodes<'a>(&'a mut Snapshot);
-        impl<'de> DeserializeSeed<'de> for Nodes<'_> {
-            type Value = ();
-            fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
-                struct List<'a>(&'a mut Snapshot);
-                impl<'de> Visitor<'de> for List<'_> {
-                    type Value = ();
-                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                        f.write_str("legacy scan node sequence")
-                    }
-                    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-                        let mut builder = LegacyTreeBuilder::new(self.0.root.clone());
-                        while let Some(n) = seq.next_element::<Node>()? {
-                            builder.append(n).map_err(Error::custom)?;
-                        }
-                        let decoded = builder.finish();
-                        self.0.tree = decoded.tree;
-                        self.0.root = decoded.root;
-                        Ok(())
-                    }
-                }
-                d.deserialize_seq(List(self.0))
-            }
-        }
-        struct Envelope;
-        impl<'de> Visitor<'de> for Envelope {
-            type Value = Snapshot;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("scan snapshot")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Snapshot, A::Error> {
-                let root = seq
-                    .next_element::<PathBuf>()?
-                    .ok_or_else(|| Error::invalid_length(0, &self))?;
-                let mut s = Snapshot::empty(root.clone());
-                seq.next_element_seed(Nodes(&mut s))?
-                    .ok_or_else(|| Error::invalid_length(1, &self))?;
-                s.stats = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(2, &self))?;
-                s.state = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(3, &self))?;
-                s.errors = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(4, &self))?;
-                s.exclusions = seq.next_element()?.unwrap_or_default();
-                s.worker_stats = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(6, &self))?;
-                s.finalization_us = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(7, &self))?;
-                s.descriptor_limit = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(8, &self))?;
-                s.descriptor_peak = seq
-                    .next_element()?
-                    .ok_or_else(|| Error::invalid_length(9, &self))?;
-                s.accounting = seq.next_element()?.unwrap_or_default();
-                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                    return Err(Error::invalid_length(11, &self));
-                }
-                s.restore_legacy_root(root).map_err(Error::custom)?;
-                Ok(s)
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Snapshot, A::Error> {
-                let mut s = Snapshot::empty(PathBuf::new());
-                let mut seen = std::collections::HashSet::new();
-                let mut root = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(Error::custom("duplicate snapshot field"));
-                    }
-                    match key.as_str() {
-                        "root" => {
-                            let value: PathBuf = map.next_value()?;
-                            if s.node_count() == 0 {
-                                s.root = value.clone();
-                            }
-                            root = Some(value);
-                        }
-                        "nodes" => map.next_value_seed(Nodes(&mut s))?,
-                        "accounting" => s.accounting = map.next_value()?,
-                        "stats" => s.stats = map.next_value()?,
-                        "state" => s.state = map.next_value()?,
-                        "errors" => s.errors = map.next_value()?,
-                        "exclusions" => s.exclusions = map.next_value()?,
-                        "worker_stats" => s.worker_stats = map.next_value()?,
-                        "finalization_us" => s.finalization_us = map.next_value()?,
-                        "descriptor_limit" => s.descriptor_limit = map.next_value()?,
-                        "descriptor_peak" => s.descriptor_peak = map.next_value()?,
-                        _ => {
-                            let _: serde::de::IgnoredAny = map.next_value()?;
-                        }
-                    }
-                }
-                for field in [
-                    "root",
-                    "nodes",
-                    "stats",
-                    "state",
-                    "errors",
-                    "worker_stats",
-                    "finalization_us",
-                ] {
-                    if !seen.contains(field) {
-                        return Err(Error::custom(format!("missing field {field}")));
-                    }
-                }
-                let root = root.ok_or_else(|| Error::custom("missing root"))?;
-                s.restore_legacy_root(root).map_err(Error::custom)?;
-                Ok(s)
-            }
-        }
-        d.deserialize_struct(
-            "Snapshot",
-            &[
-                "root",
-                "nodes",
-                "stats",
-                "state",
-                "errors",
-                "exclusions",
-                "worker_stats",
-                "finalization_us",
-                "descriptor_limit",
-                "descriptor_peak",
-                "accounting",
-            ],
-            Envelope,
-        )
     }
 }
 #[cfg(all(test, unix))]
@@ -1240,17 +1058,14 @@ mod tests {
             }
             for snapshot in [direct, builder.finish()] {
                 assert!(snapshot.has_path_overrides());
-                let wire = serde_json::to_value(&snapshot).unwrap();
-                assert_eq!(wire["nodes"], serde_json::to_value(&original).unwrap());
-                let decoded: Snapshot = serde_json::from_value(wire).unwrap();
                 for node in &original {
                     assert_eq!(
-                        decoded.path(node.id).unwrap().as_os_str(),
+                        snapshot.path(node.id).unwrap().as_os_str(),
                         node.path.as_os_str()
                     );
-                    assert_eq!(decoded.legacy_node(node.id).unwrap().name, node.name);
+                    assert_eq!(snapshot.legacy_node(node.id).unwrap().name, node.name);
                     assert_eq!(
-                        decoded.path_cursor().path(node.id).unwrap().as_os_str(),
+                        snapshot.path_cursor().path(node.id).unwrap().as_os_str(),
                         node.path.as_os_str()
                     );
                 }
@@ -1327,9 +1142,7 @@ mod tests {
         }
         assert_eq!(builder.node_count(), oracle.len());
         assert!(builder.scratch_capacity_bytes() > 0);
-        let mut packed = builder.finish();
-        packed.restore_legacy_root("/scope".into()).unwrap();
-        uncached.restore_legacy_root("/scope".into()).unwrap();
+        let packed = builder.finish();
         assert_eq!(
             crate::storage_stats(&packed).retained_capacity_bytes,
             crate::storage_stats(&uncached).retained_capacity_bytes
@@ -1675,11 +1488,11 @@ mod tests {
             for n in invalid {
                 let mut direct = base.clone();
                 let mut legacy = base.clone();
-                let before = serde_json::to_value(&direct).unwrap();
+                let before = format!("{direct:?}");
                 let result = direct.append_scanned_node(&scanned(&n));
                 assert!(result.is_err(), "accepted {n:?}");
                 assert_eq!(result, legacy.append_legacy_node(n));
-                assert_eq!(serde_json::to_value(&direct).unwrap(), before);
+                assert_eq!(format!("{direct:?}"), before);
             }
         }
 
@@ -1841,246 +1654,6 @@ mod tests {
         s.tree.records[1].name_len = 0;
         s.tree.records[1].parent = 1;
         assert!(s.path(1).is_err());
-    }
-    #[test]
-    fn serde_streams_legacy_nodes_in_both_envelope_orders() {
-        let mut s = Snapshot::empty("/root".into());
-        s.append_legacy_node(dto(0, None, "/root".into(), true))
-            .unwrap();
-        s.append_legacy_node(dto(1, Some(0), "/root/./child".into(), false))
-            .unwrap();
-        s.set_children(0, &[1]).unwrap();
-        let encoded = serde_json::to_value(&s).unwrap();
-        let decoded: Snapshot = serde_json::from_value(encoded.clone()).unwrap();
-        for id in 0..2 {
-            assert_eq!(
-                decoded.path(id).unwrap().as_os_str(),
-                s.path(id).unwrap().as_os_str()
-            );
-            assert_eq!(decoded.children(id).unwrap(), s.children(id).unwrap());
-        }
-        let mut object = encoded.as_object().unwrap().clone();
-        let nodes = object.remove("nodes").unwrap();
-        let root = object.remove("root").unwrap();
-        let mut fields = vec![format!("\"nodes\":{}", nodes), format!("\"root\":{}", root)];
-        for (key, value) in object {
-            fields.push(format!(
-                "{}:{}",
-                serde_json::to_string(&key).unwrap(),
-                value
-            ));
-        }
-        let reversed: Snapshot =
-            serde_json::from_str(&format!("{{{}}}", fields.join(","))).unwrap();
-        assert_eq!(
-            reversed.path(1).unwrap().as_os_str(),
-            s.path(1).unwrap().as_os_str()
-        );
-        let mut invalid = encoded;
-        invalid["nodes"][1]["is_directory"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<Snapshot>(invalid).is_err());
-    }
-    #[test]
-    fn positional_serde_and_legacy_root_spellings_remain_lossless() {
-        let fields = [
-            "root",
-            "nodes",
-            "stats",
-            "state",
-            "errors",
-            "exclusions",
-            "worker_stats",
-            "finalization_us",
-            "descriptor_limit",
-            "descriptor_peak",
-        ];
-        for (header, recorded) in [
-            ("/scope", "/scope//"),
-            ("/scope//", "/scope"),
-            ("/scope/./", "/scope//"),
-        ] {
-            let mut s = Snapshot::empty(recorded.into());
-            s.append_legacy_node(dto(0, None, recorded.into(), true))
-                .unwrap();
-            s.append_legacy_node(dto(1, Some(0), "/scope/child".into(), false))
-                .unwrap();
-            s.set_children(0, &[1]).unwrap();
-            s.restore_legacy_root(header.into()).unwrap();
-            assert_eq!(s.path(0).unwrap().as_os_str(), OsStr::new(recorded));
-            assert_eq!(s.path(1).unwrap().as_os_str(), OsStr::new("/scope/child"));
-            let wire = serde_json::to_value(&s).unwrap();
-            let positional =
-                serde_json::Value::Array(fields.iter().map(|field| wire[*field].clone()).collect());
-            for decoded in [
-                serde_json::from_value::<Snapshot>(wire).unwrap(),
-                serde_json::from_value::<Snapshot>(positional).unwrap(),
-            ] {
-                assert_eq!(decoded.root.as_os_str(), OsStr::new(header));
-                assert_eq!(decoded.path(0).unwrap().as_os_str(), OsStr::new(recorded));
-                assert_eq!(
-                    decoded.path(1).unwrap().as_os_str(),
-                    OsStr::new("/scope/child")
-                );
-                assert_eq!(decoded.children(0).unwrap(), &[1]);
-            }
-        }
-    }
-    #[test]
-    fn serializer_declared_field_count_matches_emitted_fields() {
-        use serde::ser::{Impossible, SerializeStruct, Serializer};
-        #[derive(Debug)]
-        struct CountError;
-        impl std::fmt::Display for CountError {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("unsupported serialization or incorrect declared field count")
-            }
-        }
-        impl std::error::Error for CountError {}
-        impl serde::ser::Error for CountError {
-            fn custom<T: std::fmt::Display>(_: T) -> Self {
-                Self
-            }
-        }
-        struct Counter;
-        struct Fields {
-            declared: usize,
-            emitted: usize,
-        }
-        impl SerializeStruct for Fields {
-            type Ok = usize;
-            type Error = CountError;
-            fn serialize_field<T: serde::Serialize + ?Sized>(
-                &mut self,
-                _: &'static str,
-                _: &T,
-            ) -> Result<(), CountError> {
-                self.emitted += 1;
-                Ok(())
-            }
-            fn end(self) -> Result<usize, CountError> {
-                if self.emitted == self.declared {
-                    Ok(self.emitted)
-                } else {
-                    Err(CountError)
-                }
-            }
-        }
-        macro_rules! reject_scalars {($( $method:ident($value:ident:$ty:ty) ),* $(,)?)=>{$(fn $method(self,_:$ty)->Result<usize,CountError> {Err(CountError)})*};}
-        // The serializer deliberately does not inspect field values: its contract is
-        // format-independent and catches incorrect struct cardinality directly.
-        impl Serializer for Counter {
-            type Ok = usize;
-            type Error = CountError;
-            type SerializeSeq = Impossible<usize, CountError>;
-            type SerializeTuple = Impossible<usize, CountError>;
-            type SerializeTupleStruct = Impossible<usize, CountError>;
-            type SerializeTupleVariant = Impossible<usize, CountError>;
-            type SerializeMap = Impossible<usize, CountError>;
-            type SerializeStruct = Fields;
-            type SerializeStructVariant = Impossible<usize, CountError>;
-            reject_scalars!(
-                serialize_bool(v: bool),
-                serialize_i8(v: i8),
-                serialize_i16(v: i16),
-                serialize_i32(v: i32),
-                serialize_i64(v: i64),
-                serialize_u8(v: u8),
-                serialize_u16(v: u16),
-                serialize_u32(v: u32),
-                serialize_u64(v: u64),
-                serialize_f32(v: f32),
-                serialize_f64(v: f64),
-                serialize_char(v: char),
-                serialize_str(v: &str),
-                serialize_bytes(v: &[u8])
-            );
-            fn serialize_none(self) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_some<T: serde::Serialize + ?Sized>(
-                self,
-                _: &T,
-            ) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_unit(self) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_unit_struct(self, _: &'static str) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_unit_variant(
-                self,
-                _: &'static str,
-                _: u32,
-                _: &'static str,
-            ) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_newtype_struct<T: serde::Serialize + ?Sized>(
-                self,
-                _: &'static str,
-                _: &T,
-            ) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_newtype_variant<T: serde::Serialize + ?Sized>(
-                self,
-                _: &'static str,
-                _: u32,
-                _: &'static str,
-                _: &T,
-            ) -> Result<usize, CountError> {
-                Err(CountError)
-            }
-            fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq, CountError> {
-                Err(CountError)
-            }
-            fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple, CountError> {
-                Err(CountError)
-            }
-            fn serialize_tuple_struct(
-                self,
-                _: &'static str,
-                _: usize,
-            ) -> Result<Self::SerializeTupleStruct, CountError> {
-                Err(CountError)
-            }
-            fn serialize_tuple_variant(
-                self,
-                _: &'static str,
-                _: u32,
-                _: &'static str,
-                _: usize,
-            ) -> Result<Self::SerializeTupleVariant, CountError> {
-                Err(CountError)
-            }
-            fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, CountError> {
-                Err(CountError)
-            }
-            fn serialize_struct(
-                self,
-                name: &'static str,
-                len: usize,
-            ) -> Result<Fields, CountError> {
-                assert_eq!(name, "Snapshot");
-                Ok(Fields {
-                    declared: len,
-                    emitted: 0,
-                })
-            }
-            fn serialize_struct_variant(
-                self,
-                _: &'static str,
-                _: u32,
-                _: &'static str,
-                _: usize,
-            ) -> Result<Self::SerializeStructVariant, CountError> {
-                Err(CountError)
-            }
-        }
-        let s = Snapshot::empty("/root".into());
-        assert_eq!(serde::Serialize::serialize(&s, Counter).unwrap(), 11);
     }
     #[test]
     fn sparse_historical_spelling_and_label_are_preserved() {

@@ -742,7 +742,7 @@ mod native {
         root: &OwnedFd,
         cancel: &AtomicBool,
         before: impl FnOnce(),
-        before_file: impl FnMut(u32),
+        before_file: impl FnMut(u32) + Send,
     ) -> Validation {
         validate_core(
             s,
@@ -1142,7 +1142,7 @@ mod native {
         root: &OwnedFd,
         cancel: &AtomicBool,
         before: impl FnOnce(),
-        mut before_file: impl FnMut(u32),
+        mut before_file: impl FnMut(u32) + Send,
         strategy: ValidationStrategy,
     ) -> Validation {
         let bulk = strategy.bulk;
@@ -1231,11 +1231,25 @@ mod native {
         };
         let mut scheduler_bytes = 0;
         if workers == 1 {
-            // Runs on the calling scan thread, which may not have the policies yet.
-            crate::diagnostics::apply_qos(ctx.strategy.qos);
-            crate::diagnostics::disable_dataless_materialization();
-            let mut worker = MemberWorker::new(cache_limit);
-            validate_members(&ctx, claims, &mut statuses, &mut before_file, &mut worker);
+            // Thread-scoped I/O policies must not stick to the caller (a reused pool thread).
+            let worker = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        crate::diagnostics::apply_qos(ctx.strategy.qos);
+                        crate::diagnostics::disable_dataless_materialization();
+                        let mut worker = MemberWorker::new(cache_limit);
+                        validate_members(
+                            &ctx,
+                            claims,
+                            &mut statuses,
+                            &mut before_file,
+                            &mut worker,
+                        );
+                        worker
+                    })
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            });
             merge(worker.info, worker.peak);
         } else {
             // A task is an entire contiguous parent range. No split can turn a

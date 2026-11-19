@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import type { CleanupReport } from "./cleanupTypes";
-  import { compactBytes } from "./uiFormat";
+  import { compactBytes, countLabel } from "./uiFormat";
 
   let {
     report,
@@ -21,7 +21,7 @@
     onRetry: () => void;
     onDismiss: () => void;
   } = $props();
-  const itemCount = (count: number) => `${count} ${count === 1 ? "item" : "items"}`;
+  const itemCount = (count: number) => countLabel(count, "item");
   const title = $derived(
     report.state === "unconfirmed"
       ? "Cleanup result unconfirmed"

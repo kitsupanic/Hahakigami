@@ -674,6 +674,33 @@ it("does not let a stalled rescan take the view after the user selected another 
   expect(app().summary?.scanId).toBe("scan-backup-1");
 });
 
+it("shows the new scan when a rescan's start lands after the user reopened the old scan of that disk", async () => {
+  await scanDisk("Macintosh HD");
+  await scanDisk("Backup");
+  let release!: () => void;
+  startGate = new Promise<void>((resolve) => (release = resolve));
+  const stalled = app().start(disk);
+  await settle();
+  // The backend already replaced the old scan; the sidebar still opens it.
+  await click(diskRow("Macintosh HD"));
+  expect(app().summary?.scanId).toBe("scan-disk-1");
+  release();
+  await act(async () => void (await stalled));
+  await settle();
+  expect(app().scanSlots["/"].scanId).toBe("scan-disk-3");
+  expect(app().summary?.scanId).toBe("scan-disk-3");
+});
+
+it("labels the welcome page's Scan button while that disk's start is unanswered", async () => {
+  startGate = new Promise<void>(() => {});
+  await click(diskRow("Macintosh HD"));
+  await click(scanButton());
+  expect(scanButton().getAttribute("aria-busy")).toBe("true");
+  expect(scanButton().textContent).toContain("Starting scan…");
+  await click(diskRow("Backup"));
+  expect(scanButton().getAttribute("aria-busy")).toBe("false");
+});
+
 it("keeps the sidebar usable while a scan started from the cleanup queue is stalled", async () => {
   queueTarget = { ...photos, id: "photos-queue" };
   startGate = new Promise<void>(() => {});

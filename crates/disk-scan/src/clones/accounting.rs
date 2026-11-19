@@ -374,6 +374,16 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Content equality for snapshots: `Debug` of the whole tree would expose buffer capacities.
+    fn content(s: &Snapshot) -> String {
+        let nodes: Vec<_> = (0..s.node_count() as u32)
+            .map(|id| s.legacy_node(id).unwrap())
+            .collect();
+        format!(
+            "{nodes:?}{:?}{:?}{:?}{:?}{:?}",
+            s.stats, s.accounting, s.errors, s.exclusions, s.state
+        )
+    }
     fn reference_aggregate_two_pass(s: &mut Snapshot) {
         let plan = allocations_two_pass_original(s, true).unwrap();
         s.accounting.grouping_peak_bytes = s.accounting.grouping_peak_bytes.max(plan.scratch_bytes);
@@ -613,10 +623,7 @@ mod tests {
                 for _ in 0..2 {
                     reference_aggregate_two_pass(&mut expected);
                     crate::aggregate(&mut actual);
-                    assert_eq!(
-                        serde_json::to_value(&actual).unwrap(),
-                        serde_json::to_value(&expected).unwrap()
-                    );
+                    assert_eq!(content(&actual), content(&expected));
                 }
             }
         }
@@ -948,8 +955,8 @@ mod tests {
                 // Includes names, topology, identities, raw sizes, flags, clone
                 // claims/attributions, statistics, and accounting diagnostics.
                 assert_eq!(
-                    serde_json::to_value(&actual).unwrap(),
-                    serde_json::to_value(&expected).unwrap(),
+                    content(&actual),
+                    content(&expected),
                     "accounting variant {variant}"
                 );
                 assert_eq!(actual.stats.allocated_bytes, u64::MAX);
@@ -959,10 +966,7 @@ mod tests {
         let mut expected = empty.clone();
         reference_aggregate(&mut expected);
         crate::aggregate(&mut empty);
-        assert_eq!(
-            serde_json::to_value(empty).unwrap(),
-            serde_json::to_value(expected).unwrap()
-        );
+        assert_eq!(content(&empty), content(&expected));
     }
 
     #[test]
