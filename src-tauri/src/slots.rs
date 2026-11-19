@@ -216,12 +216,22 @@ impl LiveSlots {
     }
 }
 
-/// A scan start that got its slot: the new session, the old scan's results when they can seed an incremental
-/// rescan, and the scan's share of the budget, which the scan thread gives back when it ends.
+/// A scan start that got its slot: the new session, the scan's share of the budget, which the scan thread gives
+/// back when it ends, and the scan it replaced, whose results can seed an incremental rescan (`take_previous`).
 pub(crate) struct Started {
     pub(crate) session: Arc<Session>,
-    pub(crate) previous: Option<baseline::Taken>,
     pub(crate) grant: budget::Grant,
+    replaced: Option<(Arc<Session>, PathBuf)>,
+}
+
+impl Started {
+    /// The replaced scan's results as the rescan baseline, when they can be one. Waits for the old store's writer
+    /// lock, behind any read of it, so call it holding no lock another command needs. Call it before the scan
+    /// thread starts, so the baseline is taken before the new scan reads it.
+    pub(crate) fn take_previous(&mut self) -> Option<baseline::Taken> {
+        let (old, root) = self.replaced.take()?;
+        old.take_baseline(&root)
+    }
 }
 
 #[derive(Default)]
@@ -267,10 +277,10 @@ impl Slots {
         Ok(())
     }
     /// Puts a new scan in `key`'s slot. Refuses, changing nothing, while that slot's own scan runs or the
-    /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan and installs the new
-    /// session, then releases the slot table and takes the old results as the rescan baseline. That last step
-    /// waits for the old store's writer lock, behind any read of it, so no lookup may wait on the table meanwhile.
-    /// The old scan's `operation` lock is held throughout. Other slots are never touched.
+    /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan (waiting for any
+    /// command holding it) and installs the new session, which counts as running from then on. The old results
+    /// are taken later, by `Started::take_previous`: that waits behind any read of them, so neither the slot table
+    /// nor the caller's locks are held for it. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.lock();
         live.draining.retain(|s| session_running(s));
@@ -299,13 +309,10 @@ impl Slots {
         let root = request.root.clone();
         let session = Arc::new(Session::live(request, Some(share.descriptors)));
         live.slots.insert(key, session.clone());
-        // The scan thread starts only after this returns, so the baseline is taken before the new scan reads it.
-        drop(live);
-        let previous = old.as_ref().and_then(|old| old.take_baseline(&root));
         Ok(Started {
             session,
-            previous,
             grant,
+            replaced: old.clone().map(|old| (old, root)),
         })
     }
     /// Drops a live scan whose disk was ejected: stops it if it is running, then frees its slot.
@@ -421,7 +428,7 @@ mod tests {
     fn replace_installs_a_running_scan_with_its_share_of_the_budget() {
         let slots = slots();
         let total = slots.budget.total();
-        let started = slots
+        let mut started = slots
             .replace(disk(Path::new("/a")), request(Path::new("/a")))
             .unwrap();
         let s = &started.session;
@@ -433,7 +440,7 @@ mod tests {
         assert_eq!(s.workers, started.grant.share().workers);
         assert_eq!(s.descriptor_limit, Some(started.grant.share().descriptors));
         assert!(slots.budget.free().descriptors < total.descriptors);
-        assert!(started.previous.is_none());
+        assert!(started.take_previous().is_none());
         drop(started.grant);
         assert_eq!(slots.budget.free(), total);
     }
@@ -541,11 +548,12 @@ mod tests {
             let slots = slots();
             let seeded = old.store.read().unwrap().node_count();
             slots.install(disk(&root), old.clone());
-            let started = slots.replace(disk(&root), request(&root)).unwrap();
+            let mut started = slots.replace(disk(&root), request(&root)).unwrap();
             assert!(!old.is_valid(), "{name}");
             assert!(slots.find(&old.id).is_err(), "{name}");
-            assert_eq!(started.previous.is_some(), baseline, "{name}");
-            match started.previous {
+            let previous = started.take_previous();
+            assert_eq!(previous.is_some(), baseline, "{name}");
+            match previous {
                 // The results moved out, leaving the old scan empty.
                 Some(previous) => {
                     assert_eq!(previous.snapshot.node_count(), seeded, "{name}");
@@ -557,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replace_waiting_on_a_read_of_the_old_results_does_not_block_lookups() {
+    fn a_replace_does_not_wait_for_a_read_of_the_old_results_only_taking_them_does() {
         let slots = Arc::new(slots());
         let (_dir, root) = dir();
         let old = ended(&root, scan_of(&root));
@@ -569,33 +577,32 @@ mod tests {
             let (slots, root) = (slots.clone(), root.clone());
             std::thread::spawn(move || slots.replace(disk(&root), request(&root)).unwrap())
         };
-        // Wait for the new session to be installed. `try_lock` so a replace that still holds the slot table
-        // fails this test instead of hanging it.
+        // Fails instead of hanging when `replace` waits for the reader.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let new = loop {
-            let installed = slots.live.try_lock().ok().and_then(|live| {
-                live.slots
-                    .get(&disk(&root))
-                    .filter(|s| s.id != old.id)
-                    .cloned()
-            });
-            if let Some(new) = installed {
-                break new;
-            }
+        while !replacing.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "replace held the slot table while waiting for the old results"
+                "replace waited for a read of the old results"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
-        };
-        assert!(!replacing.is_finished());
-        assert!(Arc::ptr_eq(&slots.find(&new.id).unwrap(), &new));
+        }
+        let mut started = replacing.join().unwrap();
+        // The new scan is installed and counts as running, so a gate that needs no scan refuses, and the old
+        // one is gone, with nothing waiting on the reader.
+        assert!(slots.require_idle("busy").is_err());
+        assert!(Arc::ptr_eq(
+            &slots.find(&started.session.id).unwrap(),
+            &started.session
+        ));
         assert_eq!(slots.find(&old.id).err().unwrap(), GONE);
         assert_eq!(slots.sessions().len(), 1);
-        drop(reader);
-        let started = replacing.join().unwrap();
-        assert!(Arc::ptr_eq(&started.session, &new));
-        assert!(started.previous.is_some());
+        let previous = std::thread::scope(|scope| {
+            let taking = scope.spawn(|| started.take_previous());
+            assert!(!taking.is_finished());
+            drop(reader);
+            taking.join().unwrap()
+        });
+        assert!(previous.is_some());
     }
 
     #[test]

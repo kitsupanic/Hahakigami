@@ -56,7 +56,7 @@ async fn stdio_initializes_and_lists_metadata_tools() {
         );
         let scan = tools.iter().find(|tool| tool.name == "scan").unwrap();
         assert_eq!(scan.input_schema["properties"]["path"]["type"], "string");
-        // Only tools that take node IDs accept the optional scan_id.
+        // Only the query tools accept the optional scan_id.
         for tool in &tools {
             let takes = tool
                 .input_schema
@@ -64,7 +64,7 @@ async fn stdio_initializes_and_lists_metadata_tools() {
                 .is_some_and(|properties| properties.get("scan_id").is_some());
             assert_eq!(
                 takes,
-                ["node", "children", "search"].contains(&tool.name.as_ref()),
+                ["node", "children", "search", "issues"].contains(&tool.name.as_ref()),
                 "{}",
                 tool.name
             );
@@ -121,7 +121,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_eq!(first["items"].as_array().unwrap().len(), 1);
         assert_eq!(second["items"].as_array().unwrap().len(), 1);
         assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
-        let issues = value(&client, "issues", json!({})).await;
+        let issues = value(&client, "issues", json!({"scan_id": scan_id})).await;
         assert_eq!(issues["total"], 0);
         assert_eq!(issues["scanId"], scan_id);
         let summary = value(&client, "summary", json!({})).await;
@@ -134,6 +134,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             ("search", json!({"query": ""})),
             // An ID from another scan is refused, and a file has no children.
             ("node", json!({"node_id": 0, "scan_id": scan_id + 1})),
+            ("issues", json!({"scan_id": scan_id + 1})),
             ("children", json!({"node_id": node_id, "scan_id": scan_id})),
             ("scan", json!({"path": fixture.path().join("missing")})),
         ] {

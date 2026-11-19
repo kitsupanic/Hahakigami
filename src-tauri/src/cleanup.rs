@@ -56,9 +56,27 @@ pub(crate) enum Pick<'a> {
     Queue(&'a Mutex<Queue>, &'a [(Slot, Arc<Session>)]),
 }
 
-/// The production Trash adapter.
+/// The production Trash adapter. The Trash call resolves the path again, so a parent swapped for a symlink after
+/// `verify` would send another item: what landed in the Trash must be the reviewed item.
 pub(crate) fn native_trash(item: &safety::CheckedItem) -> Result<(), String> {
-    platform::trash(&item.path, item.identity.kind == 1)
+    let receipt = platform::trash(&item.path, item.identity.kind == 1)?;
+    confirm_trashed(item, receipt.as_deref())
+}
+/// Checks, by lstat, that what sits at the Trash `receipt` is `item`. On a mismatch it stays in the Trash to put back.
+fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result<(), String> {
+    let receipt = receipt.ok_or(
+        "The item went to the Trash, but macOS did not say where, so it could not be checked. Look in the Trash.",
+    )?;
+    match safety::Identity::read(receipt) {
+        Ok(moved) if moved == item.identity => Ok(()),
+        Ok(_) => Err(format!(
+            "A different item than the reviewed one went to the Trash, because a folder changed during cleanup. Open the Trash and choose Put Back: {}",
+            receipt.display()
+        )),
+        Err(e) => Err(format!(
+            "The item went to the Trash, but could not be checked there: {e}"
+        )),
+    }
 }
 
 /// Holds `s`, checks `pick`, and replaces the scan's ticket with one for exactly the reviewed items.
@@ -168,26 +186,34 @@ pub(crate) fn commit(
     if ticket.expired() {
         return Err(EXPIRED.into());
     }
-    let mut queue = queue.lock().unwrap();
-    if queued != ticket.queue_revision.is_some()
-        || ticket
-            .queue_revision
-            .is_some_and(|revision| revision != queue.revision || queue.blocked)
+    // The queue lock is not held while the disk is checked and the Trash called: a hung volume must not stall every
+    // queue command. Queue edits need the activity gate, which the caller holds, so it cannot change meanwhile.
     {
-        return Err("Cleanup queue changed. Review ready items again.".into());
+        let queue = queue.lock().unwrap();
+        if queued != ticket.queue_revision.is_some()
+            || ticket
+                .queue_revision
+                .is_some_and(|revision| revision != queue.revision || queue.blocked)
+        {
+            return Err("Cleanup queue changed. Review ready items again.".into());
+        }
     }
-    let snapshot = held.completed_snapshot()?;
-    let (mut result, successful, failures) = execute(&ticket.items, &snapshot.root, trash)?;
-    if result.trashed > 0 {
+    // Only the root is needed, so the store is not held across the Trash calls either.
+    let root = held.completed_snapshot()?.root.clone();
+    let (mut result, successful, failures, moved_unconfirmed) =
+        execute(&ticket.items, &root, trash)?;
+    // A failed Trash step can still have moved something (an unconfirmed receipt): the scan no longer matches.
+    if result.trashed > 0 || moved_unconfirmed {
         s.invalidate();
     }
+    let mut queue = queue.lock().unwrap();
     result.persistence_warning = queue
         .outcomes(&successful, &failures)
         .err()
         .or_else(|| queue.warning.clone());
     Ok(result)
 }
-type Execution = (TrashResult, Vec<PathBuf>, Vec<(PathBuf, String)>);
+type Execution = (TrashResult, Vec<PathBuf>, Vec<(PathBuf, String)>, bool);
 fn execute(
     items: &[safety::CheckedItem],
     root: &Path,
@@ -207,8 +233,16 @@ fn execute(
     };
     let mut successful = vec![];
     let mut failures = vec![];
+    let mut moved_unconfirmed = false;
     for (review_index, item) in items.iter().enumerate() {
-        match safety::verify(item, root, home.as_deref(), &mounts).and_then(|_| trash(item)) {
+        let step = safety::verify(item, root, home.as_deref(), &mounts).and_then(|_| {
+            trash(item).inspect_err(|_| {
+                // The reviewed item is no longer where it was: the failed step moved something.
+                moved_unconfirmed |=
+                    safety::Identity::read(&item.path).as_ref() != Ok(&item.identity);
+            })
+        });
+        match step {
             Ok(()) => {
                 result.trashed += 1;
                 successful.push(item.path.clone());
@@ -229,7 +263,7 @@ fn execute(
             }
         }
     }
-    Ok((result, successful, failures))
+    Ok((result, successful, failures, moved_unconfirmed))
 }
 
 /// Adds nodes of the held scan `s` to the queue.
@@ -336,4 +370,127 @@ fn statuses(
     with_usable_scans(scans, |scans| {
         cleanup_queue::statuses(queue, scans, home.as_deref(), &mounts)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        tests::{install, snapshot},
+        AppState,
+    };
+    use std::time::Duration;
+
+    fn home_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        (dir, root)
+    }
+    /// A completed scan of `root` with a review of everything directly in it.
+    fn reviewed(state: &AppState, root: &Path) -> (Arc<Session>, String) {
+        let scan = snapshot(root.to_path_buf());
+        let ids: Vec<_> = scan
+            .iter_nodes()
+            .filter(|n| n.parent == Some(0))
+            .map(|n| n.id)
+            .collect();
+        let s = install(state, scan);
+        let token = review(&s, Pick::Nodes(&ids)).unwrap().token;
+        (s, token)
+    }
+
+    #[test]
+    fn only_the_reviewed_item_passes_the_receipt_check() {
+        let (_dir, root) = home_dir();
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let item = safety::CheckedItem {
+            path: a.clone(),
+            identity: safety::Identity::read(&a).unwrap(),
+            ancestors: vec![],
+            volume: None,
+        };
+        // The Trash renames the item: same device, inode, kind and birth time.
+        let moved = root.join("moved");
+        std::fs::rename(&a, &moved).unwrap();
+        assert_eq!(confirm_trashed(&item, Some(&moved)), Ok(()));
+        // Another file at the receipt: a swapped parent sent the wrong item.
+        let error = confirm_trashed(&item, Some(&b)).unwrap_err();
+        assert!(
+            error.contains("different item") && error.contains("Put Back"),
+            "{error}"
+        );
+        // A link to the item is not the item: the receipt is read without following it.
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&moved, &link).unwrap();
+        assert!(confirm_trashed(&item, Some(&link)).is_err());
+        // Nothing at the receipt, or no receipt: it cannot be vouched for.
+        assert!(confirm_trashed(&item, Some(&root.join("gone"))).is_err());
+        assert!(confirm_trashed(&item, None).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "Moves only a disposable fixture to native Trash and restores it; run explicitly on macOS"]
+    fn the_native_trash_receipt_is_the_reviewed_item() {
+        let (_dir, root) = home_dir();
+        let file = root.join("hahakigami-receipt.txt");
+        std::fs::write(&file, b"disposable receipt fixture").unwrap();
+        let item = safety::CheckedItem {
+            path: file.clone(),
+            identity: safety::Identity::read(&file).unwrap(),
+            ancestors: vec![],
+            volume: None,
+        };
+        let receipt = platform::trash(&file, false).unwrap().expect("a receipt");
+        let confirmed = confirm_trashed(&item, Some(&receipt));
+        std::fs::rename(&receipt, &file).expect("restore the disposable fixture");
+        assert_eq!(confirmed, Ok(()));
+    }
+
+    #[test]
+    fn an_item_that_fails_the_receipt_check_is_a_failure_not_a_trashed_item() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        // What a swapped parent would have sent to the Trash instead.
+        let (_other_dir, other_root) = home_dir();
+        let other = other_root.join("a");
+        std::fs::write(&other, b"o").unwrap();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let queue = Mutex::new(Queue::default());
+        let result = commit(&s, &queue, &token, false, |item| {
+            // The folder changed under the move: the reviewed item left its path, another one was trashed.
+            std::fs::rename(&item.path, other_root.join("moved")).unwrap();
+            confirm_trashed(item, Some(&other))
+        })
+        .unwrap();
+        assert_eq!(result.trashed, 0);
+        assert_eq!(result.failures.len(), 1);
+        assert!(result.failures[0].contains("different item"));
+        assert_eq!(result.outcomes[0].status, TrashOutcomeStatus::Failed);
+        // Something did move, so the scan no longer matches the disk.
+        assert!(!s.is_valid());
+    }
+
+    #[test]
+    fn commit_checks_the_disk_and_trashes_without_the_queue_lock() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let queue = Mutex::new(Queue::default());
+        // Parked on the store read, commit is past its queue check: the queue must be free meanwhile.
+        let store = s.store.write().unwrap();
+        let (free, result) = std::thread::scope(|scope| {
+            let work = scope.spawn(|| commit(&s, &queue, &token, false, |_| Ok(())));
+            std::thread::sleep(Duration::from_millis(200));
+            let free = queue.try_lock().is_ok();
+            drop(store);
+            (free, work.join().unwrap())
+        });
+        assert!(free, "commit held the queue lock while checking the disk");
+        assert_eq!(result.unwrap().trashed, 1);
+    }
 }

@@ -29,6 +29,15 @@ struct Session {
 struct Caches {
     sorts: sorting::Cache,
     filters: filters::Cache,
+    /// The GUI's issue index (`crate::refresh_issue_index`), so node views do not re-sort the errors per call.
+    issues: (u64, Vec<PathBuf>),
+}
+
+impl Caches {
+    fn issue_paths(&mut self, snapshot: &Snapshot) -> &[PathBuf] {
+        crate::refresh_issue_index(&mut self.issues, snapshot);
+        &self.issues.1
+    }
 }
 
 pub(crate) struct Service {
@@ -208,7 +217,7 @@ impl Service {
             )
         };
         if scan_id.is_some_and(|id| id != current) {
-            return Err("This node ID belongs to an earlier scan. Call summary again.".into());
+            return Err("This scan_id belongs to an earlier scan. Call summary again.".into());
         }
         let snapshot = store
             .read()
@@ -234,11 +243,10 @@ impl Service {
     }
 
     pub(crate) fn node(&self, node_id: u32, scan_id: Option<u64>) -> Result<Value, String> {
-        self.with_snapshot(scan_id, |snapshot| {
-            let paths = issue_paths(snapshot);
+        self.with_caches(scan_id, |snapshot, caches| {
             let mut value = serde_json::to_value(crate::view(
                 &snapshot.node(node_id).ok_or("Unknown node ID")?,
-                &paths,
+                caches.issue_paths(snapshot),
             )?)
             .map_err(|e| e.to_string())?;
             value["coverage"] = coverage(snapshot);
@@ -265,7 +273,14 @@ impl Service {
                 let order = sorting::Order::SizeDescending;
                 caches.sorts.page(snapshot, node_id, order, offset, limit)
             })?;
-            node_page(snapshot, &ids, total, offset, limit)
+            node_page(
+                snapshot,
+                caches.issue_paths(snapshot),
+                &ids,
+                total,
+                offset,
+                limit,
+            )
         })
     }
 
@@ -287,13 +302,25 @@ impl Service {
             let (ids, total) = page_of(offset, limit, |offset, limit| {
                 caches.filters.page(snapshot, &query, offset, limit)
             })?;
-            node_page(snapshot, &ids, total, offset, limit)
+            node_page(
+                snapshot,
+                caches.issue_paths(snapshot),
+                &ids,
+                total,
+                offset,
+                limit,
+            )
         })
     }
 
-    pub(crate) fn issues(&self, offset: usize, limit: usize) -> Result<Value, String> {
+    pub(crate) fn issues(
+        &self,
+        scan_id: Option<u64>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value, String> {
         validate_page(limit)?;
-        self.with_snapshot(None, |snapshot| {
+        self.with_snapshot(scan_id, |snapshot| {
             let total = snapshot.errors.len().saturating_add(snapshot.exclusions.len());
             let items: Vec<_> = snapshot.errors.iter().map(|issue| ("error", issue))
                 .chain(snapshot.exclusions.iter().map(|issue| ("exclusion", issue)))
@@ -358,27 +385,17 @@ fn summary(snapshot: &Snapshot) -> Value {
         "stats": snapshot.stats, "accounting": snapshot.accounting, "coverage": coverage(snapshot)})
 }
 
-fn issue_paths(snapshot: &Snapshot) -> Vec<PathBuf> {
-    let mut paths: Vec<_> = snapshot
-        .errors
-        .iter()
-        .map(|issue| issue.path.clone())
-        .collect();
-    paths.sort_unstable();
-    paths
-}
-
 fn node_page(
     snapshot: &Snapshot,
+    issues: &[PathBuf],
     ids: &[u32],
     total: usize,
     offset: usize,
     limit: usize,
 ) -> Result<Value, String> {
-    let paths = issue_paths(snapshot);
     let items = ids
         .iter()
-        .map(|&id| crate::view(&snapshot.node(id).ok_or("Unknown node ID")?, &paths))
+        .map(|&id| crate::view(&snapshot.node(id).ok_or("Unknown node ID")?, issues))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         json!({"items": items, "total": total, "offset": offset, "limit": limit, "coverage": coverage(snapshot)}),
@@ -459,11 +476,14 @@ mod tests {
             service.node(0, id),
             service.children(0, id, 0, 1),
             service.search("x", id, 0, 1),
+            service.issues(id, 0, 1),
         ] {
             assert!(result.unwrap_err().contains("earlier scan"));
         }
         assert!(service.node(0, second).is_ok());
         assert!(service.node(0, None).is_ok());
+        assert!(service.issues(second, 0, 1).is_ok());
+        assert!(service.issues(None, 0, 1).is_ok());
     }
 
     #[test]

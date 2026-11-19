@@ -153,15 +153,25 @@ fn file_length(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<u64
             libc::FSOPT_NOFOLLOW as libc::c_ulong,
         )
     })?;
-    if attrs.length as usize != std::mem::size_of::<Attributes>()
+    // The common attributes come first, so identity is readable even when a directory omits the file size.
+    if (attrs.length as usize) < std::mem::offset_of!(Attributes, file_length)
         || attrs.returned.commonattr != list.commonattr
+    {
+        return Err(io::Error::other(
+            "file attributes changed since enumeration",
+        ));
+    }
+    // Another file, directory or link now holds the name (atomic save): the enumerated file vanished.
+    if attrs.device as u64 != expected.device || attrs.inode != expected.inode || attrs.kind != 1
+    // VREG
+    {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+    }
+    if attrs.length as usize != std::mem::size_of::<Attributes>()
         || attrs.returned.volattr != 0
         || attrs.returned.dirattr != 0
         || attrs.returned.fileattr != list.fileattr
         || attrs.returned.forkattr != 0
-        || attrs.device as u64 != expected.device
-        || attrs.inode != expected.inode
-        || attrs.kind != 1 // VREG
         || attrs.file_length < 0
     {
         return Err(io::Error::other(
@@ -460,6 +470,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir(&p).unwrap();
         std::fs::canonicalize(p).unwrap()
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replaced_file_reads_as_vanished() {
+        let p = fixture("replaced-file");
+        std::fs::write(p.join("f"), b"old").unwrap();
+        let expected = crate::platform_identity(&p.join("f")).unwrap();
+        std::fs::write(p.join("tmp"), b"new").unwrap();
+        std::fs::rename(p.join("tmp"), p.join("f")).unwrap();
+        let fd = open(&p, &crate::platform_identity(&p).unwrap()).unwrap();
+        let error = file_length(&fd, &cstr("f".as_ref()).unwrap(), &expected).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        // A directory taking the name reads as vanished too, not as changed attributes.
+        std::fs::remove_file(p.join("f")).unwrap();
+        std::fs::create_dir(p.join("f")).unwrap();
+        let error = file_length(&fd, &cstr("f".as_ref()).unwrap(), &expected).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        std::fs::remove_dir_all(p).unwrap();
     }
     #[test]
     fn open_gate_is_inert_at_or_above_worker_count() {

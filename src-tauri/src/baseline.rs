@@ -393,13 +393,14 @@ impl Baselines {
 impl Ticket<'_> {
     /// After the scan: publishes a clean, uncancelled result for the next scan to start from, and
     /// returns its token; `None` when nothing is published. `about_to_write` runs once, only when it
-    /// will publish, before the cache lock is taken. Dropping the ticket publishes nothing.
+    /// will publish, before the cache lock is taken; it returns `None` to decline (the scan was cancelled
+    /// meanwhile). Dropping the ticket publishes nothing.
     pub(crate) fn publish(
         self,
         snapshot: &Snapshot,
         cancel: &AtomicBool,
         scan: Scanned,
-        about_to_write: impl FnOnce() -> cache_store::ScanMetadata,
+        about_to_write: impl FnOnce() -> Option<cache_store::ScanMetadata>,
         #[cfg(feature = "performance-benchmark")] timing: Timing<'_>,
     ) -> Option<Published> {
         if !eligible(snapshot) || cancel.load(Ordering::Acquire) {
@@ -409,7 +410,7 @@ impl Ticket<'_> {
         if scan.fell_back {
             token.full_scan_at_ms = self.started_at_ms;
         }
-        let metadata = about_to_write();
+        let metadata = about_to_write()?;
         let publication = span!(
             timing,
             "cache_publication",
@@ -708,6 +709,18 @@ mod tests {
             scan: Scanned,
             started_at_ms: u64,
         ) -> (Option<Published>, usize) {
+            self.publish_unless(ticket, snapshot, cancelled, false, scan, started_at_ms)
+        }
+        /// `declined` makes `about_to_write` decline, as a cancel that arrives after the first check does.
+        fn publish_unless(
+            &self,
+            ticket: Ticket<'_>,
+            snapshot: &Snapshot,
+            cancelled: bool,
+            declined: bool,
+            scan: Scanned,
+            started_at_ms: u64,
+        ) -> (Option<Published>, usize) {
             let written = AtomicUsize::new(0);
             #[cfg(feature = "performance-benchmark")]
             let timing = |phase: &'static str, _: Instant| self.phases.lock().unwrap().push(phase);
@@ -717,7 +730,7 @@ mod tests {
                 scan,
                 || {
                     written.fetch_add(1, Ordering::SeqCst);
-                    metadata(started_at_ms)
+                    (!declined).then(|| metadata(started_at_ms))
                 },
                 #[cfg(feature = "performance-benchmark")]
                 &timing,
@@ -1259,6 +1272,24 @@ mod tests {
         }
         // A ticket that is dropped publishes nothing either.
         drop(rig.acquire(&root, None, t));
+        assert!(rig.archives().is_empty());
+    }
+
+    #[test]
+    fn a_scan_cancelled_as_it_is_about_to_write_publishes_nothing() {
+        let rig = Rig::new();
+        let tree = rig.tree();
+        let (_, ticket) = rig.acquire(&open(&tree), None, ago(1000));
+        let (published, asked) = rig.publish_unless(
+            ticket.unwrap(),
+            &tree,
+            false,
+            true,
+            Scanned::default(),
+            ago(1000),
+        );
+        assert!(published.is_none());
+        assert_eq!(asked, 1);
         assert!(rig.archives().is_empty());
     }
 
