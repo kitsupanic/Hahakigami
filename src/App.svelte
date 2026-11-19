@@ -1194,50 +1194,46 @@
       {#if summary}
         <header class="window-toolbar" data-tauri-drag-region="deep">
           {@render navigationButtons()}
-          {#if summary}
-            <nav class="toolbar-crumbs" aria-label="Folder breadcrumbs">
-              {#each crumbs as n, i (n.id)}
-                {#if i > 0}<Icon name="chevron" size={12} />{/if}
-                <button
-                  title={i === 0 ? (resultLocation?.path ?? n.path) : n.path}
-                  aria-current={i === crumbs.length - 1 ? "page" : undefined}
-                  onclick={() => open(n)}
-                >
-                  {i === 0
-                    ? locationName(resultLocation?.name, resultLocation?.path)
-                    : n.name}
-                </button>
-              {/each}
-            </nav>
-          {/if}
+          <nav class="toolbar-crumbs" aria-label="Folder breadcrumbs">
+            {#each crumbs as n, i (n.id)}
+              {#if i > 0}<Icon name="chevron" size={12} />{/if}
+              <button
+                title={i === 0 ? (resultLocation?.path ?? n.path) : n.path}
+                aria-current={i === crumbs.length - 1 ? "page" : undefined}
+                onclick={() => open(n)}
+              >
+                {i === 0
+                  ? locationName(resultLocation?.name, resultLocation?.path)
+                  : n.name}
+              </button>
+            {/each}
+          </nav>
           <div class="header-controls" data-tauri-drag-region="false">
-            {#if summary}
-              <label class="header-search"
-                ><Icon name="search" size={17} />
-                <input
-                  bind:this={searchInput}
-                  aria-label="Search file names"
-                  aria-describedby={filtered || query.trim()
-                    ? "search-scope-description results-scope"
-                    : "search-scope-description"}
-                  title={`Search file names ${folderSearch ? "in the filtered folder" : "across the entire scan"}: ${searchLocation?.path ?? locationName(searchLocation?.name, searchLocation?.path)}`}
-                  placeholder={folderSearch
-                    ? `Search ${locationName(searchLocation?.name, searchLocation?.path)}…`
-                    : "Search entire scan…"}
-                  value={query}
-                  oninput={(e) => {
-                    listVisible = true;
-                    showListView("files");
-                    app.changeQuery(e.currentTarget.value);
-                  }}
-                />
-              </label>
-              <span id="search-scope-description" class="sr-only">
-                {folderSearch
-                  ? `Search stays within ${searchLocation?.path ?? "the filtered folder"} and the active filters. Clear filters to search the entire scan.`
-                  : `Search covers all file names in ${locationName(resultLocation?.name, resultLocation?.path)}, including folders outside the current view.`}
-              </span>
-            {/if}
+            <label class="header-search"
+              ><Icon name="search" size={17} />
+              <input
+                bind:this={searchInput}
+                aria-label="Search file names"
+                aria-describedby={filtered || query.trim()
+                  ? "search-scope-description results-scope"
+                  : "search-scope-description"}
+                title={`Search file names ${folderSearch ? "in the filtered folder" : "across the entire scan"}: ${searchLocation?.path ?? locationName(searchLocation?.name, searchLocation?.path)}`}
+                placeholder={folderSearch
+                  ? `Search ${locationName(searchLocation?.name, searchLocation?.path)}…`
+                  : "Search entire scan…"}
+                value={query}
+                oninput={(e) => {
+                  listVisible = true;
+                  showListView("files");
+                  app.changeQuery(e.currentTarget.value);
+                }}
+              />
+            </label>
+            <span id="search-scope-description" class="sr-only">
+              {folderSearch
+                ? `Search stays within ${searchLocation?.path ?? "the filtered folder"} and the active filters. Clear filters to search the entire scan.`
+                : `Search covers all file names in ${locationName(resultLocation?.name, resultLocation?.path)}, including folders outside the current view.`}
+            </span>
             <!-- Rescan and Stop share one button so focus stays put when a scan starts or ends. -->
             <button
               class="rescan-action"
@@ -1299,13 +1295,11 @@
             </div>
           </div>
         {/snippet}
-        {#if summary}
-          <ScanStatusLine
-            {summary}
-            {cancelling}
-            controls={viewControls}
-          />
-        {/if}
+        <ScanStatusLine
+          {summary}
+          {cancelling}
+          controls={viewControls}
+        />
       {/if}
     {/if}
     {#if !queueOpen}
@@ -1451,17 +1445,15 @@
                       {queue.entries.length === 1 ? "item" : "items"}</span
                     ></strong
                   >
-                  {#if queue.entries.length}
-                    <span
-                      class:queue-needs-scan={queue.entries.some(
-                        (entry) => entry.status !== "ready",
-                      )}
-                    >
-                      {queue.entries.some((entry) => entry.status !== "ready")
-                        ? "Some items not ready"
-                        : "Ready for review"}
-                    </span>
-                  {:else}<span>Select items to review for cleanup</span>{/if}
+                  <span
+                    class:queue-needs-scan={queue.entries.some(
+                      (entry) => entry.status !== "ready",
+                    )}
+                  >
+                    {queue.entries.some((entry) => entry.status !== "ready")
+                      ? "Some items not ready"
+                      : "Ready for review"}
+                  </span>
                   <button
                     disabled={blocked || !!trash}
                     onclick={() => app.showQueue(true)}>Review queue</button

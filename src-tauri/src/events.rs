@@ -741,13 +741,11 @@ mod native {
         let name = std::ffi::CString::new(root.as_os_str().as_bytes())
             .map_err(|_| "Invalid filesystem event root")?;
         let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statfs(name.as_ptr(), &mut stat) } != 0
-            || stat.f_flags & libc::MNT_LOCAL as u32 == 0
-        {
+        let mounted = (unsafe { libc::statfs(name.as_ptr(), &mut stat) } == 0)
+            .then(|| crate::platform::mount_of(&stat));
+        let Some((mount, true)) = mounted else {
             return Err("Filesystem event volume is unavailable or not local".into());
-        }
-        let bytes = unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) }.to_bytes();
-        let mount = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
+        };
         if !mount.is_absolute() {
             return Err("Filesystem event volume mount is not absolute".into());
         }

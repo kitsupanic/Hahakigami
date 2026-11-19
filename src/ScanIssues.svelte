@@ -5,6 +5,7 @@
   import type { ScanIssuePage, ScanIssueKind, ScanSummary } from "./types";
   const limit = 100;
   import { untrack } from "svelte";
+  import { latestOnly } from "./latestQuery";
   // The Coverage tab of ScanDetails. Details load only while the tab is shown.
   let { summary, active = false }: { summary: ScanSummary; active?: boolean } =
     $props();
@@ -134,6 +135,7 @@
           ? summary.errors
           : (summary.excluded ?? 0),
   );
+  const queryIssues = latestOnly();
   $effect(() => {
     scanIdentity;
     kind;
@@ -157,12 +159,14 @@
         page = null;
       if (!active) return;
       loading = !page;
-      invoke<ScanIssuePage>("get_scan_issues", {
-        scanId,
-        kind: requestedKind,
-        offset: requestedOffset,
-        limit,
-      })
+      queryIssues(() => {
+        if (current !== generation) return Promise.resolve();
+        return invoke<ScanIssuePage>("get_scan_issues", {
+          scanId,
+          kind: requestedKind,
+          offset: requestedOffset,
+          limit,
+        })
         .then((result) => {
           if (current !== generation) return;
           if (
@@ -181,6 +185,7 @@
         .finally(() => {
           if (current === generation) loading = false;
         });
+      });
       return () => {
         ++generation;
       };

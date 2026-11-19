@@ -32,6 +32,8 @@ export interface CleanupReport {
   detailsAvailable: boolean;
   message: string | null;
   persistenceWarning: string | null;
+  /** Backend dropped the scan (something moved, even in a failed step). */
+  invalidated: boolean;
   queueState: "checking" | "confirmed" | "unconfirmed";
   remainingQueued: number | null;
   queueWarning: string | null;

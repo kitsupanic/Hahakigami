@@ -71,21 +71,13 @@ impl Journal for Fsevents {
 
 #[cfg(target_os = "macos")]
 fn local_volume(root: &disk_scan::ScanRoot) -> Option<PathBuf> {
-    use std::os::{
-        fd::{AsFd, AsRawFd},
-        unix::ffi::OsStrExt,
-    };
+    use std::os::fd::{AsFd, AsRawFd};
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstatfs(root.as_fd().as_raw_fd(), &mut stat) } != 0
-        || stat.f_flags & libc::MNT_LOCAL as u32 == 0
-    {
+    if unsafe { libc::fstatfs(root.as_fd().as_raw_fd(), &mut stat) } != 0 {
         return None;
     }
-    let length = stat.f_mntonname.iter().position(|byte| *byte == 0)?;
-    let bytes =
-        unsafe { std::slice::from_raw_parts(stat.f_mntonname.as_ptr().cast::<u8>(), length) };
-    let path = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
-    path.is_absolute().then_some(path)
+    let (path, local) = crate::platform::mount_of(&stat);
+    (local && path.is_absolute()).then_some(path)
 }
 #[cfg(not(target_os = "macos"))]
 fn local_volume(_: &disk_scan::ScanRoot) -> Option<PathBuf> {

@@ -196,10 +196,25 @@ impl Reuse {
             + direct_listing_dirty.capacity()
             + costs.capacity() * std::mem::size_of::<u64>();
         drop(costs);
+        // A directory hard link gives one inode several nodes, but the scan lists
+        // only the first to commit, so a rescan can flip which copy has the
+        // children. Neither copy's cached listing may be reused.
+        let mut seen_directories = HashSet::new();
+        let aliased_directories: HashSet<_> = seed
+            .snapshot
+            .iter_nodes()
+            .filter(|n| n.is_directory)
+            .map(|n| (n.identity.device, n.identity.inode))
+            .filter(|inode| !seen_directories.insert(*inode))
+            .collect();
         let listings: HashMap<PathBuf, (Identity, u32, bool)> = seed
             .snapshot
             .iter_nodes()
-            .filter(|n| n.is_directory && !listing_dirty[n.id as usize])
+            .filter(|n| {
+                n.is_directory
+                    && !listing_dirty[n.id as usize]
+                    && !aliased_directories.contains(&(n.identity.device, n.identity.inode))
+            })
             .map(|n| {
                 (
                     path_cursor
@@ -1960,6 +1975,47 @@ mod tests {
         assert_eq!(stats.reused_entries, 0);
         assert!(valid_seed(&actual));
         compare(&actual, &fresh);
+    }
+    #[test]
+    fn directory_hard_link_copies_never_reuse_listings() {
+        let f = Fixture::new();
+        fs::create_dir(f.0.join("twin")).unwrap();
+        let mut seed = f.full();
+        let identity_at = |seed: &Snapshot, name: &str| {
+            seed.iter_nodes()
+                .map(|n| seed.legacy_node(n.id).unwrap())
+                .find(|n| n.path == f.0.join(name))
+                .unwrap()
+                .identity
+        };
+        // The scan lists only one copy of a hard-linked directory; the other
+        // stays an empty node. Model that by giving `twin` the inode of
+        // `clean/deep`, which has children.
+        let shared = identity_at(&seed, "clean/deep");
+        edit_nodes(&mut seed, |nodes, _root| {
+            nodes
+                .iter_mut()
+                .find(|n| n.path == f.0.join("twin"))
+                .unwrap()
+                .identity = shared.clone();
+        });
+        assert!(valid_seed(&seed));
+        let mut reuse = Reuse::new(IncrementalSeed {
+            snapshot: seed.clone(),
+            dirty_paths: vec![],
+            dirty_directories: vec![],
+        });
+        for name in ["clean/deep", "twin"] {
+            assert!(reuse
+                .take_listing(&f.0.join(name), &identity_at(&seed, name))
+                .is_none());
+        }
+        assert!(reuse
+            .take_listing(
+                &f.0.join("dirty/nested"),
+                &identity_at(&seed, "dirty/nested")
+            )
+            .is_some());
     }
     #[test]
     fn root_replacement_declines_cached_authority() {

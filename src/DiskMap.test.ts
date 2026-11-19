@@ -1107,6 +1107,12 @@ it("reuses the canvas backing store on redraws and resets the transform after pi
   const width = vi.spyOn(HTMLCanvasElement.prototype, "width", "set");
   const height = vi.spyOn(HTMLCanvasElement.prototype, "height", "set");
   vi.stubGlobal("devicePixelRatio", 2);
+  let ratioChanged: (() => void) | undefined;
+  vi.stubGlobal("matchMedia", () => ({
+    addEventListener: (_: string, listener: () => void) =>
+      (ratioChanged = listener),
+    removeEventListener: () => {},
+  }));
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
@@ -1162,6 +1168,7 @@ it("reuses the canvas backing store on redraws and resets the transform after pi
     expect(context.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
     clear();
     vi.stubGlobal("devicePixelRatio", 1.5);
+    ratioChanged?.();
     selected = [2];
     await act(async () => render());
     expect(width).toHaveBeenCalledExactlyOnceWith(1050);

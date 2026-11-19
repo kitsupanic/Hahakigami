@@ -675,16 +675,9 @@ mod native {
             };
             let e = entries[i].as_ref().unwrap();
             // The same facts the per-file probe and final validation insist on.
-            if r.kind == 1
-                && r.clone_checked
-                && r.device == e.device
-                && r.inode == e.inode
-                && r.allocated == e.allocated
-                && (r.links > 1) == e.hard_link
-                && (r.length == e.length
-                    || r.clone_metadata
-                        .as_ref()
-                        .is_some_and(|m| m.data_length == e.length))
+            if r.clone_checked
+                && same_file(r, e.device, e.inode, e.allocated, e.hard_link)
+                && same_length(r, e.length)
             {
                 if std::mem::replace(&mut matched[i], true) {
                     return Err(error("duplicate clone record in reused directory"));
@@ -706,6 +699,26 @@ mod native {
     }
     fn warning(info: &mut crate::AccountingInfo, e: io::Error) {
         info.warn(e.to_string());
+    }
+    // One definition of the record facts the vouch and the final validation both check.
+    fn same_file(
+        r: &crate::bulk::Record,
+        device: u64,
+        inode: u64,
+        allocated: u64,
+        hard_link: bool,
+    ) -> bool {
+        r.kind == 1
+            && r.device == device
+            && r.inode == inode
+            && r.allocated == allocated
+            && (r.links > 1) == hard_link
+    }
+    fn same_length(r: &crate::bulk::Record, length: u64) -> bool {
+        r.length == length
+            || r.clone_metadata
+                .as_ref()
+                .is_some_and(|m| m.data_length == length)
     }
     fn same_observation(a: &CloneMetadata, b: &CloneMetadata) -> bool {
         a.clone_id == b.clone_id
@@ -1020,22 +1033,22 @@ mod native {
                                 ));
                             }
                             let n = s.node(claims[i].0).unwrap();
-                            if r.kind != 1
-                                || r.device != n.identity.device
-                                || r.inode != n.identity.inode
-                                || r.allocated != n.own_allocated_size
-                                || (r.links > 1) != n.hard_link
-                            {
+                            if !same_file(
+                                r,
+                                n.identity.device,
+                                n.identity.inode,
+                                n.own_allocated_size,
+                                n.hard_link,
+                            ) {
                                 warning(info, error("clone file identity, sizes or link count changed during validation"));
                                 return Ok(());
                             }
                             if !r.clone_checked {
                                 fallback.push(i);
-                            } else if (r.length == n.length
-                                || r.clone_metadata.as_ref().is_some_and(|m| m.data_length == n.length)) && r
-                                .clone_metadata
-                                .as_ref()
-                                .is_some_and(|m| same_observation(m, &claims[i].1))
+                            } else if same_length(r, n.length)
+                                && r.clone_metadata
+                                    .as_ref()
+                                    .is_some_and(|m| same_observation(m, &claims[i].1))
                             {
                                 statuses[i] = ClaimStatus::Verified;
                             } else {

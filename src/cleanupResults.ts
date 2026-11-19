@@ -22,6 +22,7 @@ export function cleanupResult(
     message:
       "Couldn't tell if the cleanup worked. Check the items in Finder before you try again.",
     persistenceWarning: null,
+    invalidated: false,
     queueState: "checking",
     remainingQueued: null,
     queueWarning: null,
@@ -36,6 +37,8 @@ export function cleanupResult(
     report.failures = [...result.failures];
   if (typeof result.persistenceWarning === "string")
     report.persistenceWarning = result.persistenceWarning;
+  if (typeof result.invalidated === "boolean")
+    report.invalidated = result.invalidated;
   if (
     !Number.isSafeInteger(result.trashed) ||
     (result.trashed as number) < 0 ||

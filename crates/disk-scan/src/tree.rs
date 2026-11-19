@@ -73,7 +73,7 @@ impl<'a> NodeRef<'a> {
             .expect("checked compact adjacency")
     }
 }
-fn lookup<T>(entries: &[(u32, T)], id: u32) -> Option<&T> {
+pub(crate) fn lookup<T>(entries: &[(u32, T)], id: u32) -> Option<&T> {
     entries
         .binary_search_by_key(&id, |e| e.0)
         .ok()

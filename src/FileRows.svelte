@@ -133,12 +133,6 @@
     });
   });
   let firstId = $derived(items[0]?.id);
-  $effect(() => {
-    firstId;
-    focusRequest++;
-    scroll = 0;
-    if (container) container.scrollTop = 0;
-  });
   let restoreGeneration = 0;
   let restoredId: number | undefined;
   $effect(() => {

@@ -621,3 +621,41 @@ it("shows each item's share of the scan, and handles an empty scan", async () =>
     element.remove();
   }
 });
+
+it("keeps the scroll position when a refresh changes the first row", async () => {
+  const make = (start: number): NodeView[] =>
+    Array.from({ length: 150 }, (_, i) => ({
+      id: start + i,
+      parentId: 0,
+      name: `file-${start + i}`,
+      path: `/file-${start + i}`,
+      kind: "file",
+      allocatedBytes: 1,
+      childrenCount: 0,
+      incomplete: false,
+    }));
+  const element = document.createElement("div");
+  document.body.append(element);
+  const root = createRoot(element);
+  const props = {
+    selection: [],
+    running: true,
+    onSelect: () => {},
+    onOpen: () => {},
+  };
+  try {
+    await act(async () => root.render(FileRows, { ...props, items: make(0) }));
+    const rows = element.querySelector<HTMLElement>(".rows")!;
+    await act(async () => {
+      rows.scrollTop = 1000;
+      rows.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await act(async () =>
+      root.render(FileRows, { ...props, items: make(1000) }),
+    );
+    expect(rows.scrollTop).toBe(1000);
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});

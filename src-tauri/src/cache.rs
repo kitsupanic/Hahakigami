@@ -271,17 +271,7 @@ impl Cache {
         if candidate.token != *previous {
             return Ok(false);
         }
-        // Recheck the newest published seed and its exact cursor immediately before
-        // replacement. A missing seed or newer publication cannot be refreshed.
-        let Some(current) = self.probe(root, identity, &previous.epoch)? else {
-            return Ok(false);
-        };
-        if current.id != candidate.id
-            || current.token != candidate.token
-            || current.started_at_ms != candidate.started_at_ms
-        {
-            return Ok(false);
-        }
+        // No second probe: the caller holds the Baselines cache lock, so nothing publishes meanwhile.
         let Ok(mut record) = self.record(&candidate.id) else {
             return Ok(false);
         };
