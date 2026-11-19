@@ -16,9 +16,6 @@ pub struct Target {
     pub home: bool,
     /// The startup disk or a mounted volume, listed under Disks in the sidebar.
     pub volume: bool,
-    /// Backed by a local disk, from the mount table's flags. False for a network share, which
-    /// "Scan all disks" skips. Only a mount point can be non-local.
-    pub local: bool,
 }
 
 /// Hardware core classes, not the placement of any particular thread.
@@ -149,7 +146,6 @@ pub fn target(path: &Path, name: String) -> Target {
         free_bytes,
         home: false,
         volume: false,
-        local: true,
     }
 }
 
@@ -187,21 +183,24 @@ pub fn discover() -> Vec<(Target, PathBuf)> {
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         home_path = Some(home.clone());
-        paths.push((home.clone(), folder_name(&home)));
+        // A network home sits below its mount point, so the mount-table filter below misses it.
+        if ensure_local_volume(&home).is_ok() {
+            paths.push((home.clone(), folder_name(&home)));
+        }
     }
     for path in volume_paths().into_iter().skip(1) {
         let name = folder_name(&path);
         paths.push((path, name));
     }
-    // One mount-table read for every path: statfs per path would block on a dead network mount.
+    // One mount-table read for every path: statfs per path would block on an unresponsive mount.
     let mounts = mounted_flags();
     paths
         .into_iter()
+        .filter(|(path, _)| is_local_path(path, &mounts))
         .map(|(path, name)| {
             let mut item = target(&path, name);
             item.home = home_path.as_deref() == Some(path.as_path());
             item.volume = is_disk_path(&path);
-            item.local = is_local_path(&path, &mounts);
             (item, path)
         })
         .collect()
@@ -228,6 +227,31 @@ fn is_local_path(path: &Path, mounts: &[(PathBuf, u32)]) -> bool {
     mounts
         .iter()
         .all(|(mount, flags)| mount != path || is_local_mount(*flags))
+}
+
+/// Refuses a path on a network share: `statfs` on the path itself, so it also covers folders below a mount point.
+#[cfg(target_os = "macos")]
+pub fn ensure_local_volume(path: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| "The path contains a NUL byte.".to_string())?;
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "Can't read the volume: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let info = unsafe { info.assume_init() };
+    if is_local_mount(info.f_flags) {
+        Ok(())
+    } else {
+        Err("Network shares aren't supported. Choose a folder on a local disk.".into())
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn ensure_local_volume(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn mounted_paths() -> Vec<PathBuf> {
@@ -398,7 +422,7 @@ mod tests {
         assert!(!is_disk_path(&home));
     }
     #[test]
-    fn mount_flags_tell_local_disks_from_network_shares() {
+    fn mount_flags_tell_local_disks_from_network_shares_that_discovery_drops() {
         assert!(is_local_mount(MNT_LOCAL | 0x1)); // MNT_RDONLY set too
         assert!(!is_local_mount(0x1));
         assert!(!is_local_mount(0));
@@ -415,10 +439,13 @@ mod tests {
         assert!(is_local_path(Path::new("/Volumes/New"), &[]));
     }
     #[test]
+    fn folders_on_the_local_disk_are_accepted() {
+        assert!(ensure_local_volume(&std::env::temp_dir()).is_ok());
+    }
+    #[test]
     fn discover_flags_the_startup_disk_but_not_home() {
         let items = discover();
         assert!(items.iter().any(|(t, p)| t.volume && p == Path::new("/")));
-        assert!(items.iter().any(|(t, p)| t.local && p == Path::new("/")));
         assert!(items.iter().filter(|(t, _)| t.home).all(|(t, _)| !t.volume));
         assert!(volume_paths().first().is_some_and(|p| p == Path::new("/")));
     }

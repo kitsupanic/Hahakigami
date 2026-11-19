@@ -38,8 +38,6 @@ export interface Target {
   freeBytes: number | null;
   home?: boolean;
   volume?: boolean;
-  /** On a local disk; false for a network share, which "Scan all disks" skips. */
-  local?: boolean;
 }
 export interface NodeView {
   id: number;

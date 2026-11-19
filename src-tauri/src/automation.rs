@@ -70,6 +70,7 @@ impl Service {
         // Clears `active` on every exit, including a scanner panic or an early `?`, so later scans are not refused.
         let _active = ActiveGuard(&self.session);
         let resolved = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        platform::ensure_local_volume(&resolved)?;
         let expected = disk_scan::platform_identity(&resolved).map_err(|e| e.to_string())?;
         let root = disk_scan::ScanRoot::open(resolved, expected).map_err(|e| e.to_string())?;
         let scope = if platform::is_volume_root(&root) {

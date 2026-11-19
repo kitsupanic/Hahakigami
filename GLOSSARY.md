@@ -17,7 +17,7 @@ What the app can tell about Full Disk Access for the running copy: on, off, or u
 _Avoid_: Acknowledgement, confirmation, setup done
 
 **Disk scan**:
-The latest measurement of one disk made in this session. Every disk in the Disks list keeps its own, so scanning a second disk never discards the first one's results, and disks can be scanned at the same time. A folder scan is kept the same way, but all folders share one. It stays available until the next scan of that disk (or of any folder) replaces it or the disk is ejected. Its results are gone once the app quits.
+The latest measurement of one disk made in this session. Every disk in the Disks list keeps its own, so scanning a second disk never discards the first one's results, and disks can be scanned at the same time. A folder scan is kept the same way, but all folders share one. It stays available until the next scan of that disk (or of any folder) replaces it or the disk is ejected. Its results are gone once the app quits. Network shares are not supported.
 _Avoid_: Current scan, live scan
 
 **Scan slot**:
@@ -25,7 +25,7 @@ Where the app keeps a Disk scan while the session lasts. Every disk has its own,
 _Avoid_: Session slot, scan cache
 
 **Scan all disks**:
-The action that starts a fresh Disk scan of every local disk in the Disks list. Network shares are skipped, and a disk that is already scanning is cancelled and scanned again. Folder scans are not touched.
+The action that starts a fresh Disk scan of every disk in the Disks list. A disk that is already scanning is cancelled and scanned again. Folder scans are not touched.
 _Avoid_: Scan everything, rescan all
 
 **Scan budget**:

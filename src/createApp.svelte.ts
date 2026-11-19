@@ -975,15 +975,12 @@ export default function createApp() {
       },
     };
   }
-  // Scan all disks covers the local disks only: a network share is slow and can stall.
-  const localDisks = $derived(
-    targets.filter((item) => item.volume && item.local === true),
-  );
-  // Starts a fresh scan of every local disk; one that is scanning is cancelled first. A refused start
+  const disks = $derived(targets.filter((item) => item.volume));
+  // Starts a fresh scan of every disk; one that is scanning is cancelled first. A refused start
   // does not stop the others: the failures are reported together.
   async function scanAllDisks() {
     if (!can.scanAllDisks) return;
-    if (scanBlocked({ target: localDisks[0], scanAll: true })) return;
+    if (scanBlocked({ target: disks[0], scanAll: true })) return;
     // Only the start of the disk on screen (else the selected one) takes the view, and only if the user has not selected or opened
     // anything else since the press; the other starts just update their sidebar rows.
     const pressed = {
@@ -993,7 +990,7 @@ export default function createApp() {
       // The disk whose results are on screen, else the selected one.
       key: (exploring ? displayedSlot : null) ?? (target ? slotKey(target) : null),
     };
-    const failures = await scans.scanAll(() => localDisks, {
+    const failures = await scans.scanAll(() => disks, {
       takeView: (key) =>
         key === pressed.key &&
         target?.id === pressed.id &&
@@ -1639,7 +1636,7 @@ export default function createApp() {
         !!access &&
         !sessionBlocked &&
         !scans.scanningAll &&
-        localDisks.length > 0
+        disks.length > 0
       );
     },
     // Dialogs about the results on screen: they rescan those, not the sidebar target.

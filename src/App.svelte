@@ -1370,7 +1370,7 @@
                   >
                   <button
                     class="welcome-scan-all"
-                    title="Scan every local disk"
+                    title="Scan every disk"
                     disabled={!app.can.scanAllDisks}
                     onclick={() => void app.scanAllDisks()}
                     ><Icon name="disk" size={17} /><span>Scan all disks</span
