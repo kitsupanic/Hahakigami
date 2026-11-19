@@ -19,7 +19,7 @@ pub struct Target {
 }
 
 /// Hardware core classes, not the placement of any particular thread.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", any(test, feature = "performance-benchmark")))]
 pub fn cpu_thread_classes() -> (Option<usize>, Option<usize>) {
     fn integer(name: &std::ffi::CStr) -> Option<usize> {
         let mut value: libc::c_int = 0;
@@ -65,7 +65,7 @@ pub fn cpu_thread_classes() -> (Option<usize>, Option<usize>) {
         .flatten();
     (p, e)
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), any(test, feature = "performance-benchmark")))]
 pub fn cpu_thread_classes() -> (Option<usize>, Option<usize>) {
     (None, None)
 }
@@ -118,18 +118,13 @@ pub fn scheduling_conditions() -> SchedulingConditions {
 /// Classify scheduling scope from a held root; this grants no authority and resolves no paths.
 #[cfg(target_os = "macos")]
 pub fn is_volume_root(root: &disk_scan::ScanRoot) -> bool {
-    use std::os::{
-        fd::{AsFd, AsRawFd},
-        unix::ffi::OsStrExt,
-    };
+    use std::os::fd::{AsFd, AsRawFd};
     let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
     if unsafe { libc::fstatfs(root.as_fd().as_raw_fd(), info.as_mut_ptr()) } != 0 {
         return false;
     }
     let info = unsafe { info.assume_init() };
-    let bytes: Vec<u8> = info.f_mntonname.iter().map(|c| *c as u8).collect();
-    std::ffi::CStr::from_bytes_until_nul(&bytes)
-        .is_ok_and(|path| path.to_bytes() == root.path().as_os_str().as_bytes())
+    mount_of(&info).0.as_os_str() == root.path().as_os_str()
 }
 #[cfg(not(target_os = "macos"))]
 pub fn is_volume_root(root: &disk_scan::ScanRoot) -> bool {
@@ -154,8 +149,10 @@ pub fn volume_paths() -> Vec<PathBuf> {
     // A home folder mounted at /Volumes/<name> is listed as home, not as a disk.
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut paths = vec![PathBuf::from("/")];
+    // An unreadable mount table only costs the extra disks; "/" is always listed.
     paths.extend(
         mounted_paths()
+            .unwrap_or_default()
             .into_iter()
             .filter(|path| is_volume_mount(path) && home.as_ref() != Some(path)),
     );
@@ -193,7 +190,7 @@ pub fn discover() -> Vec<(Target, PathBuf)> {
         paths.push((path, name));
     }
     // One mount-table read for every path: statfs per path would block on an unresponsive mount.
-    let mounts = mounted_flags();
+    let mounts = mounted_flags().unwrap_or_default();
     paths
         .into_iter()
         .filter(|(path, _)| is_local_path(path, &mounts))
@@ -214,19 +211,25 @@ fn folder_name(path: &Path) -> String {
         .into_owned()
 }
 
-/// `MNT_LOCAL` from <sys/mount.h>: set on a mount backed by a local device.
-const MNT_LOCAL: u32 = 0x0000_1000;
-
-/// Whether a mount's `f_flags` mark it as local.
-fn is_local_mount(flags: u32) -> bool {
-    flags & MNT_LOCAL != 0
+/// A mount point and whether `info`'s mount is backed by a local device.
+#[cfg(target_os = "macos")]
+pub(crate) fn mount_of(info: &libc::statfs) -> (PathBuf, bool) {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes: Vec<u8> = info
+        .f_mntonname
+        .iter()
+        .map(|c| *c as u8)
+        .take_while(|c| *c != 0)
+        .collect();
+    (
+        PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)),
+        info.f_flags & libc::MNT_LOCAL as u32 != 0,
+    )
 }
 
 /// A path is local unless the mount table lists a non-local mount at exactly that path.
-fn is_local_path(path: &Path, mounts: &[(PathBuf, u32)]) -> bool {
-    mounts
-        .iter()
-        .all(|(mount, flags)| mount != path || is_local_mount(*flags))
+fn is_local_path(path: &Path, mounts: &[(PathBuf, bool)]) -> bool {
+    mounts.iter().all(|(mount, local)| mount != path || *local)
 }
 
 /// Refuses a path on a network share: `statfs` on the path itself, so it also covers folders below a mount point.
@@ -243,7 +246,7 @@ pub fn ensure_local_volume(path: &Path) -> Result<(), String> {
         ));
     }
     let info = unsafe { info.assume_init() };
-    if is_local_mount(info.f_flags) {
+    if mount_of(&info).1 {
         Ok(())
     } else {
         Err("Network shares aren't supported. Choose a folder on a local disk.".into())
@@ -254,20 +257,20 @@ pub fn ensure_local_volume(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn mounted_paths() -> Vec<PathBuf> {
-    mounted_flags().into_iter().map(|(path, _)| path).collect()
+/// `None` when the mount table can't be read; callers that guard mounts must not treat that as "no mounts".
+pub fn mounted_paths() -> Option<Vec<PathBuf>> {
+    mounted_flags().map(|mounts| mounts.into_iter().map(|(path, _)| path).collect())
 }
 
-/// Mount points and their `f_flags`, from the mount table only (MNT_NOWAIT: no probing of the mounts).
+/// Mount points and whether each is local, from the mount table only (MNT_NOWAIT: no probing of the mounts).
 #[cfg(target_os = "macos")]
-fn mounted_flags() -> Vec<(PathBuf, u32)> {
-    use std::os::unix::ffi::OsStrExt;
+fn mounted_flags() -> Option<Vec<(PathBuf, bool)>> {
     // getfsstat writes into caller-owned memory. Unlike getmntinfo, concurrent
     // calls never invalidate another caller's native array.
     for _ in 0..4 {
         let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
         if count < 0 {
-            return vec![];
+            return None;
         }
         let capacity = count as usize + 16;
         let mut mounts: Vec<libc::statfs> = Vec::with_capacity(capacity);
@@ -275,7 +278,7 @@ fn mounted_flags() -> Vec<(PathBuf, u32)> {
         let written =
             unsafe { libc::getfsstat(mounts.as_mut_ptr(), bytes as i32, libc::MNT_NOWAIT) };
         if written < 0 {
-            return vec![];
+            return None;
         }
         if written as usize >= capacity {
             continue;
@@ -284,31 +287,19 @@ fn mounted_flags() -> Vec<(PathBuf, u32)> {
         unsafe {
             mounts.set_len(written as usize);
         }
-        return mounts
-            .iter()
-            .filter_map(|mount| {
-                let bytes: Vec<u8> = mount
-                    .f_mntonname
-                    .iter()
-                    .map(|c| *c as u8)
-                    .take_while(|c| *c != 0)
-                    .collect();
-                if bytes.is_empty() {
-                    None
-                } else {
-                    Some((
-                        PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)),
-                        mount.f_flags,
-                    ))
-                }
-            })
-            .collect();
+        return Some(
+            mounts
+                .iter()
+                .map(mount_of)
+                .filter(|(path, _)| !path.as_os_str().is_empty())
+                .collect(),
+        );
     }
-    vec![]
+    None
 }
 #[cfg(not(target_os = "macos"))]
-fn mounted_flags() -> Vec<(PathBuf, u32)> {
-    vec![]
+fn mounted_flags() -> Option<Vec<(PathBuf, bool)>> {
+    Some(vec![])
 }
 
 #[allow(clippy::unnecessary_cast)] // statvfs field widths differ on Unix targets.
@@ -421,13 +412,10 @@ mod tests {
     }
     #[test]
     fn mount_flags_tell_local_disks_from_network_shares_that_discovery_drops() {
-        assert!(is_local_mount(MNT_LOCAL | 0x1)); // MNT_RDONLY set too
-        assert!(!is_local_mount(0x1));
-        assert!(!is_local_mount(0));
         let mounts = [
-            (PathBuf::from("/"), MNT_LOCAL),
-            (PathBuf::from("/Volumes/Backup"), MNT_LOCAL | 0x1),
-            (PathBuf::from("/Volumes/media"), 0),
+            (PathBuf::from("/"), true),
+            (PathBuf::from("/Volumes/Backup"), true),
+            (PathBuf::from("/Volumes/media"), false),
         ];
         assert!(is_local_path(Path::new("/"), &mounts));
         assert!(is_local_path(Path::new("/Volumes/Backup"), &mounts));
@@ -529,7 +517,7 @@ mod tests {
             for _ in 0..8 {
                 scope.spawn(|| {
                     for _ in 0..20 {
-                        assert!(mounted_paths().iter().any(|p| p == Path::new("/")));
+                        assert!(mounted_paths().unwrap().iter().any(|p| p == Path::new("/")));
                     }
                 });
             }

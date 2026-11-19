@@ -53,6 +53,7 @@ fn automatic_worker_count(
     };
     count
 }
+#[cfg(any(test, feature = "performance-benchmark"))]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsInfo {
@@ -73,8 +74,9 @@ pub struct SettingsInfo {
     pub efficiency_threads: Option<usize>,
 }
 pub struct ScanSettings {
-    info: SettingsInfo,
+    cpu_threads: usize,
 }
+#[cfg(any(test, feature = "performance-benchmark"))]
 fn neutral_conditions() -> crate::platform::SchedulingConditions {
     crate::platform::SchedulingConditions {
         active_cpu_threads: None,
@@ -93,41 +95,46 @@ impl Default for ScanSettings {
 }
 impl ScanSettings {
     fn with_cpu_threads(cpu_threads: usize) -> Self {
-        let cpu_threads = cpu_threads.max(1);
+        Self {
+            cpu_threads: cpu_threads.max(1),
+        }
+    }
+    #[cfg(any(test, feature = "performance-benchmark"))]
+    fn baseline_info(&self) -> SettingsInfo {
+        let cpu_threads = self.cpu_threads;
         let max_workers = cpu_threads.min(disk_scan::MAX_WORKERS);
         let default_workers =
             automatic_worker_count(cpu_threads, AutoScope::Volume, neutral_conditions());
         let (performance_threads, efficiency_threads) = crate::platform::cpu_thread_classes();
-        Self {
-            info: SettingsInfo {
-                workers: default_workers,
-                worker_mode: WorkerMode::Auto,
-                resolved_workers: default_workers,
-                qos: disk_scan::ScanQos::Automatic,
-                qos_supported: cfg!(target_os = "macos"),
-                cpu_threads,
-                max_workers,
-                default_workers,
-                auto_scope: AutoScope::Volume,
-                auto_base_workers: default_workers,
-                low_power_mode: false,
-                thermal_state: crate::platform::ThermalState::Unknown,
-                warning: None,
-                performance_threads,
-                efficiency_threads,
-            },
+        SettingsInfo {
+            workers: default_workers,
+            worker_mode: WorkerMode::Auto,
+            resolved_workers: default_workers,
+            qos: disk_scan::ScanQos::Automatic,
+            qos_supported: cfg!(target_os = "macos"),
+            cpu_threads,
+            max_workers,
+            default_workers,
+            auto_scope: AutoScope::Volume,
+            auto_base_workers: default_workers,
+            low_power_mode: false,
+            thermal_state: crate::platform::ThermalState::Unknown,
+            warning: None,
+            performance_threads,
+            efficiency_threads,
         }
     }
     #[cfg(test)]
     pub fn info(&self) -> SettingsInfo {
         self.info_for_conditions(AutoScope::Volume, crate::platform::scheduling_conditions())
     }
+    #[cfg(any(test, feature = "performance-benchmark"))]
     fn info_for_conditions(
         &self,
         scope: AutoScope,
         conditions: crate::platform::SchedulingConditions,
     ) -> SettingsInfo {
-        let mut info = self.info.clone();
+        let mut info = self.baseline_info();
         info.auto_scope = scope;
         info.auto_base_workers = automatic_worker_count(
             info.cpu_threads,
@@ -157,9 +164,7 @@ impl ScanSettings {
         scope: AutoScope,
         conditions: crate::platform::SchedulingConditions,
     ) -> (usize, usize, &'static str) {
-        let base = self
-            .automatic_info_for_conditions(scope, conditions)
-            .resolved_workers;
+        let base = automatic_worker_count(self.cpu_threads, scope, conditions);
         let cap = if scope == AutoScope::Folder
             && !conditions.low_power_mode
             && conditions.thermal_state == crate::platform::ThermalState::Nominal
@@ -167,10 +172,10 @@ impl ScanSettings {
             4.min(
                 conditions
                     .active_cpu_threads
-                    .unwrap_or(self.info.cpu_threads)
+                    .unwrap_or(self.cpu_threads)
                     .max(1),
             )
-            .min(self.info.cpu_threads.max(1))
+            .min(self.cpu_threads)
             .min(disk_scan::MAX_WORKERS)
             .max(base)
         } else {
@@ -183,6 +188,7 @@ impl ScanSettings {
     pub fn automatic_info_for_scope(&self, scope: AutoScope) -> SettingsInfo {
         self.automatic_info_for_conditions(scope, crate::platform::scheduling_conditions())
     }
+    #[cfg(any(test, feature = "performance-benchmark"))]
     pub fn automatic_info_for_conditions(
         &self,
         scope: AutoScope,

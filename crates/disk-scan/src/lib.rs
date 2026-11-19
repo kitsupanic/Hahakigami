@@ -247,11 +247,7 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn clone_attribution(&self, id: u32) -> Option<(bool, u64)> {
-        self.tree
-            .clone_attributions
-            .binary_search_by_key(&id, |e| e.0)
-            .ok()
-            .map(|i| self.tree.clone_attributions[i].1)
+        tree::lookup(&self.tree.clone_attributions, id).copied()
     }
     pub fn incremental_accounting_eligible(&self) -> bool {
         self.accounting.model == AccountingModel::FullClonesV1
@@ -802,14 +798,8 @@ fn exclusion(s: &mut Snapshot, path: PathBuf) {
         });
     }
 }
-fn record_node_scope(
-    s: &mut Snapshot,
-    path: &Path,
-    is_directory: bool,
-    excluded: &mut bool,
-    permitted: bool,
-) {
-    *excluded = is_directory && !permitted;
+fn record_node_scope(s: &mut Snapshot, path: &Path, excluded: &mut bool, permitted: bool) {
+    *excluded = !permitted;
     if *excluded {
         exclusion(s, path.to_path_buf());
     }
@@ -1254,7 +1244,6 @@ fn scan_live_internal_reuse(
                                                 record_node_scope(
                                                     &mut s,
                                                     &entry_path,
-                                                    true,
                                                     &mut n.metadata.excluded,
                                                     permitted,
                                                 );
@@ -2785,13 +2774,7 @@ mod tests {
         let mut n = node(entry, 0, None);
         assert!(!n.excluded);
         let permitted = traversal_allowed(&path, Path::new("/fixture"), n.identity.device, 1, None);
-        record_node_scope(
-            &mut snapshot,
-            &n.path,
-            n.is_directory,
-            &mut n.excluded,
-            permitted,
-        );
+        record_node_scope(&mut snapshot, &n.path, &mut n.excluded, permitted);
         assert!(n.excluded);
         assert_eq!(snapshot.exclusions.len(), 10000);
         assert!(!snapshot.exclusions.iter().any(|issue| issue.path == path));

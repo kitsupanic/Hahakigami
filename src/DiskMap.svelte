@@ -471,7 +471,7 @@
     }
     const parents = new Set(nodes.map((n) => n.parentId));
     const ctx = el.getContext("2d")!;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = pixelRatio;
     const pixelWidth = Math.trunc(dimensions.width * dpr),
       pixelHeight = Math.trunc(dimensions.height * dpr);
     // Setting either dimension resets the backing store and all context state.
@@ -839,7 +839,7 @@
       if (el.height !== 0) el.height = 0;
       return;
     }
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = pixelRatio;
     const pixelWidth = Math.trunc(dimensions.width * dpr),
       pixelHeight = Math.trunc(dimensions.height * dpr);
     if (el.width !== pixelWidth) el.width = pixelWidth;
@@ -867,6 +867,19 @@
       next && next.kind !== "aggregate" ? createHoverTarget(next, byId) : null,
     );
   }
+  // Track the display's pixel ratio so moving to another screen repaints at its density.
+  let pixelRatio = $state(window.devicePixelRatio || 1);
+  onMount(() => {
+    let query: MediaQueryList | undefined;
+    const rearm = () => {
+      query?.removeEventListener("change", rearm);
+      pixelRatio = window.devicePixelRatio || 1;
+      query = window.matchMedia?.(`(resolution: ${pixelRatio}dppx)`);
+      query?.addEventListener("change", rearm);
+    };
+    rearm();
+    return () => query?.removeEventListener("change", rearm);
+  });
   onDestroy(clearHover);
   function hitNode(e: MouseEvent) {
     if (!layoutCurrent) return undefined;

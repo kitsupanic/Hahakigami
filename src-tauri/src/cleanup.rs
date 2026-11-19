@@ -30,6 +30,8 @@ pub(crate) struct TrashResult {
     pub(crate) failures: Vec<String>,
     pub(crate) persistence_warning: Option<String>,
     pub(crate) outcomes: Vec<TrashOutcome>,
+    /// The scan was invalidated: something moved, so its results no longer match the disk.
+    pub(crate) invalidated: bool,
 }
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +49,8 @@ pub(crate) enum TrashOutcomeStatus {
     Trashed,
     Failed,
 }
+
+const MOUNTS_UNREADABLE: &str = "Could not read the mounted volumes. Try again.";
 
 /// What a review covers.
 pub(crate) enum Pick<'a> {
@@ -205,6 +209,7 @@ pub(crate) fn commit(
     // A failed Trash step can still have moved something (an unconfirmed receipt): the scan no longer matches.
     if result.trashed > 0 || moved_unconfirmed {
         s.invalidate();
+        result.invalidated = true;
     }
     let mut queue = queue.lock().unwrap();
     result.persistence_warning = queue
@@ -220,7 +225,7 @@ fn execute(
     mut trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<Execution, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mounts = platform::mounted_paths();
+    let mounts = platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?;
     // Verify all first, so a stale ticket moves nothing; then again just before each item's move.
     for item in items {
         safety::verify(item, root, home.as_deref(), &mounts)?;
@@ -230,6 +235,7 @@ fn execute(
         failures: vec![],
         persistence_warning: None,
         outcomes: vec![],
+        invalidated: false,
     };
     let mut successful = vec![];
     let mut failures = vec![];
@@ -334,7 +340,7 @@ pub(crate) fn selection(
         queued.check_room(&items)?;
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mounts = platform::mounted_paths();
+    let mounts = platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?;
     for item in &mut items {
         // Read before `verify`, so a file replaced in between fails it.
         item.pin_birth();
@@ -366,7 +372,10 @@ fn statuses(
         return HashMap::new();
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mounts = platform::mounted_paths();
+    // Unreadable mount table: report nothing ready rather than check folders with no mounts to protect.
+    let Some(mounts) = platform::mounted_paths() else {
+        return HashMap::new();
+    };
     with_usable_scans(scans, |scans| {
         cleanup_queue::statuses(queue, scans, home.as_deref(), &mounts)
     })
@@ -472,6 +481,7 @@ mod tests {
         assert_eq!(result.outcomes[0].status, TrashOutcomeStatus::Failed);
         // Something did move, so the scan no longer matches the disk.
         assert!(!s.is_valid());
+        assert!(result.invalidated);
     }
 
     #[test]
@@ -491,6 +501,8 @@ mod tests {
             (free, work.join().unwrap())
         });
         assert!(free, "commit held the queue lock while checking the disk");
-        assert_eq!(result.unwrap().trashed, 1);
+        let result = result.unwrap();
+        assert_eq!(result.trashed, 1);
+        assert!(result.invalidated);
     }
 }

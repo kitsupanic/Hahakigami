@@ -30,6 +30,7 @@ const base: CleanupReport = {
   detailsAvailable: true,
   message: null,
   persistenceWarning: null,
+  invalidated: false,
   queueState: "confirmed",
   remainingQueued: 3,
   queueWarning: null,

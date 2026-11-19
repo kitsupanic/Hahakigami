@@ -726,7 +726,8 @@ export default function createApp() {
         );
         // A scan starting now owns the view; the next tick retries.
         if (cancelled || busy) return;
-        const present = new Set(found.map((item) => item.path));
+        // A volume still in the mount table but missing from `found` failed to register this time; it is not ejected.
+        const present = new Set([...found.map((item) => item.path), ...mounted]);
         const kept = targets.filter(
           (item) => !item.volume || present.has(item.path),
         );
@@ -1432,10 +1433,10 @@ export default function createApp() {
         : "";
       setTrash(null);
       await refreshQueue();
-      if (report.movedCount) {
+      if (report.movedCount || report.invalidated) {
         clearResultsReturn();
         clearNavigationHistory();
-        // Successful cleanup invalidates these results before a replacement scan starts.
+        // A cleanup that moved anything invalidates these results before a replacement scan starts.
         scans.drop(scanId);
         setSummary(null);
         await start(rescanTarget);

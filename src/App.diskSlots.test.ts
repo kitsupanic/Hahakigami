@@ -370,6 +370,18 @@ it.each([false, true])(
   },
 );
 
+it("keeps a still-mounted disk's scan when that disk fails to register on a refresh", async () => {
+  await scanDisk("Macintosh HD");
+  await scanDisk("Backup");
+  // Backup is still mounted, but discovery left it out (its register failed this time).
+  mounted = ["/", "/Volumes/Backup", "/Volumes/Other"];
+  discovered = [disk, home];
+  await refresh();
+  expect(calls("discard_scan")).toHaveLength(0);
+  expect(diskNames()).toEqual(["Macintosh HD", "Backup"]);
+  expect(app().summary?.scanId).toBe("scan-backup-2");
+});
+
 it("does not discard anything when a disk with no scan is ejected", async () => {
   await scanDisk("Macintosh HD");
   mounted = ["/"];
@@ -383,7 +395,8 @@ it("does not discard anything when a disk with no scan is ejected", async () => 
 it("lets other scans start while an ejected disk's running scan winds down, keeps global operations waiting for its end, and ignores its late events", async () => {
   startState = "running";
   await scanDisk("Macintosh HD");
-  mounted = ["/"];
+  // Gone from the mount table too, as an ejected disk is.
+  mounted = [];
   discovered = [home];
   await refresh();
   expect(calls("discard_scan")).toHaveLength(1);

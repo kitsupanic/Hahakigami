@@ -1002,6 +1002,19 @@ fn registration_rejects_changed_folder() {
     assert!(validate_target(&state.target_guards.lock().unwrap()[&target.id]).is_err());
 }
 #[test]
+fn discovery_skips_a_location_that_fails_to_register() {
+    let d = fixture();
+    let good = std::fs::canonicalize(d.path()).unwrap();
+    let gone = good.join("unplugged");
+    let state = AppState::default();
+    let found = [&gone, &good]
+        .map(|p| (platform::target(p, "disk".into()), p.clone()))
+        .to_vec();
+    let listed = register_all(&state, found);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, good.to_string_lossy());
+}
+#[test]
 fn registering_a_location_again_keeps_one_entry() {
     let d = fixture();
     let parent = std::fs::canonicalize(d.path()).unwrap();

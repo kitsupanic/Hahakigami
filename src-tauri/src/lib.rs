@@ -380,14 +380,20 @@ async fn discover_targets(app: tauri::AppHandle) -> Result<Vec<platform::Target>
     }
     // statvfs/lstat can hang on an unresponsive mount; keep it off the async workers.
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        platform::discover()
-            .into_iter()
-            .map(|(t, p)| register(&state, t, p))
-            .collect()
+        register_all(&app.state::<AppState>(), platform::discover())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+/// A volume that fails to register (a damaged stick, a vanished mount) is left out; the rest still list.
+fn register_all(
+    state: &AppState,
+    found: Vec<(platform::Target, PathBuf)>,
+) -> Vec<platform::Target> {
+    found
+        .into_iter()
+        .filter_map(|(t, p)| register(state, t, p).ok())
+        .collect()
 }
 /// Paths `discover_targets` would list as disks. Reads the mount table only: no capacity probe, no registration.
 #[tauri::command]
@@ -398,27 +404,28 @@ async fn mounted_volumes() -> Vec<String> {
         .collect()
 }
 #[tauri::command]
-async fn choose_folder(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Option<platform::Target>, String> {
-    let chosen =
-        tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
-            .await
-            .map_err(|e| e.to_string())?;
-    match chosen {
-        None => Ok(None),
-        Some(file) => {
-            let path = file.into_path().map_err(|e| e.to_string())?;
-            let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-            let name = path
-                .file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .into_owned();
-            Ok(Some(register(&state, platform::target(&path, name), path)?))
-        }
-    }
+async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>, String> {
+    // canonicalize, statvfs and register's lstat/statfs can hang on an unresponsive mount, like the picker itself.
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(file) = app.dialog().file().blocking_pick_folder() else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        let target = register(
+            &app.state::<AppState>(),
+            platform::target(&path, name),
+            path,
+        )?;
+        Ok(Some(target))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 fn validate_target(guard: &safety::CheckedItem) -> Result<(), String> {
     if safety::Identity::read(&guard.path)? != guard.identity
@@ -865,12 +872,6 @@ fn register_scan(
         auto_scope,
     } = opened;
     let scheduling_conditions = platform::scheduling_conditions();
-    let scan_settings = state
-        .scan_settings
-        .lock()
-        .unwrap()
-        .automatic_info_for_conditions(settings::AutoScope::Volume, scheduling_conditions);
-    let qos = scan_settings.qos;
     let (workers, cached_validation_workers, worker_source) = state
         .scan_settings
         .lock()
@@ -892,9 +893,9 @@ fn register_scan(
             root_ancestors,
             workers,
             cached_validation_workers,
-            worker_mode: scan_settings.worker_mode,
+            worker_mode: settings::WorkerMode::Auto,
             worker_source: worker_source.into(),
-            qos,
+            qos: disk_scan::ScanQos::Automatic,
         },
     )?;
     // The session is registered and counts as running, so restart and setup refuse without this lock. Taking
@@ -1015,7 +1016,7 @@ async fn get_scan_issues(
             }
             _ => details.len(),
         };
-        Ok(IssuePage {
+        let page = IssuePage {
             scan_id,
             node_id: 0,
             kind,
@@ -1041,7 +1042,9 @@ async fn get_scan_issues(
                     raw_os_error: issue.raw_os_error,
                 })
                 .collect(),
-        })
+        };
+        s.check_valid()?;
+        Ok(page)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1059,7 +1062,9 @@ async fn get_node(
         s.check_valid()?;
         let issues = issue_index(&s, &snapshot);
         let n = snapshot.node(node_id).ok_or("Node not yet available")?;
-        view(&n, &issues.1)
+        let node = view(&n, &issues.1)?;
+        s.check_valid()?;
+        Ok(node)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1870,8 +1875,6 @@ pub fn run() {
             *app.state::<AppState>().cleanup_queue.lock().unwrap() = cleanup_queue::Queue::load(data.join("cleanup-queue"));
             *app.state::<AppState>().access_setup.lock().unwrap() =
                 access_setup::AccessSetup::new(&std::env::current_exe()?);
-            *app.state::<AppState>().scan_settings.lock().unwrap() =
-                settings::ScanSettings::default();
             Ok(())
             }
         })

@@ -482,6 +482,31 @@ it("reviews queued Trash and reports partial/persistence failures after original
     container.querySelector('.cleanup-modal [role="status"]')?.textContent,
   ).toContain("Moved 1 of 2 items to Trash");
 });
+it("rescans after a failed Trash that still invalidated the scan", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command, args) => {
+    if (command === "prepare_cleanup_queue")
+      return { token: "ticket", items: [file] };
+    if (command === "commit_cleanup_queue")
+      return {
+        trashed: 0,
+        failures: ["x"],
+        outcomes: [{ reviewIndex: 0, status: "failed", message: "x" }],
+        invalidated: true,
+        persistenceWarning: null,
+      };
+    return original(command, args);
+  });
+  await click("Scan location");
+  await click("Cleanup queue · 1");
+  await click("Review 1 ready");
+  await click("Move to Trash");
+  await flush();
+  await flush();
+  expect(
+    mock.invoke.mock.calls.filter(([c]) => c === "start_scan"),
+  ).toHaveLength(2);
+});
 it("opens the cleanup result as a modal that traps focus, closes with Done or Escape and returns focus", async () => {
   let trashed = 0;
   const original = mock.invoke.getMockImplementation()!;
