@@ -297,7 +297,7 @@ impl Queue {
         })
         .map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_BYTES {
-            return Err("Cleanup queue record is too large.".into());
+            return Err("The cleanup queue is full: its paths are too long to store. Remove some items first.".into());
         }
         fs::create_dir_all(directory).map_err(|e| e.to_string())?;
         let metadata = fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
@@ -798,7 +798,7 @@ mod tests {
             root_ancestors: ancestors(root),
             allocated_bytes: 4096,
             last_error: None,
-            volume: Some(Volume::read(crate::platform::VolumeOf::Path(root)).unwrap()),
+            volume: Some(Volume::read(root).unwrap()),
         }
     }
     #[test]

@@ -365,8 +365,6 @@ mod native {
         fn CFNumberGetTypeID() -> usize;
         fn CFStringGetLength(string: Ref) -> isize;
         fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
-        fn CFStringGetFileSystemRepresentation(string: Ref, buffer: *mut c_char, size: isize)
-            -> u8;
         fn CFNumberGetValue(number: Ref, kind: isize, value: *mut c_void) -> u8;
         fn CFRelease(value: Ref);
         fn CFUUIDCreateString(a: Ref, uuid: Ref) -> Ref;
@@ -577,6 +575,22 @@ mod native {
             }
         }
     }
+    /// The event path's bytes as the filesystem stores them. Not `CFStringGetFileSystemRepresentation`: it
+    /// decomposes (NFD), so `café` stored composed would never match the scanned node and its change would be lost.
+    unsafe fn string_path(path: Ref) -> Result<PathBuf, String> {
+        let capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(path), 0x08000100);
+        if !(0..=1024 * 1024).contains(&capacity) {
+            return Err("Unrepresentable filesystem event path".into());
+        }
+        let mut bytes = vec![0i8; capacity as usize + 1];
+        if CFStringGetCString(path, bytes.as_mut_ptr(), bytes.len() as isize, 0x08000100) == 0 {
+            return Err("Unrepresentable filesystem event path".into());
+        }
+        use std::os::unix::ffi::OsStrExt;
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+            CStr::from_ptr(bytes.as_ptr()).to_bytes(),
+        )))
+    }
     unsafe fn event_record(record: Ref) -> Result<(PathBuf, Option<u64>), String> {
         if record.is_null() || CFGetTypeID(record) != CFDictionaryGetTypeID() {
             return Err("Malformed filesystem event record".into());
@@ -608,19 +622,7 @@ mod native {
         if path.is_null() || CFGetTypeID(path) != CFStringGetTypeID() {
             return Err("Missing filesystem event path".into());
         }
-        let capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(path), 0x08000100);
-        if !(0..=1024 * 1024).contains(&capacity) {
-            return Err("Unrepresentable filesystem event path".into());
-        }
-        let mut bytes = vec![0i8; capacity as usize + 1];
-        if CFStringGetFileSystemRepresentation(path, bytes.as_mut_ptr(), bytes.len() as isize) == 0
-        {
-            return Err("Unrepresentable filesystem event path".into());
-        }
-        use std::os::unix::ffi::OsStrExt;
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(
-            CStr::from_ptr(bytes.as_ptr()).to_bytes(),
-        ));
+        let path = string_path(path)?;
         let mut value = 0i64;
         let inode = (!inode.is_null()
             && CFGetTypeID(inode) == CFNumberGetTypeID()
@@ -944,6 +946,52 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn event_paths_keep_composed_and_decomposed_names_as_stored() {
+            // "é" stored composed (NFC) and decomposed (NFD): each must come back byte for byte.
+            for name in ["/scope/caf\u{e9}/\u{ac00}", "/scope/cafe\u{301}"] {
+                let string = unsafe {
+                    CFStringCreateWithBytes(
+                        ptr::null(),
+                        name.as_ptr(),
+                        name.len() as isize,
+                        0x08000100,
+                        0,
+                    )
+                };
+                assert!(!string.is_null());
+                let path = unsafe { string_path(string) };
+                unsafe { CFRelease(string) };
+                assert_eq!(path.unwrap(), Path::new(name));
+            }
+        }
+        #[test]
+        #[ignore = "opt-in native journal: a composed (NFC) folder name"]
+        fn native_event_under_a_composed_name_maps_to_its_scanned_path() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap().join("caf\u{e9}");
+            std::fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            assert!(
+                root.to_str().unwrap().ends_with("caf\u{e9}"),
+                "APFS keeps the NFC spelling"
+            );
+            let volume = volume_mount(&root).unwrap();
+            let since = current_id().unwrap();
+            let path = root.join("changed");
+            let (_, changes) =
+                replay_with_load_on_volume(&root, &volume, since, &AtomicBool::new(false), || {
+                    std::thread::sleep(Duration::from_millis(400));
+                    std::fs::write(&path, "during decoding").unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                changes.paths.iter().any(|p| p == &path || p == &root)
+                    || changes.directories.iter().any(|p| p == &root),
+                "{changes:?}"
+            );
+        }
         #[test]
         #[ignore = "opt-in native loader journal overlap"]
         fn native_loading_changes_and_failures() {
