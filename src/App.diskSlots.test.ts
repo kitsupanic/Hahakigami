@@ -607,6 +607,59 @@ it("keeps a failed scan's partial results and leaves the other scans running", a
   expect(app().summary?.state).toBe("running");
 });
 
+it("keeps the rest of the app usable while one disk's start is stalled", async () => {
+  await scanDisk("Backup");
+  await act(() => app().showQueue(true));
+  await settle();
+  expect(app().queueOpen).toBe(true);
+  let release!: () => void;
+  startGate = new Promise<void>((resolve) => (release = resolve));
+  // A sleeping disk: its start never answers.
+  const stalled = app().start(disk);
+  await settle();
+  expect(app().busy).toBe(false);
+  expect(app().queueRootBusy("/")).toBe(true);
+  expect(app().queueRootBusy("/Volumes/Backup")).toBe(false);
+  await act(() => app().showQueue(false));
+  expect(app().queueOpen).toBe(false);
+  await click(diskRow("Backup"));
+  expect(app().target).toEqual(backup);
+  expect(app().summary?.scanId).toBe("scan-backup-1");
+  release();
+  await act(async () => void (await stalled));
+  await settle();
+  expect(app().scanSlots["/"].scanId).toBe("scan-disk-2");
+});
+
+it("looks the disks up again when a scan is refused because another volume sits at the same path", async () => {
+  const swapped = { ...backup, id: "backup-swapped" };
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "start_scan" && args.targetId === "backup")
+      throw new Error("The chosen folder changed. Choose it again before scanning.");
+    return standard(command, args);
+  });
+  await click(diskRow("Backup"));
+  await click(scanButton());
+  expect(app().error).toContain("chosen folder changed");
+  // The mount table still lists the same paths.
+  discovered = [disk, swapped, home];
+  const before = calls("discover_targets").length;
+  await refresh();
+  expect(calls("discover_targets")).toHaveLength(before + 1);
+  expect(app().targets.map((item) => item.id)).toEqual([
+    "disk",
+    "backup-swapped",
+    "home",
+  ]);
+  expect(app().target?.id).toBe("backup-swapped");
+  await click(scanButton());
+  expect(calls("start_scan").at(-1)?.[1].targetId).toBe("backup-swapped");
+  // The lookup ran once; unchanged paths do not trigger another.
+  await refresh();
+  expect(calls("discover_targets")).toHaveLength(before + 1);
+});
+
 it("tracks every start that overlaps another, and only the newest takes the view", async () => {
   startState = "running";
   let release!: () => void;
@@ -615,7 +668,10 @@ it("tracks every start that overlaps another, and only the newest takes the view
   const first = app().start(disk);
   const second = app().start(backup);
   await settle();
-  expect(app().busy).toBe(true);
+  // A start in flight blocks only its own disk, not the whole app.
+  expect(app().busy).toBe(false);
+  expect(app().queueRootBusy("/")).toBe(true);
+  expect(app().queueRootBusy("/Volumes/Backup")).toBe(true);
   // The first scan reports before its start returns, after a newer start took over.
   await progress("scan-disk-1", { entries: 4 });
   expect(app().scanSlots["/"].scanId).toBe("scan-disk-1");

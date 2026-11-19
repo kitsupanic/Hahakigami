@@ -26,8 +26,7 @@ impl ChildName {
         self.0.as_bytes_with_nul().len()
     }
     pub(crate) fn new(name: &std::ffi::OsStr) -> io::Result<Self> {
-        let bytes = name.as_bytes();
-        if bytes.is_empty() || bytes.contains(&b'/') || bytes == b"." || bytes == b".." {
+        if !crate::tree::is_exact_native_component(name) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "single child name required",

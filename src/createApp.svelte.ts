@@ -121,10 +121,11 @@ export default function createApp() {
   let disposed = false;
   // The live scans. beginStart is the app's side of every start.
   const scans = createScanSlots(tauriScanPort, { begin: beginStart });
-  // Set by what holds the session besides a scan start (trash review, cleanup); starts count in scans.
+  // Set by what holds the session (trash review, cleanup). A start in flight blocks only its own
+  // slot (`scans.busy`), so a stalled disk never freezes the rest of the UI.
   const opBusy = rawState(false);
   const setBusy = opBusy.set;
-  const busy = $derived(opBusy.value || scans.starting);
+  const busy = $derived(opBusy.value);
   const setCancelling = session.setCancelling;
   let cancelling = $derived(session.cancelling);
   const trashState = rawState<{
@@ -680,6 +681,9 @@ export default function createApp() {
     queueOpen = false;
     await start(chosen);
   }
+  // Set when a disk's scan was refused because another volume now sits at its path: the next disk
+  // refresh runs a full discovery even though the mounted paths look unchanged.
+  let rediscover = false;
   function fail(e: unknown, context?: { title: string; reason: string }) {
     setError(String(e), context);
   }
@@ -719,7 +723,8 @@ export default function createApp() {
         const shown = targets.filter((item) => item.volume);
         if (
           cancelled ||
-          (mounted.length === shown.length &&
+          (!rediscover &&
+            mounted.length === shown.length &&
             shown.every((item) => mounted.includes(item.path)))
         )
           return;
@@ -727,12 +732,16 @@ export default function createApp() {
           (item) => item.volume,
         );
         // A scan starting now owns the view; the next tick retries.
-        if (cancelled || busy) return;
+        if (cancelled || busy || scans.starting) return;
         // A volume still in the mount table but missing from `found` failed to register this time; it is not ejected.
         const present = new Set([...found.map((item) => item.path), ...mounted]);
-        const kept = targets.filter(
-          (item) => !item.volume || present.has(item.path),
-        );
+        // A refused scan means another volume now sits at the path: it replaces the old target, so a scan uses its new id.
+        const fresh = new Map(found.map((item) => [item.path, item]));
+        const kept = targets
+          .filter((item) => !item.volume || present.has(item.path))
+          .map((item) =>
+            rediscover && item.volume ? (fresh.get(item.path) ?? item) : item,
+          );
         const added = found.filter(
           // Only volumes count: a chosen folder may share a disk's path.
           (item) => !targets.some((old) => old.volume && old.path === item.path),
@@ -746,9 +755,17 @@ export default function createApp() {
         const gone = targets.filter(
           (item) => item.volume && !present.has(item.path),
         );
+        const swapped = rediscover;
+        rediscover = false;
         setTargets(next);
+        if (swapped && liveTarget?.volume)
+          liveTarget = fresh.get(liveTarget.path) ?? liveTarget;
         dropEjected(gone, startup);
-        if (target?.volume && !kept.includes(target)) setTarget(startup);
+        if (target?.volume && !kept.includes(target))
+          setTarget(
+            kept.find((item) => item.volume && item.path === target?.path) ??
+              startup,
+          );
       } catch {
         // The next tick tries again.
       } finally {
@@ -962,6 +979,9 @@ export default function createApp() {
       fetched: setSummary,
       failed(e) {
         const accessOff = String(e).includes("FULL_DISK_ACCESS_OFF");
+        // Scan all reports its failures together, but a disk swapped at its path still needs rediscovery.
+        if (t.volume && String(e).includes("The chosen folder changed"))
+          rediscover = true;
         if (how.batch && !accessOff) return false;
         if (!how.batch && g !== generation.current) return true;
         if (accessOff) {
@@ -975,7 +995,9 @@ export default function createApp() {
             blockScan(blocking);
             void loadAccess();
           }
-        } else fail(e);
+        } else {
+          fail(e);
+        }
         return true;
       },
     };
@@ -1094,6 +1116,13 @@ export default function createApp() {
       ? `${summary.state}:${Math.floor(summary.elapsedMs / 2000)}`
       : revision,
   );
+  // A live search or filter walks the whole tree under the scan's read lock; refresh it on user
+  // changes and when the scan ends, not every second.
+  const listRevision = $derived(
+    summary?.state === "running" && (debouncedQuery.trim() || filtered)
+      ? summary.state
+      : revision,
+  );
   $effect(() => {
     [scanIdentity, mapRevision, focusIdentity, mapColorMode];
     return untrack(() => {
@@ -1161,7 +1190,7 @@ export default function createApp() {
   $effect(() => {
     [
       scanIdentity,
-      revision,
+      listRevision,
       focusIdentity,
       offset,
       query,
@@ -1460,15 +1489,6 @@ export default function createApp() {
       setBusy(false);
     }
   }
-  const restrictedIssues = $derived(
-    Math.min(
-      summary?.errors ?? 0,
-      Math.max(0, summary?.restrictedSystemIssues ?? 0),
-    ),
-  );
-  const otherIssues = $derived(
-    Math.max(0, (summary?.errors ?? 0) - restrictedIssues),
-  );
   const inspected = $derived(selection[selection.length - 1] || focus);
   const parentFolder = $derived(
     summary &&
@@ -1957,12 +1977,6 @@ export default function createApp() {
     },
     get previewVisible() {
       return previewVisible;
-    },
-    get revision() {
-      return revision;
-    },
-    get otherIssues() {
-      return otherIssues;
     },
     get inspected() {
       return inspected;

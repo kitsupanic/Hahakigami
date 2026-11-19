@@ -185,6 +185,10 @@ impl Session {
     /// The old session is dropped by the caller either way, so its results are freed when the last reader lets go.
     fn take_baseline(&self, root: &Path) -> Option<baseline::Taken> {
         let token = self.cache_token.lock().unwrap().clone()?;
+        // A different root can never be a baseline: say so now instead of waiting out a reader first.
+        if self.store.try_read().is_ok_and(|s| s.root != root) {
+            return None;
+        }
         let deadline = std::time::Instant::now() + BASELINE_WAIT;
         let mut snapshot = loop {
             match self.store.try_write() {
@@ -640,6 +644,17 @@ mod tests {
             taking.join().unwrap()
         });
         assert!(previous.is_some());
+    }
+
+    #[test]
+    fn a_baseline_for_another_root_is_refused_without_waiting_for_a_reader() {
+        let (_dir, root) = dir();
+        let old = ended(&root, scan_of(&root));
+        *old.cache_token.lock().unwrap() = Some(token());
+        let _reader = old.store.read().unwrap();
+        let start = std::time::Instant::now();
+        assert!(old.take_baseline(Path::new("/elsewhere")).is_none());
+        assert!(start.elapsed() < BASELINE_WAIT / 2);
     }
 
     #[test]

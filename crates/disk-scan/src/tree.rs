@@ -217,7 +217,7 @@ impl NodePathCursor<'_> {
         Ok((self.output.as_path(), parent))
     }
 }
-fn is_exact_native_component(name: &OsStr) -> bool {
+pub(crate) fn is_exact_native_component(name: &OsStr) -> bool {
     #[cfg(unix)]
     {
         let bytes = name.as_bytes();

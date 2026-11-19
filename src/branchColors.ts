@@ -1,6 +1,7 @@
 import type { NodeView } from "./types";
 import { theme } from "./theme.svelte";
 import { branchInks } from "./uiFormat";
+import { normalizePath } from "./queueMarkers";
 
 export const neutralBranchColor = "#818a9b";
 export const guardianNeutralColor = "#8a8270";
@@ -33,7 +34,6 @@ export function createBranchPalette(
   );
 }
 
-export const normalizePath = (path: string) => path.replace(/\/+$/, "") || "/";
 export const parentPath = (path: string) => {
   const separator = path.lastIndexOf("/");
   return separator < 0 ? "" : path.slice(0, separator) || "/";

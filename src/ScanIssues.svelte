@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { coverageLabel } from "./scanCoverage";
+  import { coverageLabel, issueSplit } from "./scanCoverage";
   import { invoke } from "@tauri-apps/api/core";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import type { ScanIssuePage, ScanIssueKind, ScanSummary } from "./types";
@@ -10,10 +10,8 @@
   let { summary, active = false }: { summary: ScanSummary; active?: boolean } =
     $props();
   let scanIdentity = $derived(summary.scanId);
-  let restricted = $derived(
-    Math.min(summary.errors, Math.max(0, summary.restrictedSystemIssues ?? 0)),
-  );
-  let other = $derived(Math.max(0, summary.errors - restricted));
+  let restricted = $derived(issueSplit(summary).restricted);
+  let other = $derived(issueSplit(summary).other);
   let initialKind: ScanIssueKind = $derived(
     !other && restricted ? "restricted" : "other",
   );

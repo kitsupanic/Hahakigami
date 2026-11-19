@@ -488,6 +488,27 @@ it("retains search and list state while switching tabs without another statistic
   ).toHaveLength(1);
 });
 
+it("refreshes statistics of a live scan every ten seconds, not every revision", async () => {
+  await openTypes();
+  const channel = mock.invoke.mock.calls
+    .filter(([name]) => name === "start_scan")
+    .at(-1)![1].onEvent as { onmessage: (event: ScanSummary) => void };
+  const queries = () =>
+    mock.invoke.mock.calls.filter(([name]) => name === "get_file_types").length;
+  const report = async (state: ScanSummary["state"], elapsedMs: number) => {
+    await act(async () => channel.onmessage({ ...summary(), state, elapsedMs }));
+    await flush();
+  };
+  await report("running", 1000);
+  const before = queries();
+  for (const elapsedMs of [3000, 5000, 9000]) await report("running", elapsedMs);
+  expect(queries()).toBe(before);
+  await report("running", 10000);
+  expect(queries()).toBe(before + 1);
+  await report("completed", 10500);
+  expect(queries()).toBe(before + 2);
+});
+
 it("retains scan-wide totals while visiting the current-folder scope", async () => {
   await openTypes();
   await act(() => app().setFocus(folder));

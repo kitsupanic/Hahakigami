@@ -42,20 +42,16 @@ impl EntryPath {
     #[cfg(unix)]
     fn short(name: &OsStr) -> Option<Self> {
         use std::os::unix::ffi::OsStrExt;
-        let name = name.as_bytes();
-        if name.is_empty()
-            || name.len() > 22
-            || name == b"."
-            || name == b".."
-            || name.iter().any(|byte| matches!(byte, 0 | b'/'))
-        {
+        let raw = name.as_bytes();
+        // NUL stays out of inline storage; `is_exact_native_component` leaves it to consumers.
+        if raw.len() > 22 || raw.contains(&0) || !crate::tree::is_exact_native_component(name) {
             return None;
         }
         let mut bytes = [0; 22];
-        bytes[..name.len()].copy_from_slice(name);
+        bytes[..raw.len()].copy_from_slice(raw);
         Some(Self(Storage::Short {
             bytes,
-            length: name.len() as u8,
+            length: raw.len() as u8,
         }))
     }
 }

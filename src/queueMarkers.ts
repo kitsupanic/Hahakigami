@@ -11,9 +11,10 @@ export function queuePathKey(item: QueuePath): string {
 
 // Queue paths are native absolute paths. Do not interpret map aggregate labels
 // or resolve filesystem aliases when displaying membership.
+export const normalizePath = (path: string) =>
+  path.replace(/\/+$/, "") || "/";
 export function normalizeQueuePath(path: string): string | null {
-  if (!path.startsWith("/")) return null;
-  return path.replace(/\/+$/, "") || "/";
+  return path.startsWith("/") ? normalizePath(path) : null;
 }
 
 export function createQueueMarker(

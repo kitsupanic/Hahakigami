@@ -15,6 +15,8 @@ use std::{
 };
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 1000;
+// Where Clear keeps an unreadable record: one file, replaced by the next such Clear.
+const QUARANTINE: &std::ffi::CStr = c"queue.quarantine";
 const FULL: &str = "Cleanup queue supports at most 1,000 entries. Remove items first.";
 mod native_path {
     use super::*;
@@ -99,7 +101,7 @@ fn record_needs_quarantine(directory: &File, blocked: bool) -> std::io::Result<b
     Ok(blocked || stat.st_mode & libc::S_IFMT != libc::S_IFREG)
 }
 /// Removes the `<uuid>.tmp` files a crash between `publish`'s write and its rename left behind (up to 16 MB
-/// each). Only regular files named `*.tmp` go: symlinks, directories and `quarantine-*` records stay. Best effort.
+/// each). Only regular files named `*.tmp` go: symlinks, directories and the quarantined record stay. Best effort.
 fn remove_stale_temps(directory: &File) {
     // Lists the directory through the descriptor opened without following symlinks, not through its path.
     let fd = unsafe { libc::dup(directory.as_raw_fd()) };
@@ -267,7 +269,8 @@ impl Queue {
             Err(e) => {
                 q.blocked = true;
                 q.warning = Some(format!(
-                    "Could not restore cleanup queue. Clear the queue to recover. {e}"
+                    "Could not restore cleanup queue. Clearing the queue keeps the unreadable record as {}, replacing any earlier one. {e}",
+                    directory.join("queue.quarantine").display()
                 ));
             }
         }
@@ -326,9 +329,17 @@ impl Queue {
             file.sync_all()?;
             dir.sync_all()?;
             if recovery && record_needs_quarantine(&dir, self.blocked)? {
-                let name = CString::new(format!("quarantine-{}", uuid::Uuid::new_v4()))
-                    .map_err(std::io::Error::other)?;
-                rename_at(&dir, c"queue.json", &name)?;
+                // A folder already quarantined there cannot be replaced: keep it and use a unique name instead.
+                let name = match rename_at(&dir, c"queue.json", QUARANTINE) {
+                    Ok(()) => QUARANTINE.to_owned(),
+                    Err(_) => {
+                        let name =
+                            CString::new(format!("queue.quarantine-{}", uuid::Uuid::new_v4()))
+                                .map_err(std::io::Error::other)?;
+                        rename_at(&dir, c"queue.json", &name)?;
+                        name
+                    }
+                };
                 quarantine = Some(name);
                 dir.sync_all()?;
             }
@@ -1085,9 +1096,16 @@ mod tests {
                 p.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("quarantine-")
+                    .starts_with("queue.quarantine")
             })
             .unwrap();
+        assert_eq!(fs::read(preserved.join("keep")).unwrap(), b"preserved");
+        // A later unreadable record cannot replace that folder: it is kept beside it, and Clear still works.
+        fs::write(storage.join("queue.json"), br#"{"version":2,"entries":[]}"#).unwrap();
+        let mut q = Queue::load(storage.clone());
+        assert!(q.blocked);
+        q.clear().unwrap();
+        assert!(!q.blocked);
         assert_eq!(fs::read(preserved.join("keep")).unwrap(), b"preserved");
     }
     #[test]
@@ -1112,7 +1130,7 @@ mod tests {
                     p.file_name()
                         .unwrap()
                         .to_string_lossy()
-                        .starts_with("quarantine-")
+                        .starts_with("queue.quarantine")
                 })
                 .collect()
         };
@@ -1123,6 +1141,29 @@ mod tests {
         let mut healthy = restored;
         healthy.clear().unwrap();
         assert_eq!(quarantined(), kept);
+    }
+    #[test]
+    fn a_later_clear_replaces_the_quarantined_record_and_the_warning_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        fs::create_dir_all(&storage).unwrap();
+        let quarantine = storage.join("queue.quarantine");
+        for newer in [
+            &br#"{"version":2,"entries":[]}"#[..],
+            &br#"{"version":3}"#[..],
+        ] {
+            fs::write(storage.join("queue.json"), newer).unwrap();
+            let mut q = Queue::load(storage.clone());
+            assert!(q
+                .warning
+                .as_deref()
+                .unwrap()
+                .contains(quarantine.to_str().unwrap()));
+            q.clear().unwrap();
+            assert_eq!(fs::read(&quarantine).unwrap(), newer);
+        }
+        let files = fs::read_dir(&storage).unwrap().count();
+        assert_eq!(files, 2, "queue.json and one quarantine file");
     }
     #[test]
     fn failed_clear_restores_quarantined_record_before_reporting_failure() {
@@ -1167,7 +1208,7 @@ mod tests {
         fs::create_dir(&storage).unwrap();
         let stale = storage.join(format!("{}.tmp", uuid::Uuid::new_v4()));
         fs::write(&stale, b"half written").unwrap();
-        let quarantine = storage.join("quarantine-1");
+        let quarantine = storage.join("queue.quarantine");
         fs::write(&quarantine, b"kept").unwrap();
         let victim = dir.path().join("victim.tmp");
         fs::write(&victim, b"untouched").unwrap();
