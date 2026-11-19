@@ -412,11 +412,7 @@ async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>
         };
         let path = file.into_path().map_err(|e| e.to_string())?;
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-        let name = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
+        let name = platform::folder_name(&path);
         let target = register(
             &app.state::<AppState>(),
             platform::target(&path, name),
@@ -1756,12 +1752,7 @@ async fn cleanup_queue_target(
     let (root, target) = tauri::async_runtime::spawn_blocking(move || {
         validate_target(&root)?;
         platform::ensure_local_volume(&root.path)?;
-        let name = root
-            .path
-            .file_name()
-            .unwrap_or(root.path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
+        let name = platform::folder_name(&root.path);
         // Flag a disk root like the Disks list does, so its scan uses the disk's own slot.
         let mut target = platform::target(&root.path, name);
         target.volume = platform::is_disk_path(&root.path);

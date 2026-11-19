@@ -632,22 +632,8 @@ fn open_from_root(
     root: &std::os::fd::OwnedFd,
     gate: &descriptor::OpenGate,
 ) -> std::io::Result<std::os::fd::OwnedFd> {
-    let mut names = vec![];
-    let root_identity = {
-        let s = store.read().unwrap();
-        let mut next = Some(id);
-        while let Some(i) = next.filter(|i| *i != 0) {
-            let n = s.node(i).unwrap();
-            names.push((descriptor::ChildName::new(n.native_name())?, n.identity));
-            next = n.parent;
-        }
-        s.node(0).unwrap().identity
-    };
-    let mut fd = descriptor::reopen(root, &root_identity)?;
-    for (name, identity) in names.iter().rev() {
-        fd = descriptor::open_child_name_gated(&fd, name, identity, gate)?;
-    }
-    Ok(fd)
+    let (names, root_identity) = descriptor::path_names(&store.read().unwrap(), id)?;
+    descriptor::open_names(root, &root_identity, &names, Some(gate))
 }
 struct Work {
     id: u32,
@@ -873,6 +859,11 @@ fn vanished(error: &std::io::Error) -> bool {
         native_entry_error(error).raw_os_error(),
         Some(libc::ENOENT | libc::ENOTDIR)
     )
+}
+/// An evicted (dataless) iCloud folder: workers disable materialization, so listing it fails with
+/// EDEADLK instead of downloading. It holds no bytes on disk, so an empty listing is complete.
+pub(crate) fn dataless(error: &std::io::Error) -> bool {
+    native_entry_error(error).raw_os_error() == Some(libc::EDEADLK)
 }
 #[cfg(unix)]
 fn replaced(error: &std::io::Error) -> bool {
@@ -1223,6 +1214,7 @@ fn scan_live_internal_reuse(
                         let first_child = s.node_count();
                         let mut added_allocated = 0u64;
                         match listing {
+                            Err(e) if dataless(&e) => {}
                             // The root is held by descriptor; only a child directory can vanish
                             // or be replaced by a new one (not part of what was enumerated).
                             Err(e) if fresh && id != 0 && (vanished(&e) || replaced(&e)) => {}
@@ -2153,6 +2145,11 @@ mod tests {
             assert_eq!(s.state, ScanState::Completed);
         }
         fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn dataless_listing_failure_is_recognised() {
+        assert!(dataless(&std::io::Error::from_raw_os_error(libc::EDEADLK)));
+        assert!(!dataless(&std::io::Error::from_raw_os_error(libc::EACCES)));
     }
     #[cfg(unix)]
     #[test]

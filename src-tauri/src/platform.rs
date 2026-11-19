@@ -204,7 +204,7 @@ pub fn discover() -> Vec<(Target, PathBuf)> {
 }
 
 /// The folder's own name, as the folder picker labels it.
-fn folder_name(path: &Path) -> String {
+pub(crate) fn folder_name(path: &Path) -> String {
     path.file_name()
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
@@ -255,6 +255,26 @@ pub fn ensure_local_volume(path: &Path) -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 pub fn ensure_local_volume(_path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+/// Whether `dir` is on an msdos or exfat volume, where the file id follows the on-disk location. False when unreadable.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_fat_like(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let info = unsafe { info.assume_init() };
+    let name = unsafe { std::ffi::CStr::from_ptr(info.f_fstypename.as_ptr()) };
+    matches!(name.to_bytes(), b"msdos" | b"exfat")
+}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn is_fat_like(_dir: &Path) -> bool {
+    false
 }
 
 /// `None` when the mount table can't be read; callers that guard mounts must not treat that as "no mounts".

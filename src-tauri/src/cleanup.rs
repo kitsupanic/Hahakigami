@@ -72,7 +72,16 @@ fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result
         "The item went to the Trash, but macOS did not say where, so it could not be checked. Look in the Trash.",
     )?;
     match safety::Identity::read(receipt) {
-        Ok(moved) if moved == item.identity => Ok(()),
+        Ok(moved)
+            if same_trashed_item(
+                &moved,
+                &item.identity,
+                receipt.parent().is_some_and(platform::is_fat_like)
+                    && std::fs::symlink_metadata(receipt).is_ok_and(|m| m.is_file() && m.len() == 0),
+            ) =>
+        {
+            Ok(())
+        }
         Ok(_) => Err(format!(
             "A different item than the reviewed one went to the Trash, because a folder changed during cleanup. Open the Trash and choose Put Back: {}",
             receipt.display()
@@ -81,6 +90,20 @@ fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result
             "The item went to the Trash, but could not be checked there: {e}"
         )),
     }
+}
+
+/// Strict identity, except for an empty file on a FAT-like volume: with no clusters its file id comes from where its
+/// directory entry sits, so the move gives it a new inode. Then a birth time on both sides is required instead.
+fn same_trashed_item(
+    moved: &safety::Identity,
+    reviewed: &safety::Identity,
+    empty_on_fat: bool,
+) -> bool {
+    moved == reviewed
+        || empty_on_fat
+            && (moved.device, moved.kind) == (reviewed.device, reviewed.kind)
+            && moved.birth.is_some()
+            && moved.birth == reviewed.birth
 }
 
 /// Holds `s`, checks `pick`, and replaces the scan's ticket with one for exactly the reviewed items.
@@ -437,6 +460,34 @@ mod tests {
         // Nothing at the receipt, or no receipt: it cannot be vouched for.
         assert!(confirm_trashed(&item, Some(&root.join("gone"))).is_err());
         assert!(confirm_trashed(&item, None).is_err());
+    }
+
+    #[test]
+    fn a_new_inode_passes_the_receipt_check_only_for_an_empty_file_on_fat() {
+        let reviewed = safety::Identity {
+            device: 1,
+            inode: 10,
+            kind: 2,
+            birth: Some((5, 6)),
+        };
+        let moved = safety::Identity {
+            inode: 11,
+            ..reviewed.clone()
+        };
+        assert!(!same_trashed_item(&moved, &reviewed, false));
+        assert!(same_trashed_item(&moved, &reviewed, true));
+        let other_birth = safety::Identity {
+            birth: Some((7, 6)),
+            ..moved.clone()
+        };
+        assert!(!same_trashed_item(&other_birth, &reviewed, true));
+        let no_birth = safety::Identity {
+            birth: None,
+            ..moved.clone()
+        };
+        assert!(!same_trashed_item(&no_birth, &reviewed, true));
+        let other_kind = safety::Identity { kind: 1, ..moved };
+        assert!(!same_trashed_item(&other_kind, &reviewed, true));
     }
 
     #[cfg(target_os = "macos")]

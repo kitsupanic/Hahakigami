@@ -265,7 +265,8 @@ it("keeps confirmed cleanup outcomes visible while the automatic rescan is still
   review();
   const pending = app.commitTrash();
   await flush();
-  expect(app.busy).toBe(true);
+  // The replacement scan's start does not hold the app busy.
+  expect(app.busy).toBe(false);
   expect(app.summary).toBeNull();
   expect(app.cleanupReport).toMatchObject({
     state: "confirmed",
@@ -369,6 +370,21 @@ it("marks a thrown command as unknown and never assumes all items failed or retr
   expect(
     mock.invoke.mock.calls.filter(([command]) => command === "commit_trash"),
   ).toHaveLength(1);
+});
+it("drops the displayed results and rescans when the commit reply cannot be validated", async () => {
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "commit_trash"
+      ? Promise.resolve({ trashed: 99, failures: [] })
+      : standard(command, args),
+  );
+  review();
+  await act(() => app.commitTrash());
+  await flush();
+  expect(app.cleanupReport).toMatchObject({ state: "unconfirmed" });
+  expect(
+    mock.invoke.mock.calls.filter(([command]) => command === "start_scan"),
+  ).toHaveLength(2);
 });
 it("does not resurrect a dismissed receipt or update a newer receipt from old queue responses", async () => {
   review();

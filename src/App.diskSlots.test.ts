@@ -594,6 +594,30 @@ it("cancels only the scan on screen and keeps its partial results while the othe
   ]);
 });
 
+it("keeps every dismissed scan failure closed, not only the last one", async () => {
+  startState = "running";
+  await scanDisk("Macintosh HD");
+  await scanDisk("Backup");
+  await progress("scan-disk-1", { state: "failed" });
+  await progress("scan-backup-2", { state: "failed" });
+  const dialog = () => container.querySelector('[role="dialog"]');
+  const dismiss = () =>
+    act(() =>
+      dialog()!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+  expect(dialog()).not.toBeNull();
+  await dismiss();
+  await click(diskRow("Macintosh HD"));
+  expect(dialog()).not.toBeNull();
+  await dismiss();
+  await click(diskRow("Backup"));
+  expect(dialog()).toBeNull();
+  await click(diskRow("Macintosh HD"));
+  expect(dialog()).toBeNull();
+});
+
 it("keeps a failed scan's partial results and leaves the other scans running", async () => {
   startState = "running";
   await scanDisk("Macintosh HD");
@@ -629,6 +653,45 @@ it("keeps the rest of the app usable while one disk's start is stalled", async (
   await act(async () => void (await stalled));
   await settle();
   expect(app().scanSlots["/"].scanId).toBe("scan-disk-2");
+});
+
+it("does not let a stalled rescan take the view after the user selected another disk", async () => {
+  await scanDisk("Backup");
+  let release!: () => void;
+  startGate = new Promise<void>((resolve) => (release = resolve));
+  const stalled = app().rescan();
+  await settle();
+  // Macintosh HD has no scan: its welcome page opens with it selected.
+  await click(diskRow("Macintosh HD"));
+  expect(welcome()).not.toBeNull();
+  release();
+  await act(async () => void (await stalled));
+  await settle();
+  expect(app().scanSlots["/Volumes/Backup"].scanId).toBe("scan-backup-2");
+  expect(app().target).toEqual(disk);
+  expect(welcome()).not.toBeNull();
+  // The hidden results are still the old scan's, not the rescan's.
+  expect(app().summary?.scanId).toBe("scan-backup-1");
+});
+
+it("keeps the sidebar usable while a scan started from the cleanup queue is stalled", async () => {
+  queueTarget = { ...photos, id: "photos-queue" };
+  startGate = new Promise<void>(() => {});
+  await act(() => void app().scanQueue("entry"));
+  await settle();
+  expect(calls("start_scan")).toHaveLength(1);
+  expect(diskRow("Backup").disabled).toBe(false);
+  expect(app().can.chooseFolder).toBe(true);
+});
+
+it("removes an ejected disk while another disk's start is stalled", async () => {
+  startGate = new Promise<void>(() => {});
+  void app().start(disk);
+  await settle();
+  mounted = ["/"];
+  discovered = [disk, home];
+  await refresh();
+  expect(diskNames()).toEqual(["Macintosh HD"]);
 });
 
 it("looks the disks up again when a scan is refused because another volume sits at the same path", async () => {

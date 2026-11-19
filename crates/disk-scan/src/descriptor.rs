@@ -51,7 +51,7 @@ fn stat_identity(stat: &libc::stat) -> Identity {
         kind: stat_kind(stat),
     }
 }
-fn syscall(mut operation: impl FnMut() -> libc::c_int) -> io::Result<libc::c_int> {
+pub(crate) fn syscall(mut operation: impl FnMut() -> libc::c_int) -> io::Result<libc::c_int> {
     crate::retry::interrupted(None, |_| {
         let result = operation();
         if result < 0 {
@@ -382,6 +382,43 @@ pub(crate) fn open_child_name_gated(
 ) -> io::Result<OwnedFd> {
     open_at(parent, &name.0, expected, Some(gate))
 }
+/// Names and identities from `id` up to (excluding) the root, leaf first, plus the root identity.
+/// Collected under the store lock so the opens can run after it is released.
+pub(crate) fn path_names(
+    s: &crate::Snapshot,
+    id: u32,
+) -> io::Result<(Vec<(ChildName, Identity)>, Identity)> {
+    let mut names = vec![];
+    let mut next = Some(id);
+    while let Some(i) = next.filter(|i| *i != 0) {
+        let n = s.node(i).unwrap();
+        names.push((ChildName::new(n.native_name())?, n.identity));
+        next = n.parent;
+    }
+    Ok((names, s.node(0).unwrap().identity))
+}
+/// Reopens a `path_names` chain by walking its names down from the held root. A renamed ancestor
+/// is not the leaf vanishing: it reads as a plain failure so the scan is marked incomplete
+/// instead of silently dropping the subtree.
+pub(crate) fn open_names(
+    root: &OwnedFd,
+    root_identity: &Identity,
+    names: &[(ChildName, Identity)],
+    gate: Option<&OpenGate>,
+) -> io::Result<OwnedFd> {
+    let mut fd = reopen(root, root_identity)?;
+    for (i, (name, identity)) in names.iter().enumerate().rev() {
+        fd = open_at(&fd, &name.0, identity, gate).map_err(|e| {
+            let gone = matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR));
+            if i > 0 && (gone || is_replaced(&e)) {
+                io::Error::other("an ancestor directory changed during the scan")
+            } else {
+                e
+            }
+        })?;
+    }
+    Ok(fd)
+}
 /// Open a fresh directory cursor anchored to an existing authorized descriptor.
 pub(crate) fn reopen(parent: &OwnedFd, expected: &Identity) -> io::Result<OwnedFd> {
     open_at(parent, c".", expected, None)
@@ -486,6 +523,33 @@ mod tests {
         std::fs::create_dir(p.join("f")).unwrap();
         let error = file_length(&fd, &cstr("f".as_ref()).unwrap(), &expected).unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        std::fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn renamed_ancestor_is_not_a_vanished_leaf() {
+        let p = fixture("renamed-ancestor");
+        std::fs::create_dir_all(p.join("a/b/c")).unwrap();
+        let root = open(&p, &crate::platform_identity(&p).unwrap()).unwrap();
+        let root_identity = crate::platform_identity(&p).unwrap();
+        // Leaf first, as `path_names` collects them.
+        let names: Vec<_> = ["a/b/c", "a/b", "a"]
+            .iter()
+            .map(|rel| {
+                let path = p.join(rel);
+                (
+                    ChildName::new(path.file_name().unwrap()).unwrap(),
+                    crate::platform_identity(&path).unwrap(),
+                )
+            })
+            .collect();
+        assert!(open_names(&root, &root_identity, &names, None).is_ok());
+        std::fs::rename(p.join("a/b/c"), p.join("a/b/c2")).unwrap();
+        let leaf = open_names(&root, &root_identity, &names, None).unwrap_err();
+        assert!(crate::vanished(&leaf));
+        std::fs::rename(p.join("a/b/c2"), p.join("a/b/c")).unwrap();
+        std::fs::rename(p.join("a"), p.join("a2")).unwrap();
+        let ancestor = open_names(&root, &root_identity, &names, None).unwrap_err();
+        assert!(!crate::vanished(&ancestor) && !crate::replaced(&ancestor));
         std::fs::remove_dir_all(p).unwrap();
     }
     #[test]
