@@ -11,7 +11,7 @@ export type ScanSlot = {
   /** Null until the first progress event of a scan that has just started. */
   summary: ScanSummary | null;
 };
-export type ScanSlots = Readonly<Record<string, ScanSlot>>;
+type ScanSlots = Readonly<Record<string, ScanSlot>>;
 
 /** The one place-to-slot rule, the backend's (`start_scan_impl`): a volume target is its disk's slot, anything else is the folder slot. */
 export const slotKey = (target: Target) =>

@@ -130,6 +130,41 @@ fn recorded_volume(scan: &Scan, id: u32) -> Option<Volume> {
         .cloned()
 }
 
+/// The recorded directory ancestors of node `id`, nearest first, up to the scan root. Excluded or
+/// non-directory ancestors, a broken parent link or a parent cycle are refused.
+/// `what` names the caller in errors ("cleanup", "preview"), so a user can tell which check failed.
+pub fn lineage(
+    snapshot: &Snapshot,
+    id: u32,
+    what: &str,
+) -> Result<Vec<(PathBuf, Identity)>, String> {
+    let mut lineage = vec![];
+    let mut parent = snapshot.node(id).ok_or("Unknown node")?.parent;
+    while let Some(id) = parent {
+        if lineage.len() >= snapshot.node_count() {
+            return Err(format!("Invalid {what} ancestry"));
+        }
+        let p = snapshot
+            .node(id)
+            .ok_or_else(|| format!("Invalid {what} ancestry"))?;
+        // `Snapshot` validation ties `is_directory` to `identity.kind`, so either test is equivalent; the kind is the primary field.
+        if p.identity.kind != NodeKind::Directory || p.excluded {
+            return Err(format!("Excluded or invalid {what} ancestor"));
+        }
+        lineage.push((
+            p.path()?,
+            Identity {
+                device: p.identity.device,
+                inode: p.identity.inode,
+                kind: 1,
+                birth: None,
+            },
+        ));
+        parent = p.parent;
+    }
+    Ok(lineage)
+}
+
 /// What the scan holds for node `id`, as the guard `verify` checks later. Excluded nodes and ancestors are refused.
 pub fn checked_item(scan: &Scan, id: u32) -> Result<CheckedItem, String> {
     let snapshot = scan.snapshot;
@@ -148,27 +183,7 @@ pub fn checked_item(scan: &Scan, id: u32) -> Result<CheckedItem, String> {
         },
         birth: None,
     };
-    let mut lineage = vec![];
-    let mut parent = n.parent;
-    while let Some(id) = parent {
-        if lineage.len() >= snapshot.node_count() {
-            return Err("Invalid cleanup ancestry".into());
-        }
-        let p = snapshot.node(id).ok_or("Invalid cleanup ancestry")?;
-        if !p.is_directory || p.excluded {
-            return Err("Excluded or invalid cleanup ancestor".into());
-        }
-        lineage.push((
-            p.path()?,
-            Identity {
-                device: p.identity.device,
-                inode: p.identity.inode,
-                kind: 1,
-                birth: None,
-            },
-        ));
-        parent = p.parent;
-    }
+    let mut lineage = lineage(snapshot, id, "cleanup")?;
     lineage.extend(scan.root_ancestors.iter().cloned());
     Ok(CheckedItem {
         path: n.path()?,

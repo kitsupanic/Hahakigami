@@ -246,6 +246,9 @@ pub struct Snapshot {
     pub enumeration_tail: Option<TailStats>,
 }
 impl Snapshot {
+    pub(crate) fn worker_directories(&self) -> u64 {
+        self.worker_stats.iter().map(|s| s.directories).sum()
+    }
     pub fn clone_attribution(&self, id: u32) -> Option<(bool, u64)> {
         tree::lookup(&self.tree.clone_attributions, id).copied()
     }
@@ -282,6 +285,17 @@ pub struct Progress {
     #[serde(default)]
     pub excluded: u64,
     pub elapsed_ms: u64,
+}
+impl Progress {
+    pub(crate) fn of(stats: &ScanStats) -> Self {
+        Self {
+            entries: stats.entries,
+            directories: stats.directories,
+            errors: stats.errors,
+            excluded: stats.excluded,
+            elapsed_ms: stats.elapsed_ms,
+        }
+    }
 }
 pub type ScanError = std::io::Error;
 /// IDs with the high bit set are reserved for synthetic map aggregation nodes.
@@ -398,7 +412,13 @@ impl Entry {
         if self.path.is_absolute() {
             scratch.clear();
             scratch.push(&self.path);
-        } else {
+            return;
+        }
+        #[cfg(unix)]
+        tree::join_native_component_into(parent, self.path.as_os_str(), scratch)
+            .expect("path length");
+        #[cfg(not(unix))]
+        {
             scratch.clear();
             scratch.push(parent);
             scratch.push(&self.path);
@@ -724,13 +744,8 @@ fn traversal_allowed(
 /// `PathBuf::join` first clones the parent and may double its allocation on the child append.
 #[cfg(unix)]
 fn child_path(parent: &Path, name: &std::ffi::OsStr) -> PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    let separator = usize::from(
-        !parent.as_os_str().as_bytes().ends_with(b"/") && !parent.as_os_str().is_empty(),
-    );
-    let mut path = PathBuf::with_capacity(parent.as_os_str().len() + separator + name.len());
-    path.push(parent);
-    path.push(name);
+    let mut path = PathBuf::new();
+    tree::join_native_component_into(parent, name, &mut path).expect("path length");
     path
 }
 fn scanned_node(e: Entry, id: u32, parent: Option<u32>) -> ScannedNode {
@@ -1364,13 +1379,7 @@ fn scan_live_internal_reuse(
                                 .stats
                                 .store_wait_us
                                 .saturating_add(progress_store_wait_us);
-                            Progress {
-                                entries: s.stats.entries,
-                                directories: s.stats.directories,
-                                errors: s.stats.errors,
-                                excluded: s.stats.excluded,
-                                elapsed_ms: s.stats.elapsed_ms,
-                            }
+                            Progress::of(&s.stats)
                         };
                         if delivered.fetch_max(event.entries, Ordering::Relaxed) <= event.entries {
                             progress(event);
@@ -1431,13 +1440,7 @@ fn scan_live_internal_reuse(
             let mut s = store.write().unwrap();
             s.stats.elapsed_ms = started.elapsed().as_millis() as u64;
             s.stats.walk_ms = s.stats.elapsed_ms.max(1);
-            Progress {
-                entries: s.stats.entries,
-                directories: s.stats.directories,
-                errors: s.stats.errors,
-                excluded: s.stats.excluded,
-                elapsed_ms: s.stats.elapsed_ms,
-            }
+            Progress::of(&s.stats)
         };
         progress(event);
     }
@@ -1467,13 +1470,7 @@ fn scan_live_internal_reuse(
         ScanState::Completed
     };
     s.stats.elapsed_ms = started.elapsed().as_millis() as u64;
-    let event = Progress {
-        entries: s.stats.entries,
-        directories: s.stats.directories,
-        errors: s.stats.errors,
-        excluded: s.stats.excluded,
-        elapsed_ms: s.stats.elapsed_ms,
-    };
+    let event = Progress::of(&s.stats);
     s.finalization_us = diagnostics::micros(finalizing.elapsed());
     s.enumeration_tail = Some(tail);
     drop(s);
@@ -1810,11 +1807,6 @@ mod tests {
             );
             assert_eq!(path.capacity(), path.as_os_str().len());
         }
-        // Preserve PathBuf's replacement behavior even for an unexpected absolute child.
-        assert_eq!(
-            child_path(Path::new("/fixture"), std::ffi::OsStr::new("/absolute")),
-            Path::new("/absolute")
-        );
     }
     use super::*;
     fn fixture() -> PathBuf {

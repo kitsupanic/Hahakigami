@@ -78,7 +78,7 @@ async function flush() {
 }
 function review(queued = false) {
   app.setSummary(summary);
-  app.setTrash({ token: "ticket", items, queued });
+  app.setTrash({ scanId: "live", token: "ticket", items, queued });
 }
 beforeEach(async () => {
   queue = {
@@ -223,7 +223,7 @@ it("freezes reviewed item metadata and prevents duplicate commits while pending"
     command === "commit_trash" ? commit.promise : standard(command, args),
   );
   const localItems = items.map((item) => ({ ...item }));
-  app.setTrash({ token: "ticket", items: localItems });
+  app.setTrash({ scanId: "live", token: "ticket", items: localItems });
   const pending = app.commitTrash();
   localItems[0].name = "changed after activation";
   await app.commitTrash();
@@ -481,5 +481,29 @@ it.each([
     movedCount: null,
     failedCount: null,
     detailsAvailable: false,
+  });
+});
+it("drops a Trash review that resolves after the scan on screen changed", async () => {
+  const prepared = deferred<{ token: string; items: NodeView[] }>();
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "prepare_trash" ? prepared.promise : standard(command, args),
+  );
+  app.setSummary(summary);
+  app.select(items[0]);
+  const pending = app.prepareTrash();
+  app.setSummary({ ...summary, scanId: "newer" });
+  prepared.resolve({ token: "ticket", items });
+  await act(() => pending);
+  expect(app.trash).toBeNull();
+  expect(app.busy).toBe(false);
+});
+it("commits a review against the scan it was made for", async () => {
+  review();
+  app.setSummary({ ...summary, scanId: "newer" });
+  await act(() => app.commitTrash());
+  expect(mock.invoke).toHaveBeenCalledWith("commit_trash", {
+    scanId: "live",
+    token: "ticket",
   });
 });

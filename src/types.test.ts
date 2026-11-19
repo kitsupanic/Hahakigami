@@ -16,6 +16,12 @@ describe("bytes", () => {
     expect(bytes(1024 ** 2)).toBe("1 MiB (1.05 MB)");
   });
 
+  it("moves up a unit when rounding reaches the next threshold", () => {
+    expect(bytes(1_048_550)).toBe("1 MiB (1.05 MB)");
+    expect(bytes(999_999)).toBe("976.6 KiB (1.00 MB)");
+    expect(bytes(1_048_550, 1)).toBe("1.0 MiB (1.05 MB)");
+  });
+
   it("preserves requested binary decimal precision", () => {
     expect(bytes(1024 ** 3, 1)).toBe("1.0 GiB (1.07 GB)");
   });

@@ -114,10 +114,14 @@ export interface Page {
 }
 export function bytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
   if (!n) return "0 B";
-  const i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
+  let i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
   if (!i)
     return `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} B`;
-  const decimalUnit = Math.min(4, Math.floor(Math.log(n) / Math.log(1000)));
+  let decimalUnit = Math.min(4, Math.floor(Math.log(n) / Math.log(1000)));
+  // Rounding can reach the next unit's threshold; show that unit instead of "1,024 KiB".
+  if (i < 4 && Math.round((n / 1024 ** i) * 10) / 10 >= 1024) i++;
+  if (decimalUnit < 4 && Math.round((n / 1000 ** decimalUnit) * 100) / 100 >= 1000)
+    decimalUnit++;
   const binary = (n / 1024 ** i).toLocaleString(undefined, {
     minimumFractionDigits,
     maximumFractionDigits: 1,

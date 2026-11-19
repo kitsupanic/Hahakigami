@@ -87,6 +87,7 @@ pub struct LegacyTreeBuilder {
     parent_id: Option<u32>,
     parent_path: PathBuf,
     expected_path: PathBuf,
+    override_bytes: usize,
 }
 impl LegacyTreeBuilder {
     pub fn new(root: PathBuf) -> Self {
@@ -95,7 +96,12 @@ impl LegacyTreeBuilder {
             parent_id: None,
             parent_path: PathBuf::new(),
             expected_path: PathBuf::new(),
+            override_bytes: 0,
         }
+    }
+    /// Bytes of path and label overrides kept so far, for callers that cap untrusted input.
+    pub fn override_bytes(&self) -> usize {
+        self.override_bytes
     }
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
@@ -127,8 +133,18 @@ impl LegacyTreeBuilder {
         } else {
             self.expected_path.clone_from(&self.snapshot.root);
         }
+        let tree = &self.snapshot.tree;
+        let (paths, labels) = (tree.paths.len(), tree.labels.len());
         self.snapshot
-            .append_legacy_ref(n, Some(&self.expected_path))
+            .append_legacy_ref(n, Some(&self.expected_path))?;
+        let tree = &self.snapshot.tree;
+        if tree.paths.len() > paths {
+            self.override_bytes += n.path.as_os_str().len();
+        }
+        if tree.labels.len() > labels {
+            self.override_bytes += n.name.len();
+        }
+        Ok(())
     }
     pub fn finish(self) -> Snapshot {
         self.snapshot
@@ -215,7 +231,7 @@ fn is_exact_native_component(name: &OsStr) -> bool {
     }
 }
 #[cfg(unix)]
-fn join_native_component_into(
+pub(crate) fn join_native_component_into(
     parent: &Path,
     name: &OsStr,
     output: &mut PathBuf,

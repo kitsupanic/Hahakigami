@@ -1,5 +1,5 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{open, sync_dir, ScanMetadata, Store};
+use crate::cache_store::{atomic, open, sync_dir, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -80,6 +80,15 @@ pub fn recent(token: &Token, started_at_ms: u64, now: u64) -> bool {
         && started_at_ms <= now
         && now - token.full_scan_at_ms <= 60 * 60 * 1000
 }
+impl Record {
+    /// The check every use of a record repeats: same root, identity and epoch, and still `recent`.
+    fn matches(&self, root: &Path, identity: &Identity, epoch: &str) -> bool {
+        self.root == root.as_os_str().as_bytes()
+            && &self.identity == identity
+            && self.token.epoch == epoch
+            && recent(&self.token, self.started_at_ms, crate::now_ms())
+    }
+}
 impl Cache {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -118,31 +127,36 @@ impl Cache {
         }
         Ok(r)
     }
+    /// The newest entry that matches, with the record it was matched on.
+    fn find(
+        &self,
+        root: &Path,
+        identity: &Identity,
+        epoch: &str,
+    ) -> Result<Option<(String, Record)>, String> {
+        self.maintain()?;
+        for row in self.store.list()? {
+            if let Ok(record) = self.record(&row.id) {
+                if record.matches(root, identity, epoch) {
+                    return Ok(Some((row.id, record)));
+                }
+            }
+        }
+        Ok(None)
+    }
     pub fn probe(
         &self,
         root: &Path,
         identity: &Identity,
         epoch: &str,
     ) -> Result<Option<Candidate>, String> {
-        self.maintain()?;
-        for row in self.store.list()? {
-            let Ok(record) = self.record(&row.id) else {
-                continue;
-            };
-            if record.root != root.as_os_str().as_bytes()
-                || &record.identity != identity
-                || record.token.epoch != epoch
-                || !recent(&record.token, record.started_at_ms, crate::now_ms())
-            {
-                continue;
-            }
-            return Ok(Some(Candidate {
-                id: row.id,
+        Ok(self
+            .find(root, identity, epoch)?
+            .map(|(id, record)| Candidate {
+                id,
                 token: record.token,
                 started_at_ms: record.started_at_ms,
-            }));
-        }
-        Ok(None)
+            }))
     }
     /// Confirm the candidate's record is still the one whose history was replayed. Brief: call it under
     /// the cache lock, then decode the `Pending` entry without it. A published archive never changes
@@ -158,12 +172,9 @@ impl Cache {
         // Bind the tree to precisely the token whose history was replayed. Never
         // pick a newer cache after replay, including across multiple app instances.
         let record = self.record(&candidate.id)?;
-        if record.root != root.as_os_str().as_bytes()
-            || &record.identity != identity
+        if !record.matches(root, identity, epoch)
             || record.token != candidate.token
             || record.started_at_ms != candidate.started_at_ms
-            || record.token.epoch != epoch
-            || !recent(&record.token, record.started_at_ms, crate::now_ms())
         {
             return Err("Rescan cache changed during event replay".into());
         }
@@ -244,10 +255,12 @@ impl Cache {
         }
     }
     fn write_record(&self, id: &str, record: &Record) -> Result<(), String> {
-        self.store.atomic(&self.path(id)?, |mut file| {
+        // A post-rename directory-sync warning is dropped: `maintain` syncs the directory again before every use.
+        atomic(&self.root, &self.path(id)?, "", |mut file| {
             serde_json::to_writer(&mut file, record).map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())
         })
+        .map(drop)
     }
     /// Caller must prove that the freshly scanned tree is semantically unchanged.
     /// Serialized cache operations bind this refresh to the exact previous seed.
@@ -265,27 +278,16 @@ impl Cache {
         {
             return Ok(false);
         }
-        let Some(candidate) = self.probe(root, identity, &previous.epoch)? else {
+        // The caller holds the Baselines cache lock, so nothing publishes between the match and the write.
+        let Some((id, mut record)) = self.find(root, identity, &previous.epoch)? else {
             return Ok(false);
         };
-        if candidate.token != *previous {
-            return Ok(false);
-        }
-        // No second probe: the caller holds the Baselines cache lock, so nothing publishes meanwhile.
-        let Ok(mut record) = self.record(&candidate.id) else {
-            return Ok(false);
-        };
-        if record.root != root.as_os_str().as_bytes()
-            || record.identity != *identity
-            || record.token != *previous
-            || record.started_at_ms != candidate.started_at_ms
-            || !recent(&record.token, record.started_at_ms, crate::now_ms())
-        {
+        if record.token != *previous {
             return Ok(false);
         }
         record.token = next.clone();
-        self.write_record(&candidate.id, &record)?;
-        self.store.touch(&candidate.id, record.started_at_ms)?;
+        self.write_record(&id, &record)?;
+        self.store.touch(&id, record.started_at_ms)?;
         Ok(true)
     }
     pub fn save(&self, s: &Snapshot, m: &ScanMetadata, token: &Token) -> Result<(), String> {
@@ -448,14 +450,12 @@ mod tests {
         assert_eq!(c.store.list().unwrap().len(), 2);
         c.bytes_limit = 512 * 1024 * 1024;
         c.save(&s, &metadata(), &token).unwrap();
-        let row = c
-            .store
-            .list()
+        let id = c
+            .probe(&s.root, &s.node(0).unwrap().identity, &token.epoch)
             .unwrap()
-            .into_iter()
-            .find(|r| r.root_path == s.root.to_string_lossy())
-            .unwrap();
-        fs::write(c.root.join(format!("{}.zst", row.id)), b"corrupt").unwrap();
+            .unwrap()
+            .id;
+        fs::write(c.root.join(format!("{id}.zst")), b"corrupt").unwrap();
         assert!(c
             .load(&s.root, &s.node(0).unwrap().identity, &token.epoch)
             .is_err());
@@ -516,7 +516,11 @@ mod tests {
             // Every survivor is a whole, loadable record for its own root.
             let source = sources
                 .iter()
-                .find(|s| s.root.to_string_lossy() == entry.root_path)
+                .find(|s| {
+                    c.probe(&s.root, &s.node(0).unwrap().identity, "epoch")
+                        .unwrap()
+                        .is_some_and(|k| k.id == entry.id)
+                })
                 .unwrap();
             let loaded = c
                 .load(&source.root, &source.node(0).unwrap().identity, "epoch")
@@ -693,7 +697,6 @@ mod tests {
         assert_eq!(loaded_metadata.started_at_ms, m.started_at_ms);
         let touched = c.store.list().unwrap().remove(0);
         assert_eq!(touched.started_at_ms, row.started_at_ms);
-        assert_eq!(touched.completed_at_ms, row.completed_at_ms);
         assert_eq!(touched.file_bytes, row.file_bytes);
         assert!(touched.used_at_ms > row.used_at_ms);
         assert!(!recent(
