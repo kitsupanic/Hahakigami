@@ -726,6 +726,22 @@ it("shows queue entries from several disks, each with its own status, and review
   expect(labels("Macintosh HD")).toEqual(["Review 1 ready"]);
 });
 
+it("does not refresh the cleanup queue on progress of the scan on screen, only when its state changes", async () => {
+  startState = "running";
+  await scanDisk("Macintosh HD");
+  await settle();
+  const refreshes = () => calls("list_cleanup_queue").length;
+  const before = refreshes();
+  for (const entries of [10, 20, 30]) {
+    await progress("scan-disk-1", { entries });
+    await settle();
+  }
+  expect(refreshes()).toBe(before);
+  await progress("scan-disk-1", { state: "completed" });
+  await settle();
+  expect(refreshes()).toBeGreaterThan(before);
+});
+
 it("refreshes the cleanup queue when any slot's scan ends or is dropped, not only the displayed one", async () => {
   startState = "running";
   await scanDisk("Macintosh HD");

@@ -1223,6 +1223,8 @@ mod native {
         };
         let mut scheduler_bytes = 0;
         if workers == 1 {
+            // Runs on the calling scan thread, which may not have the policy yet.
+            crate::diagnostics::disable_dataless_materialization();
             let mut worker = MemberWorker::new(cache_limit);
             validate_members(&ctx, claims, &mut statuses, &mut before_file, &mut worker);
             merge(worker.info, worker.peak);
@@ -1248,6 +1250,7 @@ mod native {
                         let tasks = &tasks;
                         let next = &next;
                         scope.spawn(move || {
+                            crate::diagnostics::disable_dataless_materialization();
                             let mut worker = MemberWorker::new(ctx.cache_limit);
                             while !ctx.cancel.load(Ordering::Relaxed) {
                                 let index = next.fetch_add(1, Ordering::Relaxed);

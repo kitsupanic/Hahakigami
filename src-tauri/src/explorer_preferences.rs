@@ -25,8 +25,27 @@ pub(crate) struct Preferences {
     sort: Order,
     warning: Option<String>,
 }
+/// Removes the `explorer-<uuid>.tmp` files a crash between `save`'s write and its rename left behind. Only regular
+/// files go (a symlink or directory of that name stays), and nothing else in the shared config directory. Best effort.
+fn remove_stale_temps(config: &Path) {
+    let Ok(entries) = fs::read_dir(config) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // `DirEntry::file_type` does not follow symlinks.
+        if name.starts_with("explorer-")
+            && name.ends_with(".tmp")
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
 impl Preferences {
     pub fn load(config: &Path) -> Self {
+        remove_stale_temps(config);
         let record = config.join("explorer-preferences.json");
         let read = (|| -> Result<Order, std::io::Error> {
             let file = OpenOptions::new()
@@ -159,6 +178,38 @@ mod tests {
         let view = Preferences::load(dir.path()).view();
         assert_eq!(view.sort, Order::default());
         assert!(view.warning.is_some());
+    }
+    #[test]
+    fn load_removes_stale_temp_files_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir
+            .path()
+            .join(format!("explorer-{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&stale, b"half written").unwrap();
+        let kept = [
+            ("scan-settings.tmp", b"worker temp".to_vec()),
+            ("explorer-notes.txt", b"notes".to_vec()),
+        ];
+        for (name, bytes) in &kept {
+            fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let directory = dir.path().join("explorer-dir.tmp");
+        fs::create_dir(&directory).unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"untouched").unwrap();
+        let link = dir.path().join("explorer-link.tmp");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let chosen = Order::parse(Some("nameAscending")).unwrap();
+        Preferences::load(dir.path()).save(chosen).unwrap();
+        assert!(!stale.exists());
+        for (name, bytes) in &kept {
+            assert_eq!(fs::read(dir.path().join(name)).unwrap(), *bytes);
+        }
+        assert!(directory.is_dir());
+        assert!(link.is_symlink());
+        assert_eq!(fs::read(&victim).unwrap(), b"untouched");
+        // Loading again, with the record in place, keeps it.
+        assert_eq!(Preferences::load(dir.path()).view().sort, chosen);
     }
     #[test]
     fn failed_save_keeps_previous_value_and_retry_commits() {

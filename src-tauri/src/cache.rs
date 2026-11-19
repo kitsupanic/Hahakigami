@@ -202,9 +202,15 @@ impl Cache {
     }
     fn maintain(&self) -> Result<(), String> {
         let entries = self.store.list()?;
+        let now = crate::now_ms();
+        // An entry `recent` refuses can never seed a scan again: keep only readable, unexpired ones,
+        // so the sweep below deletes the rest (row, record and archive share the ID's stem).
         let ids: std::collections::HashSet<_> = entries
             .iter()
-            .filter(|row| self.record(&row.id).is_ok())
+            .filter(|row| {
+                self.record(&row.id)
+                    .is_ok_and(|r| recent(&r.token, r.started_at_ms, now))
+            })
             .map(|row| row.id.as_str())
             .collect();
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
@@ -869,6 +875,45 @@ mod tests {
         s.stats.excluded = 0;
         s.state = ScanState::Cancelled;
         assert!(!eligible(&s));
+    }
+    #[test]
+    fn maintenance_deletes_expired_entries_and_keeps_recent_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Cache::new(d.path().join("cache"));
+        let s = fixture(&d.path().join("source"));
+        let token = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: crate::now_ms(),
+        };
+        c.save(&s, &metadata(), &token).unwrap();
+        let kept = c.store.list().unwrap().remove(0).id;
+        // A second entry for another root whose full scan is long past (expired, not corrupt).
+        let other = fixture(&d.path().join("other"));
+        let m = ScanMetadata {
+            started_at_ms: 2000,
+            ..metadata()
+        };
+        let old_token = Token {
+            full_scan_at_ms: 1000,
+            ..token.clone()
+        };
+        c.save(&other, &m, &old_token).unwrap();
+        let expired = c
+            .store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id != kept)
+            .unwrap()
+            .id;
+        c.maintain().unwrap();
+        assert_eq!(c.store.list().unwrap().len(), 1);
+        assert!(c.record(&kept).is_ok());
+        for suffix in ["json", "zst", "cursor"] {
+            assert!(!c.root.join(format!("{expired}.{suffix}")).exists());
+            assert!(c.root.join(format!("{kept}.{suffix}")).exists());
+        }
     }
 }
 

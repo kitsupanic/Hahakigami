@@ -99,6 +99,34 @@ pub(crate) fn apply_qos(policy: crate::ScanQos) -> Option<i32> {
         _ => Some(libc::ENOTSUP),
     }
 }
+/// Make this thread's listings fail (EDEADLK) on dataless File Provider folders instead of
+/// materializing them over the network. Best effort: the result is ignored.
+#[cfg(target_os = "macos")]
+pub(crate) fn disable_dataless_materialization() {
+    unsafe extern "C" {
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
+    }
+    unsafe {
+        setiopolicy_np(
+            IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES,
+            IOPOL_SCOPE_THREAD,
+            IOPOL_MATERIALIZE_DATALESS_FILES_OFF,
+        );
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn disable_dataless_materialization() {}
+// Values from <sys/resource.h>; libc does not export them.
+#[cfg(target_os = "macos")]
+const IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES: libc::c_int = 3;
+#[cfg(target_os = "macos")]
+const IOPOL_SCOPE_THREAD: libc::c_int = 1;
+#[cfg(target_os = "macos")]
+const IOPOL_MATERIALIZE_DATALESS_FILES_OFF: libc::c_int = 1;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn cpu_clock() -> Option<u64> {
     let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
@@ -209,6 +237,25 @@ mod tests {
             .join()
             .unwrap();
         }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn worker_threads_do_not_materialize_dataless_files() {
+        unsafe extern "C" {
+            fn getiopolicy_np(iotype: libc::c_int, scope: libc::c_int) -> libc::c_int;
+        }
+        std::thread::spawn(|| {
+            disable_dataless_materialization();
+            let policy = unsafe {
+                getiopolicy_np(
+                    IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES,
+                    IOPOL_SCOPE_THREAD,
+                )
+            };
+            assert_eq!(policy, IOPOL_MATERIALIZE_DATALESS_FILES_OFF);
+        })
+        .join()
+        .unwrap();
     }
     #[test]
     #[cfg(not(target_os = "macos"))]
