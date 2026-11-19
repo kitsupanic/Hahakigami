@@ -4,7 +4,14 @@
   import { flushSync, onMount, untrack } from "svelte";
   import type { HoverTarget } from "./hoverContext";
   import type { QueueEntry } from "./cleanupTypes";
-  import { bytes, type NodeView, type Page, type Target } from "./types";
+  import {
+    bytes,
+    PAGE_SIZE,
+    type NodeView,
+    type Page,
+    type Target,
+  } from "./types";
+  import { SvelteSet } from "svelte/reactivity";
   import { compactBytes } from "./uiFormat";
   import type { FolderRow } from "./queueFolders";
   import createApp from "./createApp.svelte";
@@ -23,8 +30,8 @@
   } from "./dialogFocus";
   let dialogOpener = $state.raw<HTMLElement | null>(null);
   let trashSelectedCount = $state<number | undefined>();
-  // The scan whose failure the user already closed, so it does not reopen.
-  let dismissedFailedScan = $state<string | null>(null);
+  // The scans whose failure the user already closed, so they do not reopen.
+  const dismissedFailedScans = new SvelteSet<string>();
   const listViews = [
     {
       name: "files",
@@ -198,7 +205,7 @@
   // Home shows the welcome page while the scan stays in memory.
   const summary = $derived(app.shown?.summary ?? null);
   const failedScan = $derived(
-    summary?.state === "failed" && summary.scanId !== dismissedFailedScan
+    summary?.state === "failed" && !dismissedFailedScans.has(summary.scanId)
       ? summary
       : null,
   );
@@ -709,7 +716,7 @@
                   scanId: summary.scanId,
                   nodeId,
                   offset: 0,
-                  limit: 150,
+                  limit: PAGE_SIZE,
                   sort,
                 })}
           items={page.items}
@@ -733,26 +740,26 @@
           onScrollRestored={app.finishListScrollRestore}
         />
       {/key}
-      {#if offset > 0 || page.total > 150}<footer class="pagination">
+      {#if offset > 0 || page.total > PAGE_SIZE}<footer class="pagination">
           <span>
             {page.total
-              ? `${offset + 1}–${Math.min(offset + 150, page.total)} of ${page.total.toLocaleString()}`
+              ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, page.total)} of ${page.total.toLocaleString()}`
               : "0 items"}
           </span>
           <button
             disabled={listLoading || offset === 0}
             onclick={() => {
               invalidateList();
-              setOffset(Math.max(0, offset - 150));
+              setOffset(Math.max(0, offset - PAGE_SIZE));
             }}
           >
             Previous
           </button>
           <button
-            disabled={listLoading || offset + 150 >= page.total}
+            disabled={listLoading || offset + PAGE_SIZE >= page.total}
             onclick={() => {
               invalidateList();
-              setOffset(offset + 150);
+              setOffset(offset + PAGE_SIZE);
             }}
           >
             Next
@@ -1725,10 +1732,10 @@
       actionDisabled={!app.can.rescanDisplayed}
       opener={dialogOpener}
       onAction={() => {
-        dismissedFailedScan = failedScan.scanId;
+        dismissedFailedScans.add(failedScan.scanId);
         void app.rescanDisplayed();
       }}
-      onClose={() => (dismissedFailedScan = failedScan.scanId)}
+      onClose={() => dismissedFailedScans.add(failedScan.scanId)}
     />
   {/if}
 </div>

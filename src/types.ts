@@ -4,6 +4,8 @@ export interface FullDiskAccess {
   scanAnyway: boolean;
   appPath: string;
 }
+/** Rows the file list asks for at a time. */
+export const PAGE_SIZE = 150;
 type ScanQos = "automatic" | "userInitiated" | "background";
 export const qosLabel = (qos: ScanQos) =>
   ({

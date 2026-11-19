@@ -131,7 +131,8 @@ impl Service {
             .session
             .lock()
             .map_err(|_| "Automation session lock poisoned")?;
-        session.active = false;
+        // `active` stays set until `_active` drops after this lock: clearing it here would open a window for a
+        // second scan, whose flags the guard would then clear.
         match result {
             Ok(()) => {
                 let mut value = summary(&snapshot);

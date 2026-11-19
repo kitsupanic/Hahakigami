@@ -32,6 +32,7 @@ import {
   type Page,
   type ScanSummary,
   type Target,
+  PAGE_SIZE,
 } from "./types";
 const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
 declare global {
@@ -227,7 +228,8 @@ export default function createApp() {
         ]);
       setTarget(disk ?? location);
       queueOpen = false;
-      await start(location);
+      // Not awaited: a sleeping disk must not hold the queue busy.
+      void start(location);
     });
   }
   async function prepareQueue() {
@@ -731,8 +733,7 @@ export default function createApp() {
         const found = (await invoke<Target[]>("discover_targets")).filter(
           (item) => item.volume,
         );
-        // A scan starting now owns the view; the next tick retries.
-        if (cancelled || busy || scans.starting) return;
+        if (cancelled || busy) return;
         // A volume still in the mount table but missing from `found` failed to register this time; it is not ejected.
         const present = new Set([...found.map((item) => item.path), ...mounted]);
         // A refused scan means another volume now sits at the path: it replaces the old target, so a scan uses its new id.
@@ -925,16 +926,22 @@ export default function createApp() {
     quickLook.dismiss();
     // -1 never matches the current generation, so this start never takes the view.
     const g = how.takeView ? ++generation.current : -1;
+    // Selecting or opening another place since the press leaves the view to that place.
+    const pressed = { id: target?.id, home: homeOpen };
+    let taken = false;
+    const samePlace = () => g === generation.current && target?.id === pressed.id;
     const performanceClock = performanceBuild
       ? emit("performance-start")
       : undefined;
     setError("");
     return {
       ready: performanceClock,
-      current: () => g === generation.current,
+      // After taking the view, the start stops being `home` (accepted closes it).
+      current: () => (taken || homeOpen === pressed.home) && samePlace(),
       accepted(id) {
         // Only the newest start takes the view; the others update their sidebar rows.
-        if (g !== generation.current) return;
+        if (!samePlace() || homeOpen !== pressed.home) return;
+        taken = true;
         // A rejected target leaves the displayed workspace usable.
         homeOpen = false;
         clearResultsReturn();
@@ -1217,7 +1224,7 @@ export default function createApp() {
       const common = {
         scanId: summary.scanId,
         offset,
-        limit: 150,
+        limit: PAGE_SIZE,
         sort,
       };
       const nameQuery = debouncedQuery.trim();
@@ -1234,7 +1241,7 @@ export default function createApp() {
           .then((result) => {
             if (!current()) return;
             const lastOffset = result.total
-              ? Math.floor((result.total - 1) / 150) * 150
+              ? Math.floor((result.total - 1) / PAGE_SIZE) * PAGE_SIZE
               : 0;
             if (offset > lastOffset) {
               // A growing directory can leave a maximum-size filter during a
@@ -1464,13 +1471,18 @@ export default function createApp() {
         : "";
       setTrash(null);
       await refreshQueue();
-      if (report.movedCount || report.invalidated) {
+      // An unconfirmed reply may still have moved files, so it invalidates too.
+      if (
+        report.movedCount ||
+        report.invalidated ||
+        report.state !== "confirmed"
+      ) {
         clearResultsReturn();
         clearNavigationHistory();
         // A cleanup that moved anything invalidates these results before a replacement scan starts.
         scans.drop(scanId);
         setSummary(null);
-        await start(rescanTarget);
+        void start(rescanTarget);
       }
     } catch (e) {
       setTrash(null);

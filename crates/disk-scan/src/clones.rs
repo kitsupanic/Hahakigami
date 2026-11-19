@@ -328,25 +328,9 @@ mod native {
         })
     }
     fn parent(s: &Snapshot, id: u32, root: &OwnedFd) -> io::Result<OwnedFd> {
-        let mut ancestors = vec![];
-        let mut next = s.node(id).unwrap().parent;
-        while let Some(id) = next {
-            if id == 0 {
-                break;
-            }
-            ancestors.push(id);
-            next = s.node(id).unwrap().parent;
-        }
-        let mut fd = crate::descriptor::reopen(root, &s.node(0).unwrap().identity)?;
-        for id in ancestors.into_iter().rev() {
-            let n = s.node(id).unwrap();
-            fd = crate::descriptor::open_child_name(
-                &fd,
-                &crate::descriptor::ChildName::new(n.native_name())?,
-                &n.identity,
-            )?;
-        }
-        Ok(fd)
+        let (names, root_identity) =
+            crate::descriptor::path_names(s, s.node(id).unwrap().parent.unwrap_or(0))?;
+        crate::descriptor::open_names(root, &root_identity, &names, None)
     }
     struct CachedDirectory {
         id: u32,
@@ -566,7 +550,7 @@ mod native {
             forkattr: EXT,
         };
         let mut b = [0u8; 96];
-        if unsafe {
+        crate::descriptor::syscall(|| unsafe {
             libc::getattrlistat(
                 fd.as_raw_fd(),
                 name.as_c_str().as_ptr(),
@@ -575,10 +559,7 @@ mod native {
                 b.len(),
                 0x1 | 0x20,
             )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        })?;
         parse(&b, identity, length, allocated, hard_link)
     }
     fn probe(s: &Snapshot, id: u32, fd: &OwnedFd) -> io::Result<CloneMetadata> {

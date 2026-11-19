@@ -379,7 +379,12 @@ fn enumerate_using(
             Ok(()) => {}
             // EINTR is the caller's `retry::interrupted` to relist; recovering here
             // would drop clone data and add a spurious warning.
-            Err(error) if rich && error.kind() != io::ErrorKind::Interrupted => {
+            // A dataless folder fails the plain listing too; it is no accounting gap (`dataless`).
+            Err(error)
+                if rich
+                    && error.kind() != io::ErrorKind::Interrupted
+                    && !crate::dataless(&error) =>
+            {
                 let unsupported = is_unsupported(&error);
                 let expected = crate::descriptor::identity_fd(fd);
                 observations.clear();
@@ -552,7 +557,7 @@ fn visit_with_reader(
             return Err(io::Error::from_raw_os_error(libc::EINTR));
         }
         stats.queries += 1;
-        let count = reader(&mut buffer)?;
+        let count = crate::retry::interrupted(Some(cancel), |_| reader(&mut buffer))?;
         if count == 0 {
             return Ok(());
         }
