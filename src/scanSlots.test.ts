@@ -16,7 +16,6 @@ const disk = (id: string, name: string, path: string): Target => ({
   totalBytes: 1000,
   freeBytes: 500,
   volume: true,
-  local: true,
 });
 const hd = disk("hd", "Macintosh HD", "/");
 const backup = disk("backup", "Backup", "/Volumes/Backup");

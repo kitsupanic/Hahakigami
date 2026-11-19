@@ -311,6 +311,7 @@ fn register(
     if guard.identity.kind != 1 {
         return Err("Choose a directory, not a symbolic link.".into());
     }
+    platform::ensure_local_volume(&path)?;
     Ok(retain_target(state, target, guard))
 }
 /// Records `target` with the `guard` its scan start validates; the path scanned is the guard's.
@@ -354,7 +355,7 @@ async fn discover_targets(app: tauri::AppHandle) -> Result<Vec<platform::Target>
             config.root.clone(),
         )?]);
     }
-    // statvfs/lstat can stall on a dead network mount; keep it off the async workers.
+    // statvfs/lstat can hang on an unresponsive mount; keep it off the async workers.
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         platform::discover()
@@ -477,7 +478,7 @@ async fn start_scan<R: tauri::Runtime>(
     // Starts share the gate, so scans on different slots can begin at the same time.
     let _activity = Activity::begin_shared(&state.activity)?;
     quick_look::close(app.clone(), state.preview.clone()).await?;
-    // validate_target/ScanRoot::open can stall on a dead network mount; keep them off the async workers.
+    // validate_target/ScanRoot::open can hang on an unresponsive mount; keep them off the async workers.
     // `_activity` stays held here until the blocking start returns.
     tauri::async_runtime::spawn_blocking(move || {
         start_scan_impl(&app.state::<AppState>(), target_id, on_event)
@@ -769,7 +770,7 @@ fn start_scan_impl(
             .ok_or("Choose a registered folder or volume first.")?;
         (target_id, root.clone(), target.volume)
     };
-    // Cloned out so no lock is held while the disk is read: on a dead mount validate_target and
+    // Cloned out so no lock is held while the disk is read: on an unresponsive mount validate_target and
     // ScanRoot::open stall, and would hold up every other start, discovery and setup call.
     let guard = state
         .target_guards
@@ -1674,6 +1675,7 @@ async fn cleanup_queue_target(
             .root_checked()
     };
     validate_target(&root)?;
+    platform::ensure_local_volume(&root.path)?;
     let name = root
         .path
         .file_name()

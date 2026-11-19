@@ -132,7 +132,6 @@ beforeEach(async () => {
             totalBytes: 1000,
             freeBytes: 500,
             volume: true,
-            local: true,
           },
         ];
       case "start_scan":

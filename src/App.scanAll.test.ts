@@ -23,19 +23,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("./DiskMap.svelte", async () => ({
   default: (await import("./TestMap.svelte")).default,
 }));
-const disk = (id: string, name: string, path: string, local = true): Target => ({
+const disk = (id: string, name: string, path: string): Target => ({
   id,
   name,
   path,
   totalBytes: 1000,
   freeBytes: 500,
   volume: true,
-  local,
 });
 const hd = disk("hd", "Macintosh HD", "/");
 const backup = disk("backup", "Backup", "/Volumes/Backup");
 const usb = disk("usb", "SANDISK", "/Volumes/SANDISK");
-const nas = disk("nas", "media", "/Volumes/media", false);
 const photos: Target = {
   id: "photos",
   name: "Photos",
@@ -117,7 +115,7 @@ async function mountAgain() {
   await mountApp();
 }
 beforeEach(async () => {
-  discovered = [hd, backup, usb, nas];
+  discovered = [hd, backup, usb];
   channels = new Map();
   refused = new Map();
   started = [];
@@ -173,7 +171,7 @@ afterEach(async () => {
   container.remove();
 });
 
-it("starts exactly the local disks and leaves network shares and the folder slot alone", async () => {
+it("starts exactly the disks and leaves the folder slot alone", async () => {
   chosen = photos;
   await click(
     container.querySelector<HTMLButtonElement>("button.welcome-target")!,
@@ -189,7 +187,6 @@ it("starts exactly the local disks and leaves network shares and the folder slot
     "photos",
     "usb",
   ]);
-  expect(startedFor("nas")).toHaveLength(0);
   expect(Object.keys(app().scanSlots).sort()).toEqual([
     "/",
     "/Volumes/Backup",
@@ -255,14 +252,14 @@ it("shows the overall indicator only while two or more scans run, counting the o
   );
 });
 
-it("enables both buttons together, and not without a local disk or while starts are in flight", async () => {
+it("enables both buttons together, and not without a disk or while starts are in flight", async () => {
   expect(headerButton().disabled).toBe(false);
   expect(welcomeButton().disabled).toBe(false);
   expect(app().can.scanAllDisks).toBe(true);
-  // Both buttons read the same gate: a network share alone is nothing to scan.
+  // Both buttons read the same gate: no disk is nothing to scan.
   await act(() => root.unmount());
   container.remove();
-  discovered = [{ ...hd, local: false }, nas];
+  discovered = [];
   await mountApp();
   expect(app().can.scanAllDisks).toBe(false);
   expect(headerButton().disabled).toBe(true);
@@ -364,7 +361,6 @@ it("asks about Full Disk Access once for Scan all and runs it for every disk aft
   await settle();
   expect(app().accessOpen).toBe(false);
   expect(started).toHaveLength(3);
-  expect(startedFor("nas")).toHaveLength(0);
 });
 
 it("opens the Full Disk Access dialog once when the backend finds access off, instead of listing it per disk", async () => {
@@ -397,7 +393,7 @@ it("does not start a disk again while a single start of it is in flight", async 
 it("skips a disk that was ejected while its scan was being cancelled", async () => {
   await click(headerButton());
   await click(headerButton());
-  discovered = [hd, backup, nas];
+  discovered = [hd, backup];
   await act(() => window.dispatchEvent(new Event("focus")));
   await settle();
   expect(Object.keys(app().scanSlots)).not.toContain("/Volumes/SANDISK");
