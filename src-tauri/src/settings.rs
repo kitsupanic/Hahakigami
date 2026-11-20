@@ -163,7 +163,7 @@ impl ScanSettings {
         &self,
         scope: AutoScope,
         conditions: crate::platform::SchedulingConditions,
-    ) -> (usize, usize, &'static str) {
+    ) -> (usize, usize) {
         let base = automatic_worker_count(self.cpu_threads, scope, conditions);
         let cap = if scope == AutoScope::Folder
             && !conditions.low_power_mode
@@ -181,7 +181,7 @@ impl ScanSettings {
         } else {
             base
         };
-        (base, cap, "hardware")
+        (base, cap)
     }
     /// Production scans use hardware Auto and inherited scheduling regardless of retired preferences.
     #[cfg(any(test, feature = "performance-benchmark"))]
@@ -380,7 +380,7 @@ mod auto_tests {
                 low_power_mode: false,
                 thermal_state: crate::platform::ThermalState::Nominal,
             };
-            let (base, cap, _) = s.resolve_scan_workers(scope, conditions);
+            let (base, cap) = s.resolve_scan_workers(scope, conditions);
             assert_eq!(base, automatic_worker_count(14, scope, conditions));
             assert!(cap >= base);
         }
@@ -405,12 +405,10 @@ mod auto_tests {
                             low_power_mode,
                         };
                         for scope in [AutoScope::Folder, AutoScope::Volume] {
-                            let (base, cap, source) =
-                                settings.resolve_scan_workers(scope, conditions);
+                            let (base, cap) = settings.resolve_scan_workers(scope, conditions);
                             let captured =
                                 settings.automatic_info_for_conditions(scope, conditions);
                             assert_eq!(base, captured.resolved_workers);
-                            assert_eq!(source, "hardware");
                             assert!(cap >= base && cap <= disk_scan::MAX_WORKERS);
                             assert!(cap <= total.max(1));
                             assert!(cap <= active.unwrap_or(total).max(1));
@@ -440,7 +438,7 @@ mod auto_tests {
         let settings = ScanSettings::with_cpu_threads(14);
         assert_eq!(
             settings.resolve_scan_workers(AutoScope::Folder, conditions),
-            (6, 6, "hardware")
+            (6, 6)
         );
         // A later public snapshot affects the next scan's resolution, not the captured pair.
         let captured = settings.resolve_scan_workers(AutoScope::Folder, conditions);
@@ -452,8 +450,8 @@ mod auto_tests {
                     ..conditions
                 }
             ),
-            (1, 1, "hardware")
+            (1, 1)
         );
-        assert_eq!(captured, (6, 6, "hardware"));
+        assert_eq!(captured, (6, 6));
     }
 }

@@ -25,12 +25,28 @@ struct Session {
     caches: Arc<Mutex<Caches>>,
 }
 
-#[derive(Default)]
 struct Caches {
     sorts: sorting::Cache,
     filters: filters::Cache,
     /// The GUI's issue index (`crate::refresh_issue_index`), so node views do not re-sort the errors per call.
     issues: (u64, Vec<PathBuf>),
+}
+
+impl Default for Caches {
+    fn default() -> Self {
+        // One call serves up to the API's 1000-item page, so a page builds the list once.
+        Self {
+            sorts: sorting::Cache {
+                page_cap: 1000,
+                ..Default::default()
+            },
+            filters: filters::Cache {
+                page_cap: 1000,
+                ..Default::default()
+            },
+            issues: Default::default(),
+        }
+    }
 }
 
 impl Caches {
@@ -87,7 +103,7 @@ impl Service {
         } else {
             settings::AutoScope::Folder
         };
-        let (workers, _, _) = settings::ScanSettings::default()
+        let (workers, _) = settings::ScanSettings::default()
             .resolve_scan_workers(scope, platform::scheduling_conditions());
         let store = Arc::new(RwLock::new(Snapshot::empty(root.path().to_owned())));
         {
@@ -270,10 +286,8 @@ impl Service {
             {
                 return Err("Not a directory".into());
             }
-            let (ids, total) = page_of(offset, limit, |offset, limit| {
-                let order = sorting::Order::SizeDescending;
-                caches.sorts.page(snapshot, node_id, order, offset, limit)
-            })?;
+            let order = sorting::Order::SizeDescending;
+            let (ids, total) = caches.sorts.page(snapshot, node_id, order, offset, limit)?;
             node_page(
                 snapshot,
                 caches.issue_paths(snapshot),
@@ -300,9 +314,7 @@ impl Service {
         }
         let query = filters::Query::search(query.into(), sorting::Order::SizeDescending)?;
         self.with_caches(scan_id, |snapshot, caches| {
-            let (ids, total) = page_of(offset, limit, |offset, limit| {
-                caches.filters.page(snapshot, &query, offset, limit)
-            })?;
+            let (ids, total) = caches.filters.page(snapshot, &query, offset, limit)?;
             node_page(
                 snapshot,
                 caches.issue_paths(snapshot),
@@ -349,19 +361,6 @@ fn validate_page(limit: usize) -> Result<(), String> {
     } else {
         Err("Limit must be between 1 and 1000.".into())
     }
-}
-
-/// The caches serve at most 500 ids per call, so a larger `limit` takes a second call.
-fn page_of(
-    offset: usize,
-    limit: usize,
-    mut fetch: impl FnMut(usize, usize) -> Result<(Vec<u32>, usize), String>,
-) -> Result<(Vec<u32>, usize), String> {
-    let (mut ids, total) = fetch(offset, limit.min(500))?;
-    if limit > 500 {
-        ids.extend(fetch(offset.saturating_add(500), limit - 500)?.0);
-    }
-    Ok((ids, total))
 }
 
 fn state(snapshot: &Snapshot) -> &'static str {

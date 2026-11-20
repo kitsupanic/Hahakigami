@@ -160,6 +160,8 @@ pub(crate) struct Entry<K> {
 /// One cached sorted ID list, rebuilt when the key or the snapshot changes. Shared by folder listings and filters.
 pub(crate) struct ResultCache<K> {
     pub(crate) entry: Option<Entry<K>>,
+    /// The most ids one page returns.
+    pub(crate) page_cap: usize,
     #[cfg(test)]
     pub(crate) builds: usize,
 }
@@ -167,6 +169,7 @@ impl<K> Default for ResultCache<K> {
     fn default() -> Self {
         Self {
             entry: None,
+            page_cap: 500,
             #[cfg(test)]
             builds: 0,
         }
@@ -228,13 +231,14 @@ impl<K: PartialEq + Clone> ResultCache<K> {
                     ids,
                 });
             } else {
-                return Ok(page(&ids, offset, limit));
+                return Ok(page(&ids, offset, limit, self.page_cap));
             }
         }
         Ok(page(
             &self.entry.as_ref().expect("cache populated").ids,
             offset,
             limit,
+            self.page_cap,
         ))
     }
 }
@@ -274,9 +278,9 @@ impl Cache {
         )
     }
 }
-pub(crate) fn page(ids: &[u32], offset: usize, limit: usize) -> (Vec<u32>, usize) {
+pub(crate) fn page(ids: &[u32], offset: usize, limit: usize, cap: usize) -> (Vec<u32>, usize) {
     let start = offset.min(ids.len());
-    let end = start.saturating_add(limit.min(500)).min(ids.len());
+    let end = start.saturating_add(limit.min(cap)).min(ids.len());
     (ids[start..end].to_vec(), ids.len())
 }
 

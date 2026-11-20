@@ -4290,7 +4290,8 @@ fn queue_entries_follow_the_scan_of_their_own_disk() {
     assert!(review_of(&queue, &[&a2, &b], "a").is_empty());
     assert_eq!(review_of(&queue, &[&a2, &b], "a2").len(), 1);
     // Once A's entry is gone (cleaned), B's stays ready.
-    queue.prune(&[a_root.join("file")]).unwrap();
+    let cleaned = safety::checked_item(&a.scan(), node_of(&a.snapshot, &a_root.join("file")));
+    queue.prune(&[cleaned.unwrap()]).unwrap();
     assert_eq!(status(&queue, &[&a2, &b], &a_root), None);
     assert_eq!(status(&queue, &[&a2, &b], &b_root), Some("ready".into()));
 }
@@ -4774,6 +4775,81 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
         assert!(own.is_valid());
         assert!(n.item.exists());
     });
+}
+
+/// A queue entry of `/Volumes/X/dir/<path>` recorded on `volume`, with the ancestors a scan of `dir` holds.
+fn on_volume(path: &str, kind: u8, volume: &safety::Volume) -> cleanup_queue::Candidate {
+    let item = PathBuf::from(format!("/Volumes/X/dir/{path}"));
+    let entry = recorded_entry(item.to_str().unwrap(), kind);
+    let guard = |path: &Path| cleanup_queue::Guard {
+        path: path.into(),
+        identity: entry.root.identity.clone(),
+    };
+    cleanup_queue::Candidate {
+        ancestors: item.ancestors().skip(1).map(guard).collect(),
+        volume: Some(volume.clone()),
+        ..entry
+    }
+}
+
+#[test]
+fn queued_paths_overlap_only_on_the_same_volume() {
+    let uuid = || safety::Volume::Uuid(uuid::Uuid::new_v4().to_string());
+    let (card1, card2) = (uuid(), uuid());
+    let storage = fixture();
+    let mut queue = queue_of(&storage);
+    // Card 1 stays queued after eject; card 2 mounts at the same path.
+    queue.add(vec![on_volume("DCIM", 1, &card1)]).unwrap();
+    let child2 = on_volume("DCIM/100CANON", 1, &card2);
+    queue.add(vec![child2.clone()]).unwrap();
+    assert_eq!(queue.entries.len(), 2);
+    // Items on card 2 under a card 1 entry add something, and the room check counts them.
+    assert!(queue.check_room(&[child2.checked()]).is_ok());
+    let other2 = on_volume("DCIM/other", 1, &card2);
+    let mut items = vec![
+        child2.checked(),
+        other2.checked(),
+        on_volume("DCIM/other", 1, &card1).checked(),
+    ];
+    queue.retain_uncovered(&mut items);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].path, other2.item.path);
+    assert_eq!(items[0].volume, other2.volume);
+    // Card 2's DCIM replaces only card 2's children.
+    let parent2 = on_volume("DCIM", 1, &card2);
+    queue.add(vec![parent2.clone()]).unwrap();
+    let ids: Vec<_> = queue.entries.iter().map(|c| &c.volume).collect();
+    assert_eq!(ids, [&Some(card1.clone()), &Some(card2.clone())]);
+    // Trashing on card 2 leaves card 1's entry, and a failure there is not card 1's.
+    let failure = (parent2.checked(), "failed".to_string());
+    queue.outcomes(&[], &[failure]).unwrap();
+    assert_eq!(queue.entries[0].last_error, None);
+    assert!(queue.entries[1].last_error.is_some());
+    queue.prune(&[parent2.checked()]).unwrap();
+    assert_eq!(queue.entries.len(), 1);
+    assert_eq!(queue.entries[0].volume, Some(card1.clone()));
+    // On its own volume, a trashed folder still takes its entries.
+    queue
+        .prune(&[on_volume("DCIM", 1, &card1).checked()])
+        .unwrap();
+    assert!(queue.entries.is_empty());
+}
+
+#[test]
+fn entries_without_a_volume_still_overlap_each_other_by_path() {
+    let storage = fixture();
+    let mut queue = queue_of(&storage);
+    let known = safety::Volume::Uuid(uuid::Uuid::new_v4().to_string());
+    let (dcim, child) = (on_volume("DCIM", 1, &known), on_volume("DCIM/a", 2, &known));
+    let unknown = |c: &cleanup_queue::Candidate| cleanup_queue::Candidate {
+        volume: None,
+        ..c.clone()
+    };
+    queue.add(vec![unknown(&dcim), unknown(&child)]).unwrap();
+    assert_eq!(queue.entries.len(), 1);
+    // A known volume is another place than an unknown one.
+    queue.add(vec![child]).unwrap();
+    assert_eq!(queue.entries.len(), 2);
 }
 
 #[test]
