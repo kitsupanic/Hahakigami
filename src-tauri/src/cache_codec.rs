@@ -1,5 +1,5 @@
 //! Versioned wire format of the private rescan cache.
-use crate::cache_store::{err, verified_nonshared, ScanMetadata};
+use crate::cache_store::{err, ScanMetadata};
 use disk_scan::{
     AccountingInfo, Identity, LegacyTreeBuilder, Node, NodeKind, ScanState, ScanStats, Snapshot,
 };
@@ -144,7 +144,7 @@ pub(crate) fn decode(
     }
     let header_len = read_u32(r)? as usize;
     let h: Header = serde_json::from_slice(&bytes(r, header_len, HEADER_LIMIT)?).map_err(err)?;
-    if !verified_nonshared(&h.accounting) {
+    if !h.accounting.verified_nonshared() {
         return Err("Cache requires verified nonshared clone accounting".into());
     }
     let mut snapshot = read_nodes(r, node_limit)?;

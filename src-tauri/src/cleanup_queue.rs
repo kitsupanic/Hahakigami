@@ -252,8 +252,9 @@ impl Queue {
             for (i, c) in record.entries.iter().enumerate() {
                 if !ids.insert(&c.id)
                     || record.entries[..i].iter().any(|p| {
-                        c.item.path.starts_with(&p.item.path)
-                            || p.item.path.starts_with(&c.item.path)
+                        p.volume == c.volume
+                            && (c.item.path.starts_with(&p.item.path)
+                                || p.item.path.starts_with(&c.item.path))
                     })
                 {
                     return Err(std::io::Error::other(

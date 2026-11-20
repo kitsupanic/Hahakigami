@@ -15,3 +15,9 @@ class WorkersProbeTests(unittest.TestCase):
             elif mutation == 'snapshot': changed['capturedWorkers'] = 3
             else: changed['automaticAfterLegacyReload']['qos'] = 'background'
             with self.assertRaises(ValueError, msg=mutation): verify(changed)
+
+    def test_folder_scan_may_use_six_workers_but_not_seven(self):
+        raw = {'settings': {'autoScope':'folder','maxWorkers':14,'defaultWorkers':6}, 'scan': {'state':'completed','workerMode':'auto','workerSource':'hardware','workers':6}, 'capturedWorkers':6, 'automaticAfterLegacyReload': {'workerMode':'auto','qos':'automatic','resolvedWorkers':6,'defaultWorkers':6}}
+        verify(raw)
+        raw['scan']['workers'] = raw['capturedWorkers'] = 7
+        with self.assertRaises(ValueError): verify(raw)

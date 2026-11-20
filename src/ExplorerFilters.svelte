@@ -27,29 +27,55 @@
   import { untrack } from "svelte";
   let { value, disabled = false, onChange }: ExplorerFiltersProps = $props();
   let sizePreset = $state.raw(untrack(() => preset(value)));
-  let unit: keyof typeof units = $state.raw("GB");
+  // Remounts show the largest unit that holds the applied bytes exactly, else the largest one they reach, else GB.
+  let unit: keyof typeof units = $state.raw(
+    untrack(() => {
+      const keys = ["TB", "GB", "MB", "KB", "B"] as const;
+      const largest = Math.max(value.minBytes ?? 0, value.maxBytes ?? 0);
+      if (!largest) return "GB";
+      return (
+        keys.find(
+          (key) =>
+            key !== "B" &&
+            [value.minBytes, value.maxBytes].every(
+              (bytes) => !bytes || bytes % units[key] === 0,
+            ),
+        ) ?? keys.find((key) => units[key] <= largest)!
+      );
+    }),
+  );
+  // The shortest decimal that converts back to `bytes`, so 1.1 GB never reads 1.0999….
+  function text(bytes: number) {
+    const exact = bytes / units[unit];
+    for (let digits = 0; digits <= 15; digits++) {
+      const short = String(+exact.toFixed(digits));
+      if (Math.round(Number(short) * units[unit]) === bytes) return short;
+    }
+    return String(exact);
+  }
   let minimum = $state.raw(
-    untrack(() =>
-      value.minBytes === null ? "" : String(value.minBytes / units.GB),
-    ),
+    untrack(() => (value.minBytes === null ? "" : text(value.minBytes))),
   );
   let maximum = $state.raw(
-    untrack(() =>
-      value.maxBytes === null ? "" : String(value.maxBytes / units.GB),
-    ),
+    untrack(() => (value.maxBytes === null ? "" : text(value.maxBytes))),
   );
   let error = $state.raw("");
   let appliedMinimum = $derived(value.minBytes);
   let appliedMaximum = $derived(value.maxBytes);
+  // Keep the typed text when it already converts to the applied bytes, so 1.1 does not become 1.0999….
+  const shown = (draft: string, bytes: number | null) =>
+    bytes === null
+      ? ""
+      : draft.trim() && Math.round(Number(draft) * units[unit]) === bytes
+        ? draft
+        : text(bytes);
   $effect(() => {
     appliedMinimum;
     appliedMaximum;
     untrack(() => {
       sizePreset = preset(value);
-      minimum =
-        value.minBytes === null ? "" : String(value.minBytes / units[unit]);
-      maximum =
-        value.maxBytes === null ? "" : String(value.maxBytes / units[unit]);
+      minimum = shown(minimum, value.minBytes);
+      maximum = shown(maximum, value.maxBytes);
       error = "";
     });
   });

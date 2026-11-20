@@ -129,6 +129,14 @@ impl AccountingInfo {
             self.warnings.push(message);
         }
     }
+    /// A full-clone accounting whose checks completed and found nothing shared or deducted.
+    pub fn verified_nonshared(&self) -> bool {
+        self.model == AccountingModel::FullClonesV1
+            && self.checks_complete
+            && !self.shared
+            && self.warnings.is_empty()
+            && self.deduction_bytes == 0
+    }
 }
 fn accounting_warnings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     struct Warnings;
@@ -253,12 +261,7 @@ impl Snapshot {
         tree::lookup(&self.tree.clone_attributions, id).copied()
     }
     pub fn incremental_accounting_eligible(&self) -> bool {
-        self.accounting.model == AccountingModel::FullClonesV1
-            && self.accounting.checks_complete
-            && !self.accounting.shared
-            && self.accounting.warnings.is_empty()
-            && self.accounting.deduction_bytes == 0
-            && self.tree.clones.is_empty()
+        self.accounting.verified_nonshared() && self.tree.clones.is_empty()
     }
     pub fn empty(root: PathBuf) -> Self {
         Self {
@@ -559,12 +562,15 @@ fn enumerate_opened_with_accounting(
     clone_observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
     bulk_buffer: &mut Vec<u8>,
 ) -> std::io::Result<Vec<std::io::Result<Entry>>> {
+    let inherited_warnings = accounting_warnings.len();
     retry::interrupted(Some(cancel), |attempt| {
         let fresh = if attempt == 0 {
             None
         } else {
             Some(descriptor::reopen(fd, expected)?)
         };
+        // A failed attempt's warnings must not outlive a successful retry.
+        accounting_warnings.truncate(inherited_warnings);
         clone_observations.clear();
         enumerate_once(
             path,
@@ -759,6 +765,15 @@ fn scanned_node(e: Entry, id: u32, parent: Option<u32>) -> ScannedNode {
             excluded: false,
         },
     }
+}
+/// A fixture the host cannot build skips locally, but CI must fail rather than go green unasserted.
+#[cfg(all(test, target_os = "macos"))]
+fn skip_unsupported_fixture(reason: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "unsupported fixture on CI: {reason}"
+    );
+    eprintln!("skipping: {reason}");
 }
 #[cfg(test)]
 fn node(e: Entry, id: u32, parent: Option<u32>) -> Node {

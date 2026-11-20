@@ -1,7 +1,5 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{
-    atomic, open, sync_dir, unusable, verified_nonshared, ScanMetadata, Store,
-};
+use crate::cache_store::{atomic, open, sync_dir, unusable, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -116,7 +114,7 @@ impl Cache {
         }
         let r: Record = serde_json::from_reader(BufReader::new(file.take(16 * 1024)))?;
         if r.version != 3
-            || !verified_nonshared(&r.accounting)
+            || !r.accounting.verified_nonshared()
             || r.token.cursor == 0
             || r.token.epoch.is_empty()
             || r.token.epoch.len() > 256

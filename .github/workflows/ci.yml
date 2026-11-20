@@ -34,4 +34,5 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p hahakigami --features performance-benchmark --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo test -p hahakigami --features performance-benchmark --lib performance
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'

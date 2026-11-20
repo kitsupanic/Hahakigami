@@ -199,13 +199,6 @@ header nav button {
   color: var(--muted);
   font-size: var(--font-caption);
 }
-.panel-title .inspector-toggle {
-  margin-left: auto;
-  padding: 4px;
-  border: 0;
-  color: var(--muted);
-  background: transparent;
-}
 .map-wrap {
   padding: 6px 7px 24px;
   min-height: 0;

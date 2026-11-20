@@ -157,3 +157,56 @@ it("R3 preserves unapplied custom size drafts when only the category changes", a
     maxBytes: null,
   });
 });
+it("keeps the typed decimal in the field after Apply", async () => {
+  await choose("Size range", "custom");
+  await fill("Minimum size", "1.1");
+  await click("Apply range");
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[aria-label="Minimum size"]',
+    )!.value,
+  ).toBe("1.1");
+});
+it.each([
+  [Math.round(1.1 * 1024 ** 3), "GB", "1.1"],
+  [1, "B", "1"],
+])("remounts %s bytes that no unit holds exactly as %s %s", async (bytes, unit, text) => {
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () =>
+    root.render(ExplorerFilters, {
+      value: { ...emptyFilter, minBytes: bytes },
+      onChange: applied,
+    }),
+  );
+  expect(
+    container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Size unit"]',
+    )!.value,
+  ).toBe(unit);
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[aria-label="Minimum size"]',
+    )!.value,
+  ).toBe(text);
+});
+it("remounts in the largest unit that holds the applied size exactly", async () => {
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () =>
+    root.render(ExplorerFilters, {
+      value: { ...emptyFilter, minBytes: 500 * 1024 ** 2 },
+      onChange: applied,
+    }),
+  );
+  expect(
+    container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Size unit"]',
+    )!.value,
+  ).toBe("MB");
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[aria-label="Minimum size"]',
+    )!.value,
+  ).toBe("500");
+});

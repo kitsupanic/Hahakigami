@@ -1162,6 +1162,26 @@ mod native {
             assert!(!called.load(Ordering::Relaxed));
         }
         #[test]
+        fn a_cancelled_replay_does_not_start_the_loader() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let volume = volume_mount(&root).unwrap();
+            let called = AtomicBool::new(false);
+            let error = replay_with_load_on_volume(
+                &root,
+                &volume,
+                current_id().unwrap(),
+                &AtomicBool::new(true),
+                || {
+                    called.store(true, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "Filesystem event replay cancelled");
+            assert!(!called.load(Ordering::Relaxed));
+        }
+        #[test]
         fn history_completion_requires_the_post_history_marker() {
             let mut collected = Collected {
                 max_id: 20,

@@ -340,6 +340,9 @@ it("clamps restored result offsets through the ordinary fresh-result loader", as
   ).toEqual([150, 0]);
   expect(container.querySelector(".pagination")).toBeNull();
   expect(container.querySelector(".list-heading")?.textContent).toContain(
+    "1 item",
+  );
+  expect(container.querySelector(".list-heading")?.textContent).not.toContain(
     "1 items",
   );
 });

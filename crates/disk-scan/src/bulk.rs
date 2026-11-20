@@ -1554,10 +1554,10 @@ mod tests {
             fn clonefile(a: *const libc::c_char, b: *const libc::c_char, flags: u32) -> i32;
         }
         if unsafe { clonefile(ac.as_ptr(), bc.as_ptr(), 0) } != 0 {
-            eprintln!(
+            crate::skip_unsupported_fixture(&format!(
                 "APFS bulk fixture unsupported: {}",
                 io::Error::last_os_error()
-            );
+            ));
             std::fs::remove_dir_all(p).unwrap();
             return;
         }

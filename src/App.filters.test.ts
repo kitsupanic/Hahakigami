@@ -440,6 +440,9 @@ it("clamps a filtered page when live or final size aggregation shrinks its total
   expect(calls("filter_nodes").at(-1)?.[1].offset).toBe(0);
   expect(container.querySelector(".pagination")).toBeNull();
   expect(container.querySelector(".list-heading")?.textContent).toContain(
+    "1 item",
+  );
+  expect(container.querySelector(".list-heading")?.textContent).not.toContain(
     "1 items",
   );
   expect(

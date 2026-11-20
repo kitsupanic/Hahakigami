@@ -5,9 +5,11 @@
   let { toast, onDismiss }: { toast: AppToast; onDismiss: () => void } =
     $props();
   const DISMISS_MS = 4000;
-  let paused = $state(false);
+  // Tracked apart so leaving with the pointer does not resume while a button keeps focus.
+  let hovered = $state(false);
+  let focused = $state(false);
   $effect(() => {
-    if (paused) return;
+    if (hovered || focused) return;
     const timer = setTimeout(onDismiss, DISMISS_MS);
     return () => clearTimeout(timer);
   });
@@ -17,10 +19,10 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="toast"
-  onmouseover={() => (paused = true)}
-  onmouseout={() => (paused = false)}
-  onfocusin={() => (paused = true)}
-  onfocusout={() => (paused = false)}
+  onmouseenter={() => (hovered = true)}
+  onmouseleave={() => (hovered = false)}
+  onfocusin={() => (focused = true)}
+  onfocusout={() => (focused = false)}
 >
   <span class="toast-message">{toast.message}</span>
   <button
