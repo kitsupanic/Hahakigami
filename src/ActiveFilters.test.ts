@@ -90,6 +90,10 @@ it.each([
   [1025, null, "On disk ≥ 1025 B"],
   [null, gib + 1, `On disk ≤ ${gib + 1} B`],
   [1025, 1026, "On disk 1025–1026 B"],
+  [Math.round(1.1 * gib), null, "On disk ≥ ≈1.1 GiB"],
+  [Math.round(1.1 * gib), 2 * gib, "On disk ≈1.1 GiB–2 GiB"],
+  [0, Math.round(1.1 * gib), "On disk 0 B–≈1.1 GiB"],
+  [500, Math.round(1.1 * gib), "On disk 500 B–≈1.1 GiB"],
   [Number.MAX_SAFE_INTEGER, null, `On disk ≥ ${Number.MAX_SAFE_INTEGER} B`],
 ] as const)(
   "keeps byte boundaries exact for %s–%s",

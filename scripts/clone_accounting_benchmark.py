@@ -79,6 +79,7 @@ def validate(config, output):
 
 
 def execute(config, output):
+    output = output.resolve()  # the native side requires absolute canonical paths
     validate(config, output)
     output.mkdir(parents=True, exist_ok=False)
     executables = config['executables']

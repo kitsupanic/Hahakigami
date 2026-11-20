@@ -1401,7 +1401,7 @@ mod native {
                     .status()
                     .is_ok_and(|s| s.success());
             if !attached {
-                eprintln!("skipping: hdiutil could not create or attach an HFS+ image");
+                crate::skip_unsupported_fixture("hdiutil could not create or attach an HFS+ image");
                 let _ = std::fs::remove_dir_all(&base);
                 return None;
             }
@@ -3515,10 +3515,10 @@ mod tests {
             fn clonefile(a: *const libc::c_char, b: *const libc::c_char, flags: u32) -> i32;
         }
         if unsafe { clonefile(ac.as_ptr(), bc.as_ptr(), 0) } != 0 {
-            eprintln!(
+            crate::skip_unsupported_fixture(&format!(
                 "APFS fixture unsupported: {}",
                 std::io::Error::last_os_error()
-            );
+            ));
             std::fs::remove_dir_all(p).unwrap();
             return;
         }

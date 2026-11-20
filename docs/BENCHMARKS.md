@@ -1292,7 +1292,7 @@ Startup's sample warm medians were 122 ms at five, six and seven workers, 181 ms
 
 The current app supersedes the calibration Auto sections above. Auto uses [OpenDisk's scope-specific worker formulas](https://github.com/137137137/OpenDisk/blob/f7551cf21a5c35a963c607401ba5705ec0869b64/OpenDisk/Services/Scanning/TraversalScanner.swift#L6-L12) plus [Radix's power/thermal reductions](https://github.com/colinvkim/Radix/blob/df1235bfb05acb7a678718166491bcc27817d95d/Radix/Services/ScanEngine.swift#L842-L898). These engineering ideas are independently implemented; no upstream scanner code was copied. The application uses one bounded directory pool and introduces no nested classification pool.
 
-Under normal conditions, a 14-thread Mac gets seven workers for volume roots and three for folders. The rules use active CPU count, not P/E counts. They are deterministic heuristics rather than measured per-volume optima. Low Power Mode and temperature can reduce the next scan's count; settings and actual scan start each read current conditions, so the displayed prediction can change before launch. Active scans retain their captured count.
+Under normal conditions, a 14-thread Mac gets seven workers for volume roots and six for folders (folders get three to five on smaller CPUs or under unknown conditions, and fewer, down to one, under Low Power Mode or thermal pressure). The rules use active CPU count, not P/E counts. They are deterministic heuristics rather than measured per-volume optima. Low Power Mode and temperature can reduce the next scan's count; settings and actual scan start each read current conditions, so the displayed prediction can change before launch. Active scans retain their captured count.
 
 To check the current policy through native commands, build the release test executable, then use Cargo's printed executable path:
 
@@ -1302,7 +1302,7 @@ python3 scripts/workers_probe.py --binary target/release/deps/hahakigami_lib-TES
   --path /absolute/folder-or-volume --output benchmark-results/hardware-auto.json
 ```
 
-The probe uses disposable preferences and inherited permissions. It runs one full Auto scan, verifies captured worker/source information, and checks that production Auto ignores retired preferences. It hashes the executable before and after, records source fingerprints, and does not change grants or user settings. This is an integration observation, not an alternating full-scan benchmark or a graphical app launch check. Earlier calibration reports remain historical evidence; scripts/calibration_probe.py is retired for current Auto.
+The probe uses disposable preferences and inherited permissions. It runs one full Auto scan, verifies captured worker/source information, and checks that production Auto ignores retired preferences. It hashes the executable before and after, records source fingerprints, and does not change grants or user settings. This is an integration observation, not an alternating full-scan benchmark or a graphical app launch check. Earlier calibration reports remain historical evidence.
 
 Final startup policy probe (`benchmark-results-hardware-auto-startup.json`, removed) and GitHub policy probe (`benchmark-results-hardware-auto-projects.json`, removed) passed with unchanged executable SHA-256 `9114ff4ec09e25152c925f57fdbfdeff0f66f20b466446031d893be8260328eb`. Both reported 14 CPU threads, Low Power Mode off and nominal temperature. Each verified a completed hardware Auto scan, fixed captured workers, and a disposable Manual save/reload.
 

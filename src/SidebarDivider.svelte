@@ -9,7 +9,8 @@
   let divider: HTMLDivElement;
   let dragging = $state(false);
   let gesture: { id: number; x: number; width: number } | null = null;
-  const maximum = () => Math.max(MIN, Math.min(480, window.innerWidth * 0.4));
+  let innerWidth = $state(window.innerWidth);
+  const maximum = () => Math.max(MIN, Math.min(480, innerWidth * 0.4));
   // The sidebar renders at min(value, 40vw), so a stored width past the maximum reads as the maximum.
   const current = () =>
     Math.min(
@@ -56,6 +57,8 @@
     event.preventDefault();
   }
 </script>
+
+<svelte:window bind:innerWidth />
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (A focusable ARIA window splitter has separator semantics and supports pointer and keyboard resizing.) -->
 <div

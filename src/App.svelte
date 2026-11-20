@@ -12,7 +12,7 @@
     type Target,
   } from "./types";
   import { SvelteSet } from "svelte/reactivity";
-  import { compactBytes } from "./uiFormat";
+  import { compactBytes, countLabel } from "./uiFormat";
   import type { FolderRow } from "./queueFolders";
   import createApp from "./createApp.svelte";
   import {
@@ -612,7 +612,7 @@
               : query.trim()
                 ? `Search results across ${locationName(resultLocation?.name, resultLocation?.path)}`
                 : "Folders and files"}{" "}<small>
-              {page.total.toLocaleString()} items
+              {countLabel(page.total, "item")}
             </small>
           </strong>
           {#if filtered || query.trim()}
@@ -1195,7 +1195,7 @@
             {resultsReturn.query.trim()
               ? `“${resultsReturn.query.trim()}”`
               : "Filtered results"}
-            · {resultsReturn.total.toLocaleString()} matches
+            · {countLabel(resultsReturn.total, "match", "matches")}
           </span>
         </div>
       {/if}
@@ -1715,7 +1715,7 @@
       onDismiss={app.dismissCleanupReport}
     />
   {/if}
-  {#if error}
+  {#if error && !failedScan}
     <FailureModal
       title={app.errorContext?.title ?? "Something went wrong"}
       reason={app.errorContext?.reason ??

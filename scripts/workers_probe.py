@@ -14,7 +14,7 @@ def verify(raw):
     scan, settings = raw['scan'], raw['settings']
     if scan['state'] != 'completed' or scan['workerMode'] != 'auto' or scan['workerSource'] != 'hardware':
         raise ValueError('Expected a completed hardware Auto scan')
-    ceiling = 8 if settings['autoScope'] == 'volume' else 5
+    ceiling = 8 if settings['autoScope'] == 'volume' else 6  # folder scans reach 6 only on large, unconstrained CPUs
     if not 1 <= scan['workers'] <= min(settings['maxWorkers'], ceiling):
         raise ValueError('Auto worker count exceeds its scope or CPU cap')
     if raw['capturedWorkers'] != scan['workers']:

@@ -1114,6 +1114,54 @@ it("closes the failed scan modal with Escape and does not reopen it for the same
   await act(async () => mock.channels[0].onmessage({ ...failed, entries: 3 }));
   expect(failureDialog()).toBeNull();
 });
+it("shows a start error only after the scan failure is dismissed", async () => {
+  await click("Scan location");
+  await act(async () =>
+    mock.channels[0].onmessage({
+      ...summary("scan-1", "failed"),
+      message: "Disk vanished",
+    }),
+  );
+  await act(() => mock.app!.setError("Start broke"));
+  expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(failureDialog()!.querySelector("h2")?.textContent).toContain(
+    "Scan failed",
+  );
+  await act(() => failureButton("Close")!.click());
+  expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(failureDialog()!.textContent).toContain("Start broke");
+});
+it("keeps a toast while its Dismiss button has focus after the pointer leaves", async () => {
+  await click("Scan location");
+  vi.useFakeTimers();
+  try {
+    await cancelledScan();
+    await act(() => {
+      toast()!.dispatchEvent(new MouseEvent("mouseenter"));
+      toast()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await act(() =>
+      toastButton("Dismiss").dispatchEvent(
+        new FocusEvent("focusin", { bubbles: true }),
+      ),
+    );
+    await act(() => {
+      toast()!.dispatchEvent(new MouseEvent("mouseleave"));
+      toast()!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(toast()).not.toBeNull();
+    await act(() =>
+      toastButton("Dismiss").dispatchEvent(
+        new FocusEvent("focusout", { bubbles: true }),
+      ),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(4100));
+    expect(toast()).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("fades a toast after about four seconds, unless hovered or focused", async () => {
   await click("Scan location");
   vi.useFakeTimers();
@@ -1125,12 +1173,12 @@ it("fades a toast after about four seconds, unless hovered or focused", async ()
     expect(toast()).toBeNull();
     await cancelledScan();
     await act(() =>
-      toast()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })),
+      toast()!.dispatchEvent(new MouseEvent("mouseenter")),
     );
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     expect(toast()).not.toBeNull();
     await act(() =>
-      toast()!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })),
+      toast()!.dispatchEvent(new MouseEvent("mouseleave")),
     );
     await act(() => vi.advanceTimersByTimeAsync(4100));
     expect(toast()).toBeNull();

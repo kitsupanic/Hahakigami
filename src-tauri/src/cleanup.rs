@@ -153,14 +153,9 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
             // The ticket re-read each birth time from disk; it must still match the one saved when the item was
             // queued, or a file recreated in the same slot after `statuses` would pass.
             let mut ticket = s.ticket.lock().unwrap();
-            let replaced = ticket.as_ref().is_some_and(|t| {
-                t.items.iter().any(|item| {
-                    queue
-                        .entries
-                        .iter()
-                        .any(|c| c.item.path == item.path && c.item.identity != item.identity)
-                })
-            });
+            let replaced = ticket
+                .as_ref()
+                .is_some_and(|t| replaced_since_queued(&queue, &t.items));
             if replaced {
                 *ticket = None;
                 return Err("The selected item changed. Rescan before cleanup.".into());
@@ -168,6 +163,15 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
             Ok(review)
         }
     }
+}
+/// Whether an entry of `queue` is the reviewed item's path and volume but another file: one that reuses its device
+/// and inode (FAT) has another birth time. An entry on another volume is another place.
+fn replaced_since_queued(queue: &Queue, items: &[safety::CheckedItem]) -> bool {
+    items.iter().any(|item| {
+        queue.entries.iter().any(|c| {
+            c.item.path == item.path && c.volume == item.volume && c.item.identity != item.identity
+        })
+    })
 }
 fn issue(
     s: &Session,
@@ -475,7 +479,6 @@ mod tests {
         tests::{install, snapshot, Recording},
         AppState,
     };
-    use std::time::Duration;
 
     const PROTECTED: &str = "This location is protected from cleanup.";
     const QUEUE_CHANGED: &str = "Cleanup queue changed. Review ready items again.";
@@ -612,13 +615,20 @@ mod tests {
         let state = AppState::default();
         let (s, token) = reviewed(&state, &root);
         let queue = Mutex::new(Queue::default());
-        // Parked on the store read, commit is past its queue check: the queue must be free meanwhile.
-        let store = s.store.write().unwrap();
+        // Parked inside the Trash call, commit is past its queue check and its disk checks: the queue must be free.
+        let (reached, wait_reached) = std::sync::mpsc::channel();
+        let (go, wait_go) = std::sync::mpsc::channel::<()>();
         let (free, result) = std::thread::scope(|scope| {
-            let work = scope.spawn(|| commit(&s, &queue, &token, false, &[], |_| Ok(())));
-            std::thread::sleep(Duration::from_millis(200));
+            let work = scope.spawn(|| {
+                commit(&s, &queue, &token, false, &[], move |_| {
+                    reached.send(()).unwrap();
+                    wait_go.recv().unwrap();
+                    Ok(())
+                })
+            });
+            wait_reached.recv().unwrap();
             let free = queue.try_lock().is_ok();
-            drop(store);
+            go.send(()).unwrap();
             (free, work.join().unwrap())
         });
         assert!(free, "commit held the queue lock while checking the disk");
@@ -734,6 +744,58 @@ mod tests {
             ..none()
         };
         assert_eq!(select(home).as_deref(), Some(PROTECTED));
+    }
+
+    /// A queued file `a` of a completed scan, with the queue and the scans to review it against.
+    fn queued_file(
+        state: &AppState,
+        root: &Path,
+    ) -> (Arc<Session>, tempfile::TempDir, Mutex<Queue>) {
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let queue = Mutex::new(Queue::load(storage.path().join("queue")));
+        let scan = snapshot(root.to_path_buf());
+        let ids: Vec<_> = scan
+            .iter_nodes()
+            .filter(|n| n.parent == Some(0))
+            .map(|n| n.id)
+            .collect();
+        let s = install(state, scan);
+        add(&s, &queue, &ids).unwrap();
+        (s, storage, queue)
+    }
+
+    #[test]
+    fn a_queued_file_replaced_by_one_reusing_its_device_and_inode_counts_as_replaced() {
+        let (_dir, root) = home_dir();
+        let state = AppState::default();
+        let (s, _storage, queue) = queued_file(&state, &root);
+        let scans = state.scans.sessions();
+        review(&s, Pick::Queue(&queue, &scans)).unwrap();
+        let items = s.ticket.lock().unwrap().as_ref().unwrap().items.clone();
+        assert!(!replaced_since_queued(&queue.lock().unwrap(), &items));
+        // The disk's birth time no longer matches the one saved when the file was queued. Review's own status check
+        // catches it first unless the file is swapped after that check, so the guard is tested on its own.
+        queue.lock().unwrap().entries[0].item.identity.birth = Some((1, 0));
+        assert!(replaced_since_queued(&queue.lock().unwrap(), &items));
+    }
+
+    #[test]
+    fn a_same_path_entry_on_another_volume_does_not_refuse_review() {
+        let (_dir, root) = home_dir();
+        let state = AppState::default();
+        let (s, _storage, queue) = queued_file(&state, &root);
+        let scans = state.scans.sessions();
+        {
+            let mut queue = queue.lock().unwrap();
+            let mut other = queue.entries[0].clone();
+            other.id = uuid::Uuid::new_v4().to_string();
+            other.volume = Some(safety::Volume::Uuid(uuid::Uuid::new_v4().to_string()));
+            other.item.identity.birth = Some((1, 0));
+            queue.entries.push(other);
+        }
+        assert!(review(&s, Pick::Queue(&queue, &scans)).is_ok());
+        assert!(s.ticket.lock().unwrap().is_some());
     }
 
     #[test]

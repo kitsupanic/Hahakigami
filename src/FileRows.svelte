@@ -8,7 +8,7 @@
     normalizePath,
     type QueuePath,
   } from "./queueMarkers";
-  import { compactBytes, usageColor } from "./uiFormat";
+  import { compactBytes, countLabel, usageColor } from "./uiFormat";
   import {
     createHoverTarget,
     findHoverMatch,
@@ -544,7 +544,7 @@
             >{n.excluded
               ? "Not scanned"
               : n.kind === "directory"
-                ? `${n.childrenCount.toLocaleString()} items`
+                ? countLabel(n.childrenCount, "item")
                 : "—"}</span
           >
         </div>{/if}{/each}

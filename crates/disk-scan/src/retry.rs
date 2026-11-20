@@ -34,10 +34,15 @@ pub(crate) fn terminal_listing<T>(
 /// An interrupted entry invalidates its complete listing, including already-read successful entries.
 pub(crate) fn complete_listing<T>(entries: Vec<io::Result<T>>) -> io::Result<Vec<io::Result<T>>> {
     // A permanent issue must not be concealed by a successful later pass of the same listing.
+    // Vanished and dataless entries are dropped silently by the walk, so they are not issues.
     if entries
         .iter()
         .filter_map(|entry| entry.as_ref().err())
-        .any(|error| error.kind() != io::ErrorKind::Interrupted)
+        .any(|error| {
+            error.kind() != io::ErrorKind::Interrupted
+                && !crate::vanished(error)
+                && !crate::dataless(error)
+        })
     {
         return Ok(entries);
     }
@@ -145,7 +150,7 @@ mod tests {
     #[test]
     fn permanent_entry_before_terminal_interrupt_never_becomes_clean_on_retry() {
         for backend in ["bulk", "portable"] {
-            for prior in [libc::EACCES, libc::ENOENT, libc::EMFILE] {
+            for prior in [libc::EACCES, libc::EMFILE] {
                 let mut calls = 0;
                 let listing = interrupted(None, |_| {
                     calls += 1;
@@ -166,6 +171,29 @@ mod tests {
                     Some(libc::EINTR)
                 );
             }
+        }
+    }
+    #[test]
+    fn silently_dropped_entry_errors_do_not_block_the_interrupt_retry() {
+        for prior in [libc::ENOENT, libc::ENOTDIR, libc::EDEADLK] {
+            let mut calls = 0;
+            let listing = interrupted(None, |_| {
+                calls += 1;
+                if calls > 1 {
+                    return Ok(vec![Ok(9)]);
+                }
+                terminal_listing(
+                    vec![Ok(1), Err(io::Error::from_raw_os_error(prior))],
+                    io::Error::from_raw_os_error(libc::EINTR),
+                )
+                .and_then(complete_listing)
+            })
+            .unwrap();
+            assert_eq!(calls, 2, "errno {prior}");
+            assert_eq!(
+                listing.into_iter().collect::<io::Result<Vec<_>>>().unwrap(),
+                vec![9]
+            );
         }
     }
     #[test]

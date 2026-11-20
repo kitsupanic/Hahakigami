@@ -72,3 +72,13 @@ it("treats a stored width past the window's maximum as the maximum", async () =>
   );
   expect(value).toBe(390);
 });
+
+it("recomputes aria-valuemax and aria-valuenow after a window resize", async () => {
+  value = 480;
+  await act(render);
+  expect(divider.getAttribute("aria-valuenow")).toBe("400");
+  window.innerWidth = 600;
+  await act(() => window.dispatchEvent(new Event("resize")));
+  expect(divider.getAttribute("aria-valuemax")).toBe("240");
+  expect(divider.getAttribute("aria-valuenow")).toBe("240");
+});

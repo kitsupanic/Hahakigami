@@ -103,9 +103,11 @@ impl LegacyTreeBuilder {
     pub fn override_bytes(&self) -> usize {
         self.override_bytes
     }
+    #[cfg(test)]
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
+    #[cfg(test)]
     pub fn node_count(&self) -> usize {
         self.snapshot.node_count()
     }
@@ -113,6 +115,7 @@ impl LegacyTreeBuilder {
     pub fn scratch_capacity_bytes(&self) -> usize {
         self.parent_path.capacity() + self.expected_path.capacity()
     }
+    #[cfg(test)]
     pub fn append(&mut self, n: Node) -> Result<(), String> {
         self.append_ref(&n)
     }

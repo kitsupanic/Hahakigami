@@ -5028,6 +5028,10 @@ fn queued_paths_overlap_only_on_the_same_volume() {
     queue.outcomes(&[], &[failure]).unwrap();
     assert_eq!(queue.entries[0].last_error, None);
     assert!(queue.entries[1].last_error.is_some());
+    // The saved queue, two entries at one path on two volumes, loads again at the next launch.
+    let reloaded = queue_of(&storage);
+    assert!(!reloaded.blocked, "{:?}", reloaded.warning);
+    assert_eq!(reloaded.entries.len(), 2);
     queue.prune(&[parent2.checked()]).unwrap();
     assert_eq!(queue.entries.len(), 1);
     assert_eq!(queue.entries[0].volume, Some(card1.clone()));

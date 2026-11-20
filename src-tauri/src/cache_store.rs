@@ -1,6 +1,6 @@
 //! Files of the private rescan cache: per entry a compact scan archive (`.zst`) and a row (`.json`).
 //! Callers serialize operations and own what a cached scan may be used for.
-use disk_scan::{AccountingInfo, ScanState, Snapshot};
+use disk_scan::{ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::os::unix::{
     ffi::OsStrExt,
@@ -356,14 +356,6 @@ fn sequential_validated_encoding(
     encoding()
 }
 
-/// A full-clone accounting whose checks completed and found nothing shared or deducted.
-pub(crate) fn verified_nonshared(a: &AccountingInfo) -> bool {
-    a.model == disk_scan::AccountingModel::FullClonesV1
-        && a.checks_complete
-        && !a.shared
-        && a.warnings.is_empty()
-        && a.deduction_bytes == 0
-}
 fn validate_metadata(m: &ScanMetadata) -> Result<(), String> {
     if !(1..=disk_scan::MAX_WORKERS).contains(&m.workers) {
         Err("Invalid cache metadata".into())
