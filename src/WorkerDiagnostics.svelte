@@ -1,6 +1,6 @@
 <script module lang="ts">
   export function duration(us: number) {
-    return us >= 1_000_000
+    return us >= 999_950
       ? `${(us / 1_000_000).toFixed(2)} s`
       : `${(us / 1000).toFixed(1)} ms`;
   }

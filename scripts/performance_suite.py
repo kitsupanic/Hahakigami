@@ -14,7 +14,6 @@ coverage, <=1.05 timing, <=0.8 full RSS and <=0.65 retained-capacity ratios.
 import argparse
 import ctypes
 from datetime import datetime, timezone
-import hashlib
 import json
 import math
 import os
@@ -26,19 +25,12 @@ import statistics
 import subprocess
 import tempfile
 import time
+from benchmark import file_hash, rotated
 from coverage_compare import compare
 
 
-def digest(path):
-    value = hashlib.sha256()
-    with open(path, 'rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            value.update(block)
-    return value.hexdigest()
-
-
 def fingerprints(executables):
-    return {str(path): digest(path) for executable in executables for path in [executable['path'], *executable.get('source_paths', [])]}
+    return {str(path): file_hash(path) for executable in executables for path in [executable['path'], *executable.get('source_paths', [])]}
 
 
 def schedule(executables, rounds=5):
@@ -46,8 +38,7 @@ def schedule(executables, rounds=5):
         raise ValueError('At least one warm round required')
     yield 'initial', 0, list(executables)
     for number in range(1, rounds + 1):
-        offset = number % len(executables)
-        yield 'warm', number, list(executables[offset:]) + list(executables[:offset])
+        yield 'warm', number, rotated(list(executables), number)
 
 
 def process_snapshot():
@@ -167,7 +158,7 @@ def _run(executable, request, timeout):
                     if not record['canvas_geometry_verified']:
                         record.update(success=False, error='Canvas geometry does not establish the expected rendered map')
             except (ValueError, TypeError) as error:
-                record['error'] = str(error)
+                record.setdefault('error', str(error))  # keep 'timeout' over the resulting parse error
             record['stderr_tail'] = stderr.read()[-4000:].decode('utf-8', 'replace')
             record['sampled_peak_aggregate_rss_bytes'] = peak if birth and not sampling_error else None
             record['memory_sampling_error'] = sampling_error
@@ -382,7 +373,7 @@ def execute(config, checkpoint=None):
     if any(scope not in config['scopes'] for scope in coverage_scopes):
         raise ValueError('Coverage scopes must be configured measurement scopes')
     before = fingerprints(executables)
-    report = {'schema_version': 2, 'recorded_at_utc': datetime.now(timezone.utc).isoformat(), 'config': config, 'runner_sha256': digest(Path(__file__)), 'complete': False, 'acceptance_met': False, 'hashes_before': before, 'runs': [], 'coverage': {}, 'limitations': ['Live scopes may change between scans.', 'Shared or reparented helpers are not attributed.', 'No privacy grants or cache flushing performed.']}
+    report = {'schema_version': 2, 'recorded_at_utc': datetime.now(timezone.utc).isoformat(), 'config': config, 'runner_sha256': file_hash(Path(__file__)), 'complete': False, 'acceptance_met': False, 'hashes_before': before, 'runs': [], 'coverage': {}, 'limitations': ['Live scopes may change between scans.', 'Shared or reparented helpers are not attributed.', 'No privacy grants or cache flushing performed.']}
     if set(coverage_scopes) != set(config['scopes']):
         report['limitations'].append('Coverage omitted for selected scopes; their acceptance gates remain inconclusive.')
     with tempfile.TemporaryDirectory(prefix='hahakigami-performance-state-') as temporary_path:

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createTestRoot as createRoot, type Root } from "./testUtils";
 import { expect, it, vi } from "vitest";
-import WorkerDiagnostics, { entryShare } from "./WorkerDiagnostics.svelte";
+import WorkerDiagnostics, { duration, entryShare } from "./WorkerDiagnostics.svelte";
 import type { ScanSummary, WorkerStats } from "./types";
 
 const worker = (id: number, entries: number): WorkerStats => ({
@@ -35,6 +35,11 @@ const summary = (state: ScanSummary["state"] = "completed"): ScanSummary => ({
   descriptorLimit: 192,
   descriptorPeak: 180,
   workerStats: [worker(1, 3), { ...worker(2, 7), cpuUs: null }],
+});
+it("switches to seconds before rounding up to 1000.0 ms", () => {
+  expect(duration(999_949)).toBe("999.9 ms");
+  expect(duration(999_950)).toBe("1.00 s");
+  expect(duration(999_999)).toBe("1.00 s");
 });
 it("defines result share using accepted entries without the pre-created root", () => {
   expect(entryShare(3, 11)).toBe(30);

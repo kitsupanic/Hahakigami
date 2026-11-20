@@ -98,8 +98,9 @@ impl Cache {
             bytes_limit: 512 * 1024 * 1024,
         }
     }
-    pub fn contains_storage(&self, scope: &Path) -> bool {
-        self.root.starts_with(scope)
+    /// The directory the records live in.
+    pub fn storage(&self) -> &Path {
+        &self.root
     }
     fn path(&self, id: &str) -> Result<PathBuf, String> {
         self.store.path(id, "cursor")

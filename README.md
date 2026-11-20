@@ -30,7 +30,7 @@ No accounts, analytics or uploads.
 - **Find it fast.** Search names, filter by file category and size, and break usage down by file type.
 - **Native.** Quick Look previews and Reveal in Finder.
 - **Careful cleanup.** A cleanup queue that survives restarts. Nothing is deleted permanently: items go to the Trash after you review the exact paths.
-- **Fast rescans.** Rescans reuse unchanged folders via macOS FSEvents.
+- **Fast rescans.** Rescans reuse unchanged folders via macOS FSEvents. A location that contains APFS clones is rescanned in full, so sizes stay correct.
 - **Scriptable.** A command-line `scan` and a local MCP server for agents.
 
 > [!NOTE]

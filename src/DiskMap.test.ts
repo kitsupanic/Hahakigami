@@ -1851,6 +1851,27 @@ it("clears owned hover and suppresses hits and external outlines until the curre
   }
 });
 
+it("re-hits a still pointer after a layout update and clears it when the pointer is no longer over a tile", async () => {
+  const f = await linkedMapFixture();
+  try {
+    await f.complete();
+    await f.pointer("mousemove");
+    const wrap = f.element.querySelector(".map-wrap")!;
+    expect(wrap.getAttribute("data-hovered-id")).toBe("3");
+    await f.mode("sunburst");
+    expect(wrap.hasAttribute("data-hovered-id")).toBe(false);
+    // The pointer has not moved; the next layout's tile under it is hovered again.
+    await f.complete(f.currentRequest(), [{ ...f.shapes[1], id: 3, inner: 200, outer: 230, start: 4, end: 4.2 }]);
+    expect(wrap.getAttribute("data-hovered-id")).toBe("3");
+    await f.mode("treemap");
+    await f.complete(f.currentRequest(), []);
+    expect(wrap.hasAttribute("data-hovered-id")).toBe(false);
+    expect(f.onHover).toHaveBeenLastCalledWith(null);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 it("honors controlled hover clears and replacements without publishing obsolete clears", async () => {
   const f = await linkedMapFixture();
   try {

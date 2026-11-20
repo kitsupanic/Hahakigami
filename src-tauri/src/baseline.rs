@@ -208,7 +208,7 @@ impl Baselines {
         let configured = self
             .lock()
             .as_ref()
-            .is_some_and(|c| !c.contains_storage(root.path()));
+            .is_some_and(|c| !storage_inside(c.storage(), root.path()));
         let history = if configured && root.path() != Path::new("/") {
             journal.history(root)
         } else {
@@ -431,6 +431,13 @@ impl Ticket<'_> {
                 .map(|error: String| format!("Could not keep the rescan cache: {error}")),
         })
     }
+}
+
+/// Whether the cache directory lies inside `scope`, where the scan would see its own cache writes as changes. Both
+/// are compared as the journal spells them, so `/System/Volumes/Data/Users/me` holds `/Users/me/Library/...` too:
+/// a text prefix test does not see that.
+fn storage_inside(storage: &Path, scope: &Path) -> bool {
+    events::namespace(storage).starts_with(events::namespace(scope))
 }
 
 /// Whether `Changes::resolve` put every cached alias of each changed inode into the dirty paths, so
@@ -1161,6 +1168,30 @@ mod tests {
             let (start, _) = rig.acquire(&root, Some(previous), ago(1000));
             assert_eq!(seed(start).aliases_resolved, resolved);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cache_directory_is_inside_a_scope_however_either_is_spelled() {
+        let cache = Path::new("/Users/me/Library/Application Support/app/cache");
+        let inside =
+            |storage: &str, scope: &str| storage_inside(Path::new(storage), Path::new(scope));
+        assert!(inside(cache.to_str().unwrap(), "/Users/me"));
+        assert!(inside(cache.to_str().unwrap(), cache.to_str().unwrap()));
+        // The Data volume's firmlink spelling of a scope holds what its plain spelling holds.
+        assert!(inside(cache.to_str().unwrap(), "/System/Volumes/Data"));
+        assert!(inside(
+            cache.to_str().unwrap(),
+            "/System/Volumes/Data/Users/me"
+        ));
+        assert!(inside("/System/Volumes/Data/Users/me/cache", "/Users/me"));
+        // /var is /private/var.
+        assert!(inside("/private/var/folders/x/cache", "/var/folders"));
+        assert!(inside("/var/folders/x/cache", "/private/var"));
+        // Components, not text; and a scope elsewhere holds nothing of it.
+        assert!(!inside(cache.to_str().unwrap(), "/Users/m"));
+        assert!(!inside(cache.to_str().unwrap(), "/Users/me/Documents"));
+        assert!(!inside("/Users/me", cache.to_str().unwrap()));
     }
 
     #[test]

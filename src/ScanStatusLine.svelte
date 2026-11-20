@@ -17,7 +17,6 @@
   } = $props();
   let running = $derived(summary.state === "running");
   let completed = $derived(summary.state === "completed");
-  let restricted = $derived(issueSplit(summary).restricted);
   let otherIssues = $derived(issueSplit(summary).other);
   let partial = $derived(!!coverageLabel(summary));
   let status = $derived(

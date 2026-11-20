@@ -195,6 +195,144 @@ fn file_and_cleanup_commands_refuse_a_scan_that_is_not_usable_in_the_same_words(
 }
 
 #[test]
+fn command_inputs_are_capped_one_past_the_limit() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let s = install(&state, synthetic(2));
+        let id = || s.id.clone();
+        // A review: 1 to 1,000 items. Inside the limit, the ids are looked at (and fail on their own).
+        let select = "Select between 1 and 1,000 items.";
+        for count in [0, 1001] {
+            assert_eq!(
+                prepare_trash(app.state(), id(), vec![1; count])
+                    .await
+                    .err()
+                    .as_deref(),
+                Some(select),
+                "{count}"
+            );
+        }
+        for count in [1, 1000] {
+            let error = prepare_trash(app.state(), id(), vec![1; count]).await.err();
+            assert!(error.is_some_and(|e| e != select), "{count}");
+        }
+        // Queueing: 100,000 references.
+        let many = "Add at most 100,000 selection references at a time.";
+        assert_eq!(
+            add_cleanup_queue(app.state(), id(), vec![1; 100_001])
+                .await
+                .err()
+                .as_deref(),
+            Some(many)
+        );
+        let error = add_cleanup_queue(app.state(), id(), vec![1; 100_000])
+            .await
+            .err();
+        assert!(error.is_some_and(|e| e != many));
+        // File type highlights: 5000 visible nodes.
+        let visible = "At most 5000 visible nodes may be highlighted";
+        let highlights = |count: usize| {
+            get_file_type_highlights(app.state(), id(), 0, "txt".into(), vec![1; count])
+        };
+        assert_eq!(highlights(5001).await.err().as_deref(), Some(visible));
+        assert_ne!(highlights(5000).await.err().as_deref(), Some(visible));
+        // The command refuses it before it looks for the scan (the query repeats the limit further down).
+        let missing = |count: usize| {
+            get_file_type_highlights(
+                app.state(),
+                "missing".into(),
+                0,
+                "txt".into(),
+                vec![1; count],
+            )
+        };
+        assert_eq!(missing(5001).await.err().as_deref(), Some(visible));
+        assert_ne!(missing(5000).await.err().as_deref(), Some(visible));
+        assert!(!state.activity.busy());
+    });
+}
+
+#[test]
+fn reveal_shows_the_recorded_item_and_refuses_one_that_changed_on_disk() {
+    let dir = fixture();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (folder, file) = (root.join("folder"), root.join("folder/file"));
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(&file, b"x").unwrap();
+    let scan = snapshot(root.clone());
+    let (folder_id, file_id) = (node_of(&scan, &folder), node_of(&scan, &file));
+    let s = install(&AppState::default(), scan);
+    let shown = |id: u32| {
+        let mut shown = vec![];
+        let result = reveal_in(&s, id, |path| {
+            shown.push(path.to_path_buf());
+            Ok(())
+        });
+        (result, shown)
+    };
+    // Any kind of node, the scan root included.
+    for (id, path) in [(file_id, &file), (folder_id, &folder), (0, &root)] {
+        assert_eq!(shown(id), (Ok(()), vec![path.clone()]));
+    }
+    assert_eq!(shown(9999), (Err("Unknown node".into()), vec![]));
+    // Another file at the recorded path: it is not shown as the one that was scanned.
+    std::fs::rename(&file, folder.join("old")).unwrap();
+    std::fs::write(&file, b"replacement").unwrap();
+    let (result, revealed) = shown(file_id);
+    assert_eq!(
+        result.unwrap_err(),
+        "This item moved or changed since the scan. Rescan to reveal it."
+    );
+    assert!(revealed.is_empty());
+    // Another folder where an ancestor was: neither it nor what it holds.
+    std::fs::rename(&folder, root.join("old-folder")).unwrap();
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(&file, b"x").unwrap();
+    for (id, message) in [
+        (
+            folder_id,
+            "This item moved or changed since the scan. Rescan to reveal it.",
+        ),
+        (
+            file_id,
+            "A folder above this item moved or changed since the scan. Rescan to reveal it.",
+        ),
+    ] {
+        let (result, revealed) = shown(id);
+        assert_eq!(result.unwrap_err(), message, "{id}");
+        assert!(revealed.is_empty(), "{id}");
+    }
+    // Once the scan is invalid, it refuses before looking at the disk.
+    s.invalidate();
+    assert_eq!(shown(0), (Err(slots::RESULTS_CHANGED.into()), vec![]));
+}
+
+#[test]
+fn a_finished_scan_says_so_whenever_its_accounting_rules_out_a_rescan_from_it() {
+    let dir = fixture();
+    let scan = snapshot(std::fs::canonicalize(dir.path()).unwrap());
+    // A clean scan is a baseline: nothing to say.
+    assert_eq!(reuse_note(&scan), None);
+    // Each of these alone: verified clone deductions need not set `shared`.
+    type Spoil = fn(&mut disk_scan::AccountingInfo);
+    let spoilers: [(&str, Spoil); 5] = [
+        ("shared", |a| a.shared = true),
+        ("deduction", |a| a.deduction_bytes = 1),
+        ("unchecked", |a| a.checks_complete = false),
+        ("warning", |a| a.warnings.push("uncertain".into())),
+        ("model", |a| {
+            a.model = disk_scan::AccountingModel::HardLinksV1
+        }),
+    ];
+    for (case, spoil) in spoilers {
+        let mut spoiled = scan.clone();
+        spoil(&mut spoiled.accounting);
+        assert!(reuse_note(&spoiled).is_some(), "{case}");
+    }
+}
+
+#[test]
 fn restart_waits_for_a_running_scan_whatever_the_access_status() {
     tauri::async_runtime::block_on(async {
         let app = app(AppState::default());
@@ -316,7 +454,7 @@ fn install_on(
     volume: Option<safety::Volume>,
 ) -> Arc<Session> {
     let root_ancestors = safety::ancestors(&snapshot.root).unwrap_or_default();
-    let mut volumes = scan_volumes(&snapshot);
+    let mut volumes = read_volumes(volume_paths(&snapshot));
     if let Some(volume) = volume {
         volumes.values_mut().for_each(|v| *v = volume.clone());
     }
@@ -1178,28 +1316,36 @@ fn cleanup_reviews_collapse_selection_and_reject_stale_or_expired_tickets() {
             .unwrap();
         assert_eq!(review.items.len(), 1);
         assert_eq!(review.items[0].id, dir_id);
+        let mut trash = Recording::ok();
         s.ticket.lock().unwrap().as_mut().unwrap().created =
             Instant::now() - Duration::from_secs(121);
-        assert!(commit_trash(
-            app.state(),
-            "fixture".into(),
-            review.token,
-            app.handle().clone()
-        )
-        .await
-        .is_err());
+        assert_eq!(
+            commit_recorded(
+                &app.state::<AppState>(),
+                "fixture",
+                &review.token,
+                false,
+                &mut trash
+            )
+            .err(),
+            Some("Cleanup review expired. Review the selection again.".into())
+        );
         assert!(dir.join("file").exists());
         let review = prepare_trash(app.state(), "fixture".into(), vec![file_id])
             .await
             .unwrap();
-        assert!(commit_trash(
-            app.state(),
-            "fixture".into(),
-            "wrong-token".into(),
-            app.handle().clone()
-        )
-        .await
-        .is_err());
+        assert_eq!(
+            commit_recorded(
+                &app.state::<AppState>(),
+                "fixture",
+                "wrong-token",
+                false,
+                &mut trash
+            )
+            .err(),
+            Some("Cleanup review expired. Review the selection again.".into())
+        );
+        assert!(trash.calls.is_empty());
         // The wrong token did not spend the ticket the right token still owns.
         assert_eq!(
             s.ticket.lock().unwrap().as_ref().map(|t| &t.token),
@@ -2951,23 +3097,18 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
         remove_cleanup_queue(app.state(), vec![added.entries[0].id.clone()])
             .await
             .unwrap();
-        assert!(commit_cleanup_queue(
-            app.state(),
-            "fixture".into(),
-            review.token.clone(),
-            app.handle().clone()
-        )
-        .await
-        .unwrap_err()
-        .contains("queue changed"));
-        assert!(commit_cleanup_queue(
-            app.state(),
-            "fixture".into(),
-            review.token,
-            app.handle().clone()
-        )
-        .await
-        .is_err());
+        let state = app.state::<AppState>();
+        let mut trash = Recording::ok();
+        assert!(
+            commit_recorded(&state, "fixture", &review.token, true, &mut trash)
+                .unwrap_err()
+                .contains("queue changed")
+        );
+        // The refused attempt spent the ticket.
+        assert_eq!(
+            commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
+            Some("Review the selection before cleanup.".into())
+        );
         let review = prepare_cleanup_queue(app.state(), "fixture".into())
             .await
             .unwrap();
@@ -2981,27 +3122,20 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
             .as_mut()
             .unwrap()
             .created = Instant::now() - Duration::from_secs(121);
-        assert!(commit_cleanup_queue(
-            app.state(),
-            "fixture".into(),
-            review.token,
-            app.handle().clone()
-        )
-        .await
-        .unwrap_err()
-        .contains("expired"));
+        assert_eq!(
+            commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
+            Some("Cleanup review expired. Review the selection again.".into())
+        );
         let review = prepare_cleanup_queue(app.state(), "fixture".into())
             .await
             .unwrap();
         install(&app.state::<AppState>(), snapshot(root.clone()));
-        assert!(commit_cleanup_queue(
-            app.state(),
-            "fixture".into(),
-            review.token,
-            app.handle().clone()
-        )
-        .await
-        .is_err());
+        // The new scan holds no ticket: one reviewed on the scan it replaced does not carry over.
+        assert_eq!(
+            commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
+            Some("Review the selection before cleanup.".into())
+        );
+        assert!(trash.calls.is_empty());
         assert!(root.join("a").exists() && root.join("b").exists());
         let s = install(&app.state::<AppState>(), snapshot(root));
         s.store.write().unwrap().state = ScanState::Cancelled;
@@ -3016,23 +3150,23 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
 }
 
 /// The test Trash adapter: records every item it is asked to move, moves nothing, and fails the paths in `fails`.
-struct Recording {
-    calls: Vec<PathBuf>,
+pub(crate) struct Recording {
+    pub(crate) calls: Vec<PathBuf>,
     fails: Vec<PathBuf>,
     error: &'static str,
 }
 impl Recording {
-    fn ok() -> Self {
+    pub(crate) fn ok() -> Self {
         Self::failing(&[], "")
     }
-    fn failing(paths: &[&Path], error: &'static str) -> Self {
+    pub(crate) fn failing(paths: &[&Path], error: &'static str) -> Self {
         Recording {
             calls: vec![],
             fails: paths.iter().map(|p| p.to_path_buf()).collect(),
             error,
         }
     }
-    fn trash(&mut self, item: &safety::CheckedItem) -> Result<(), String> {
+    pub(crate) fn trash(&mut self, item: &safety::CheckedItem) -> Result<(), String> {
         self.calls.push(item.path.clone());
         if self.fails.contains(&item.path) {
             Err(self.error.into())
@@ -3040,6 +3174,22 @@ impl Recording {
             Ok(())
         }
     }
+}
+
+/// `commit_trash` (`queued` false) or `commit_cleanup_queue` (true) with the Recording fake as the Trash. Tests that
+/// probe a refusal call this, so a guard that stops working moves nothing real: they never reach the native Trash.
+fn commit_recorded(
+    state: &AppState,
+    scan_id: &str,
+    token: &str,
+    queued: bool,
+    trash: &mut Recording,
+) -> Result<TrashResult, String> {
+    let s = state.scans.find(scan_id)?;
+    let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, o)| o).collect();
+    cleanup::commit(&s, &state.cleanup_queue, token, queued, &others, |i| {
+        trash.trash(i)
+    })
 }
 
 #[test]
@@ -4133,6 +4283,40 @@ fn a_cleanup_also_invalidates_the_completed_scans_that_overlap_a_moved_item() {
     });
 }
 
+#[test]
+fn trashing_a_folder_also_invalidates_a_scan_rooted_inside_it() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let (_dir, disk) = disk_root();
+        let (folder, sub) = (disk.join("folder"), disk.join("folder/sub"));
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("file"), b"abc").unwrap();
+        let scan = snapshot(disk.clone());
+        let id = node_of(&scan, &folder);
+        let disk_scan = install_in(&state, Slot::Disk(disk), "disk", scan);
+        // A scan whose root is the trashed folder's own subfolder: it holds no node at the folder's path, only
+        // lies inside it.
+        let inside = install_in(&state, Slot::Folder, "inside", snapshot(sub));
+        let review = prepare_trash(app.state(), "disk".into(), vec![id])
+            .await
+            .unwrap();
+        let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, s)| s).collect();
+        let mut trash = Recording::ok();
+        let result = cleanup::commit(
+            &disk_scan,
+            &state.cleanup_queue,
+            &review.token,
+            false,
+            &others,
+            |i| trash.trash(i),
+        )
+        .unwrap();
+        assert_eq!(result.stale_scan_ids, vec!["inside".to_string()]);
+        assert!(!inside.is_valid());
+    });
+}
+
 // A folder `D/sub` with one file `D/sub/file`, inside a "disk" `D`, plus an unrelated folder to replace the folder slot with.
 struct Nested {
     _dirs: Vec<tempfile::TempDir>,
@@ -4189,7 +4373,7 @@ fn held(id: &'static str, disk: bool, snapshot: Snapshot) -> Held {
         id,
         disk,
         root_ancestors: safety::ancestors(&snapshot.root).unwrap_or_default(),
-        volumes: scan_volumes(&snapshot),
+        volumes: read_volumes(volume_paths(&snapshot)),
         snapshot,
     }
 }

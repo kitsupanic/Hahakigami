@@ -21,6 +21,11 @@ class QosTests(unittest.TestCase):
         self.assertEqual(set(summary['warm_median_ms']), set(modes))
         self.assertNotIn('background', summary['percent_elapsed_change_vs_automatic'])
 
+    def test_rotation_is_shared_helper(self):
+        from benchmark import rotated
+        self.assertEqual(rotated([1, 2, 4], 1), [2, 4, 1])
+        self.assertEqual(rotated([1, 2, 4], 3), [1, 2, 4])
+
     def test_rotated_order(self):
         self.assertEqual(rotated_order(0), ('automatic', 'userInitiated', 'background'))
         self.assertEqual(rotated_order(1), ('userInitiated', 'background', 'automatic'))

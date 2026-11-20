@@ -69,8 +69,8 @@
   --shadow-popover: 0 10px 35px #0003;
   --shadow-modal: 0 18px 65px #0004;
 
-  /* --accent is a fill; --accent-text is for accent-colored text (system blue is 4.02:1 on white). */
-  --accent: #007aff;
+  /* --accent is a fill with --on-accent text on it (5.61:1 light, 4.67:1 dark, hover darker still); --accent-text is for accent-colored text. */
+  --accent: #0064d1;
   --accent-text: #0064d1;
   --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
   --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -118,9 +118,8 @@
 
     --shadow-popover: 0 10px 35px #0006;
 
-    --accent: #0a84ff;
+    --accent: #0a70e8;
     --accent-text: #7db4ff;
-    --accent-hover: color-mix(in srgb, var(--accent) 85%, white);
 
     --danger: #ffb0bf;
     --danger-surface: #492e36;
@@ -143,6 +142,7 @@
   :root {
     --preview-mac-accent: AccentColor;
     --accent: AccentColor;
+    --on-accent: AccentColorText;
   }
 }
 
@@ -153,6 +153,8 @@
     --line: #8a93a3;
     --control-chosen-edge: var(--control-line);
     --accent-text: #0050a8;
+    --accent: #0050a8;
+    --on-accent: #fff;
   }
 }
 
@@ -162,6 +164,8 @@
     --line: #6b7686;
     --control-line: #6b7686;
     --accent-text: #a5cdff;
+    --accent: #66b0ff;
+    --on-accent: #000;
   }
 }
 

@@ -193,27 +193,34 @@ mod probe {
             .ok()
     }
 
+    /// Only a refusal means denied: a file that is not there, or any other failure, says nothing about access.
+    fn failure(errno: Option<i32>) -> Outcome {
+        match errno {
+            Some(libc::EPERM | libc::EACCES) => Outcome::Denied,
+            Some(libc::ENOENT | libc::ENOTDIR) => Outcome::Unavailable,
+            _ => Outcome::Inconclusive,
+        }
+    }
     /// Opens and closes the file at once; no byte is read.
     fn outcome(path: &Path) -> Outcome {
         match File::open(path) {
             Ok(_) => Outcome::Granted,
-            Err(error) => match error.raw_os_error() {
-                Some(libc::EPERM | libc::EACCES) => Outcome::Denied,
-                Some(libc::ENOENT | libc::ENOTDIR) => Outcome::Unavailable,
-                _ => Outcome::Inconclusive,
-            },
+            Err(error) => failure(error.raw_os_error()),
         }
+    }
+    /// Whether `probe` is used on macOS `major`. Without a known version, a version-limited probe could wrongly
+    /// report off, so it is skipped.
+    fn applies(probe: &Probe, major: Option<u32>) -> bool {
+        probe
+            .until_macos
+            .is_none_or(|until| major.is_some_and(|major| major < until))
     }
 
     pub fn status() -> Status {
         let major = macos_major();
         let home = std::env::var_os("HOME").map(PathBuf::from);
         verdict(PROBES.iter().filter_map(|probe| {
-            // Without a known version, a version-limited probe could wrongly report off.
-            if probe
-                .until_macos
-                .is_some_and(|until| major.is_none_or(|major| major >= until))
-            {
+            if !applies(probe, major) {
                 return None;
             }
             let path = match probe.path.strip_prefix("~/") {
@@ -269,6 +276,59 @@ mod probe {
             ];
             for (results, expected) in cases {
                 assert_eq!(verdict(results.iter().copied()), *expected, "{results:?}");
+            }
+        }
+
+        fn probe(until_macos: Option<u32>) -> Probe {
+            Probe {
+                path: "/x",
+                authority: Authoritative,
+                until_macos,
+            }
+        }
+
+        #[test]
+        fn a_version_limited_probe_applies_only_below_its_limit_on_a_known_version() {
+            let limited = probe(Some(27));
+            assert!(applies(&limited, Some(26)));
+            assert!(applies(&limited, Some(15)));
+            // At and past the limit, and on a version nobody could read, it could report off wrongly.
+            assert!(!applies(&limited, Some(27)));
+            assert!(!applies(&limited, Some(28)));
+            assert!(!applies(&limited, None));
+            // A probe with no limit always applies.
+            for major in [None, Some(14), Some(27), Some(99)] {
+                assert!(applies(&probe(None), major), "{major:?}");
+            }
+        }
+
+        #[test]
+        fn only_a_refusal_is_denied_and_a_missing_file_never_is() {
+            for errno in [libc::EPERM, libc::EACCES] {
+                assert_eq!(failure(Some(errno)), Denied);
+            }
+            for errno in [libc::ENOENT, libc::ENOTDIR] {
+                assert_eq!(failure(Some(errno)), Unavailable);
+            }
+            for errno in [Some(libc::EIO), Some(libc::EINTR), Some(libc::EMFILE), None] {
+                assert_eq!(failure(errno), Inconclusive, "{errno:?}");
+            }
+            // The real thing, on a path that does not exist.
+            let missing = Path::new("/definitely/not/here/TCC.db");
+            assert_eq!(outcome(missing), Unavailable);
+        }
+
+        #[test]
+        fn the_probe_table_never_touches_a_folder_that_prompts() {
+            const PROMPTING: [&str; 3] = ["Documents", "Desktop", "Downloads"];
+            assert!(!PROBES.is_empty());
+            for probe in PROBES {
+                let path = Path::new(probe.path);
+                assert!(!path.starts_with("/Volumes"), "{}", probe.path);
+                for component in path.components() {
+                    let name = component.as_os_str().to_string_lossy();
+                    assert!(!PROMPTING.contains(&name.as_ref()), "{}", probe.path);
+                }
             }
         }
 

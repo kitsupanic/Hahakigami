@@ -57,14 +57,15 @@
     const convert = (text: string) => {
       if (!text.trim()) return null;
       const number = Number(text);
-      const result = number * units[unit];
+      const result = Math.round(number * units[unit]);
       if (
         !Number.isFinite(number) ||
         number < 0 ||
-        !Number.isSafeInteger(result)
+        !Number.isSafeInteger(result) ||
+        (number > 0 && result === 0)
       )
         throw new Error(
-          "Enter nonnegative sizes that convert to whole bytes within the supported range.",
+          "Enter nonnegative sizes of at least 1 byte within the supported range.",
         );
       return result;
     };
@@ -81,7 +82,7 @@
   }
 </script>
 
-<div class="explorer-filters" aria-label="Explorer filters">
+<div class="explorer-filters" role="group" aria-label="Explorer filters">
   <label
     >File category<select
       aria-label="File category"
@@ -163,7 +164,7 @@
       onChange({ ...emptyFilter });
     }}>Clear filters</button
   >{#if error}<p role="alert" class="filter-error">
-      {error}Previous applied range is unchanged.
+      {error} Previous applied range is unchanged.
     </p>{/if}<small class="filter-note"
     >Sizes count 1 KB as 1,024 bytes and use the size you picked. Categories go by file name and extension.</small
   >

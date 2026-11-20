@@ -75,6 +75,8 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     blocked: false,
   });
   let busy = $state(false);
+  // A Scan target lookup in flight. It only holds the queue's Scan buttons: the backend may hang on a sick disk.
+  let targeting = $state(false);
   let error = $state("");
   // Every load and change takes a number; a reply that a newer one overtook is ignored.
   let epoch = 0;
@@ -241,24 +243,23 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     attempted: number;
   } | null>(null);
   const marker = $derived(createQueueMarker(view.entries));
-  const selectedEntries = $derived.by(() => {
-    const paths = new Set(
-      selection.map((node) => normalizeQueuePath(queuePathKey(node))),
-    );
-    return view.entries.filter((entry) => {
-      const path = normalizeQueuePath(queuePathKey(entry));
-      return path !== null && paths.has(path);
-    });
-  });
-  const directlyQueuedCount = $derived(
-    selection.filter((node) =>
-      selectedEntries.some(
-        (entry) =>
-          normalizeQueuePath(queuePathKey(entry)) ===
-          normalizeQueuePath(queuePathKey(node)),
-      ),
-    ).length,
+  const selectedPaths = $derived(
+    new Set(selection.map((node) => normalizeQueuePath(queuePathKey(node)))),
   );
+  const selectedEntries = $derived.by(() =>
+    view.entries.filter((entry) => {
+      const path = normalizeQueuePath(queuePathKey(entry));
+      return path !== null && selectedPaths.has(path);
+    }),
+  );
+  const directlyQueuedCount = $derived.by(() => {
+    const queuedPaths = new Set(
+      selectedEntries.map((entry) => normalizeQueuePath(queuePathKey(entry))),
+    );
+    return selection.filter((node) =>
+      queuedPaths.has(normalizeQueuePath(queuePathKey(node))),
+    ).length;
+  });
   const queuedCount = $derived(
     selection.filter((node) => marker(node) === "queued").length,
   );
@@ -269,11 +270,9 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     selection.length > 0 && directlyQueuedCount === selection.length,
   );
   function matchesSelection(paths: string[] | null) {
-    return (
-      paths !== null &&
-      paths.length === selection.length &&
-      selection.every((node) => paths.includes(queuePathKey(node)))
-    );
+    if (paths === null || paths.length !== selection.length) return false;
+    const wanted = new Set(paths);
+    return selection.every((node) => wanted.has(queuePathKey(node)));
   }
   const adding = $derived(matchesSelection(addingPaths));
   const removing = $derived(matchesSelection(removingPaths));
@@ -312,6 +311,9 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     get busy() {
       return busy;
     },
+    get targeting() {
+      return targeting;
+    },
     get error() {
       return error;
     },
@@ -331,17 +333,16 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     /** Removes entries; returns how many, or 0 when the change did not go through. */
     remove,
     clear: () => mutate(() => port.clear(), true),
-    /** Asks where an entry must be scanned and hands it to `open`, holding the queue busy meanwhile. */
+    /** Asks where an entry must be scanned and hands it to `open`; only other Scan clicks wait meanwhile. */
     async scan(entryId: string, open: (location: Target) => Promise<unknown>) {
-      if (busy) return;
-      busy = true;
+      if (busy || targeting) return;
+      targeting = true;
       try {
         await open(await port.target(entryId));
       } catch (e) {
         error = String(e);
       } finally {
-        busy = false;
-        if (refreshPending) void load();
+        targeting = false;
       }
     },
     prepare: (scanId: string) => port.prepare(scanId),

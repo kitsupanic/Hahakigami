@@ -1,11 +1,19 @@
 //! Build an in-memory indexed tree to measure aggregation and paging without filesystem I/O.
-use disk_scan::{aggregate, Identity, Node, NodeKind, Snapshot};
+use disk_scan::{aggregate, Identity, Node, NodeKind, Snapshot, MAX_NODES};
 use std::{path::PathBuf, time::Instant};
 fn main() {
-    let count = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(1_000_000);
+    let count = match std::env::args().nth(1) {
+        None => 1_000_000,
+        Some(arg) => {
+            match arg.parse::<u32>() {
+                Ok(count) if (1..=MAX_NODES as u32).contains(&count) => count,
+                _ => {
+                    eprintln!("usage: synthetic [COUNT], COUNT an integer from 1 to {MAX_NODES}, got {arg:?}");
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
     let start = Instant::now();
     let mut s = Snapshot::empty(PathBuf::from("/fixture"));
     for id in 0..count {

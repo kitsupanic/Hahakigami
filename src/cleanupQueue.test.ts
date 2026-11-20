@@ -8,7 +8,7 @@ import {
   fakeQueuePort,
   rootedCleanupQueue,
 } from "./testCleanupQueue.svelte";
-import type { NodeView } from "./types";
+import type { NodeView, Target } from "./types";
 
 const node = (id: number, path: string, allocatedBytes = 100): NodeView => ({
   id,
@@ -194,7 +194,7 @@ it("keeps a failed change's message and reports it", async () => {
   expect(reports.at(-1)).toEqual(["unconfirmed", "The queue file is locked."]);
 });
 
-it("holds the queue busy while an entry's scan starts", async () => {
+it("holds only the Scan buttons while an entry's scan starts", async () => {
   const { port } = fakeQueuePort();
   const opened = deferred<void>();
   const open = vi.fn(() => opened.promise);
@@ -203,11 +203,39 @@ it("holds the queue busy while an entry's scan starts", async () => {
   const scanning = queue.scan("a", open);
   await settle();
   expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
-  expect(queue.busy).toBe(true);
+  expect(queue.targeting).toBe(true);
   opened.reject("Choose the folder again.");
   await scanning;
-  expect(queue.busy).toBe(false);
+  expect(queue.targeting).toBe(false);
   expect(queue.error).toBe("Choose the folder again.");
+});
+
+it("leaves the queue free while an entry's target lookup hangs, and ignores a second scan", async () => {
+  const { port } = fakeQueuePort([], [entry("a", "/a")]);
+  const target = deferred<Target>();
+  const scanTarget = vi.spyOn(port, "target").mockReturnValue(target.promise);
+  const open = vi.fn(async () => {});
+  const { queue } = setup(port);
+  await settle();
+  const first = queue.scan("a", open);
+  await settle();
+  expect(queue.targeting).toBe(true);
+  expect(queue.busy).toBe(false);
+  void queue.scan("a", open);
+  await settle();
+  expect(scanTarget).toHaveBeenCalledTimes(1);
+  // The queue still takes changes meanwhile.
+  expect(await queue.remove(["a"])).toBe(1);
+  target.resolve({
+    id: "a",
+    name: "a",
+    path: "/a",
+    totalBytes: null,
+    freeBytes: null,
+  });
+  await first;
+  expect(queue.targeting).toBe(false);
+  expect(open).toHaveBeenCalledTimes(1);
 });
 
 it("addresses review to the ready entries matched to the scan on screen", async () => {

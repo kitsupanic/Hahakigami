@@ -1065,7 +1065,11 @@ mod native {
                             statuses[i] = ClaimStatus::Unverified;
                         }
                         fallback.clear();
-                        if is_unsupported(&e) {
+                        // An interrupted read is not retried on its descriptor (its offset may have
+                        // moved), so probe each file instead, as for a volume that cannot answer in bulk.
+                        let interrupted = e.kind() == io::ErrorKind::Interrupted
+                            && !cancel.load(Ordering::Relaxed);
+                        if is_unsupported(&e) || interrupted {
                             direct = true;
                         } else {
                             warning(info, e);
@@ -1675,6 +1679,15 @@ mod native {
                 stats.queries += 1;
                 Err(io::Error::from_raw_os_error(libc::ENOTSUP))
             }
+            fn interrupted(
+                _: &OwnedFd,
+                _: &AtomicBool,
+                stats: &mut crate::bulk::CloneReadStats,
+                _: &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
+            ) -> io::Result<()> {
+                stats.queries += 1;
+                Err(io::Error::from_raw_os_error(libc::EINTR))
+            }
             fn missing(
                 fd: &OwnedFd,
                 c: &AtomicBool,
@@ -1747,7 +1760,7 @@ mod native {
                 s
             };
             let direct = run(false, read_bulk);
-            for reader in [read_bulk as BulkReader, unsupported, missing] {
+            for reader in [read_bulk as BulkReader, unsupported, interrupted, missing] {
                 let s = run(true, reader);
                 assert!(s.accounting.checks_complete, "{:?}", s.accounting.warnings);
                 assert_eq!(

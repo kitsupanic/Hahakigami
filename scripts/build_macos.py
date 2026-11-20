@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build the local macOS app with an existing development identity; never grant access."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +56,17 @@ def verify_metadata(metadata, identifier, adhoc):
             raise ValueError('Could not read the designated requirement.')
         if 'cdhash ' in requirement:
             raise ValueError('The designated requirement still depends on a particular executable hash.')
+        for needed in (f'identifier "{identifier}"', 'anchor apple generic', 'certificate leaf['):
+            if needed not in requirement:
+                raise ValueError(f'The designated requirement lacks {needed!r}.')
+
+
+def leaf_certificate_sha1(bundle):
+    """SHA-1 of the certificate the bundle was signed with (codesign writes the leaf as <prefix>0)."""
+    with tempfile.TemporaryDirectory() as directory:
+        subprocess.run(['/usr/bin/codesign', '-d', f'--extract-certificates={directory}/cert', str(bundle)],
+                       check=True, capture_output=True, timeout=30)
+        return hashlib.sha1(Path(directory, 'cert0').read_bytes()).hexdigest().upper()
 
 
 def prepare_benchmark_output(output):
@@ -130,8 +143,10 @@ def main():
         display = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', '--requirements', '-', str(bundle)],
                                  check=True, capture_output=True, text=True)
         verify_metadata(display.stdout + display.stderr, identifier, args.adhoc)
+        if identity != '-' and leaf_certificate_sha1(bundle) != identity:
+            raise ValueError('The bundle was not signed with the selected identity.')
         print(f'Verified local app: {bundle}\nFull Disk Access remains a manual macOS grant.', flush=True)
-    except (ValueError, subprocess.SubprocessError) as error:
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f'Local build failed: {error}\n')
 
 

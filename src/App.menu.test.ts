@@ -497,3 +497,64 @@ it("opens the cleanup queue from Home", async () => {
   expect(app().queueOpen).toBe(true);
   expect(app().homeOpen).toBe(false);
 });
+
+it("closes the queue when Rescan from its page takes the view", async () => {
+  await scanned();
+  await act(() => app().showQueue(true));
+  await flush();
+  expect(app().can.rescan).toBe(true);
+  const before = calls("start_scan").length;
+  await click(menuItem("rescan"));
+  expect(calls("start_scan")).toHaveLength(before + 1);
+  expect(app().queueOpen).toBe(false);
+});
+
+it("keeps the queue page open when it is opened after Rescan, before the slow start is accepted", async () => {
+  await scanned();
+  const previous = mock.invoke.getMockImplementation()!;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  mock.invoke.mockImplementation(async (command, args) => {
+    if (command === "start_scan") await gate;
+    return previous(command, args);
+  });
+  await click(menuItem("rescan"));
+  await act(() => app().showQueue(true));
+  release();
+  await flush();
+  expect(app().queueOpen).toBe(true);
+});
+
+it("keeps the sidebar toggle off while a failure modal is open", async () => {
+  const previous = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "start_scan"
+      ? Promise.reject(new Error("Scan unavailable"))
+      : previous(command, args),
+  );
+  expect(app().can.toggleSidebar).toBe(true);
+  await scanned();
+  expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(app().can.toggleSidebar).toBe(false);
+  expect(enabled("toggleSidebar")).toBe(false);
+});
+
+it("does not freeze the session while a queue entry's target lookup hangs", async () => {
+  const previous = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "cleanup_queue_target"
+      ? new Promise(() => {})
+      : previous(command, args),
+  );
+  await scanned();
+  void app().scanQueue("a");
+  await flush();
+  expect(app().queueTargeting).toBe(true);
+  expect(app().queueBusy).toBe(false);
+  expect(app().can.chooseFolder).toBe(true);
+  expect(app().can.rescan).toBe(true);
+  const before = calls("cleanup_queue_target").length;
+  void app().scanQueue("a");
+  await flush();
+  expect(calls("cleanup_queue_target")).toHaveLength(before);
+});

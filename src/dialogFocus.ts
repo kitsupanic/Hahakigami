@@ -4,7 +4,7 @@ type DialogOptions = {
   initialFocus?: string;
 };
 const focusable =
-  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
+  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])';
 
 /** Keep keyboard focus inside a modal, then return it to its opener. */
 export function dialogFocus(node: HTMLElement, initial: DialogOptions) {
@@ -18,6 +18,11 @@ export function dialogFocus(node: HTMLElement, initial: DialogOptions) {
   const controls = () =>
     [...node.querySelectorAll<HTMLElement>(focusable)]
       .filter((element) => !element.closest("[hidden]"))
+      // A closed <details> hides its content from focus; only its own summary stays reachable.
+      .filter((element) => {
+        const closed = element.closest("details:not([open])");
+        return !closed || (element.matches("summary") && element.parentElement === closed);
+      })
       .sort((a, b) =>
         a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
           ? -1

@@ -834,6 +834,110 @@ mod tests {
             volume: Some(Volume::read(root).unwrap()),
         }
     }
+    /// A queue loaded from a record that holds `entries` exactly as given: `publish` would refuse some of them.
+    fn load_record(storage: &Path, entries: Vec<Candidate>) -> Queue {
+        fs::create_dir_all(storage).unwrap();
+        let record = Record {
+            version: 1,
+            entries,
+        };
+        fs::write(
+            storage.join("queue.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        Queue::load(storage.to_path_buf())
+    }
+    /// The record must not load: the queue is blocked and says why, nothing may change it until it is cleared,
+    /// and clearing leaves a queue that loads.
+    fn assert_blocks(entries: Vec<Candidate>, why: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("queue");
+        let mut q = load_record(&storage, entries);
+        assert!(q.blocked, "{why}");
+        assert!(q.entries.is_empty(), "{why}");
+        assert!(
+            q.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("Could not restore")),
+            "{why}"
+        );
+        assert!(q.add(vec![]).is_err(), "{why}");
+        q.clear().unwrap();
+        assert!(!Queue::load(storage).blocked, "{why}");
+    }
+    #[test]
+    fn a_well_formed_record_that_breaks_a_rule_blocks_the_queue_until_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let elsewhere = fs::canonicalize(elsewhere.path()).unwrap();
+        let folder = root.join("folder");
+        fs::create_dir(&folder).unwrap();
+        let (a, b, child) = (root.join("a"), root.join("b"), folder.join("child"));
+        let outside = elsewhere.join("outside");
+        for path in [&a, &b, &child, &outside] {
+            fs::write(path, []).unwrap();
+        }
+        // The control: the same record without a fault loads, so each case below is blocked by its own fault.
+        let ok = load_record(
+            &dir.path().join("control"),
+            vec![candidate(&root, &a), candidate(&root, &b)],
+        );
+        assert!(!ok.blocked, "{:?}", ok.warning);
+        assert_eq!(ok.entries.len(), 2);
+
+        // An entry whose item lies outside its recorded root.
+        assert_blocks(vec![candidate(&root, &outside)], "item outside its root");
+        // A volume that is no canonical UUID, in either spelling.
+        for volume in [
+            "not-a-uuid",
+            &uuid::Uuid::new_v4().to_string().to_uppercase(),
+        ] {
+            let mut entry = candidate(&root, &a);
+            entry.volume = Some(Volume::Uuid(volume.into()));
+            assert_blocks(vec![entry], volume);
+        }
+        // A root that is no directory, and a root identity that is not the one its own ancestor chain holds.
+        let mut entry = candidate(&root, &a);
+        entry.root.identity.kind = 2;
+        assert_blocks(vec![entry], "root that is not a directory");
+        let mut entry = candidate(&root, &a);
+        entry.root.identity.inode ^= 1;
+        assert_blocks(vec![entry], "root identity unlike the recorded ancestor");
+        // An item kind no node has.
+        let mut entry = candidate(&root, &a);
+        entry.item.identity.kind = 9;
+        assert_blocks(vec![entry], "unknown item kind");
+        // An ancestor chain that skips a folder.
+        let mut entry = candidate(&root, &child);
+        entry.ancestors.remove(0);
+        assert_blocks(vec![entry], "broken ancestor chain");
+
+        // Overlapping entries (a folder and what lies under it), either way round, and a repeated id.
+        let (parent, under) = (candidate(&root, &folder), candidate(&root, &child));
+        assert_blocks(vec![parent.clone(), under.clone()], "folder then child");
+        assert_blocks(vec![under, parent], "child then folder");
+        let mut twin = candidate(&root, &b);
+        twin.id = candidate(&root, &a).id;
+        let mut first = candidate(&root, &a);
+        first.id = twin.id.clone();
+        assert_blocks(vec![first, twin], "the same id twice");
+    }
+    #[test]
+    fn a_removal_names_its_own_limit_one_past_it() {
+        let mut q = Queue::default();
+        let ids = |n: usize| vec!["missing".to_string(); n];
+        // At the limit the ids are looked up (and none exists); one past it, the limit is what is refused.
+        assert_eq!(
+            q.remove(&ids(MAX_ENTRIES)),
+            Err("Unknown cleanup queue entry.".into())
+        );
+        assert_eq!(
+            q.remove(&ids(MAX_ENTRIES + 1)),
+            Err("Remove at most 1,000 cleanup queue entries at a time.".into())
+        );
+    }
     #[test]
     fn a_queue_saved_before_birth_times_still_loads_and_matches() {
         fn strip_birth(v: &mut serde_json::Value) {

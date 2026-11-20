@@ -158,6 +158,19 @@ it("applies enabled, checked and flipping text, skipping unchanged values", asyn
   expect(menuItem("toggleFileList").text).toBe("Show File List");
 });
 
+it("retries a native write that failed instead of trusting the cache", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { menu } = await make();
+  const setEnabled = vi
+    .spyOn(menuItem("back"), "setEnabled")
+    .mockRejectedValueOnce(new Error("native failure"));
+  const off = state({ enabled: { ...state().enabled, back: false } });
+  await menu.sync(off);
+  await menu.sync(off);
+  expect(setEnabled).toHaveBeenCalledTimes(2);
+  expect(menuItem("back").enabled).toBe(false);
+});
+
 it("disables every app command when quiet but never the predefined items", async () => {
   const { menu } = await make();
   await menu.sync(state({ quiet: true }));

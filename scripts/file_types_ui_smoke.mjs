@@ -715,5 +715,9 @@ console.log(
     2,
   ),
 );
-if (report.errors.length || report.checks.some((c) => !c.passed))
+if (
+  !report.checks.length ||
+  report.errors.length ||
+  report.checks.some((c) => !c.passed)
+)
   process.exitCode = 1;

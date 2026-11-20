@@ -1,5 +1,5 @@
 import unittest
-from build_macos import development_identities, select_identity, local_environment, verify_metadata, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command
+from build_macos import development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command
 
 class LocalSigningTests(unittest.TestCase):
     def test_existing_development_identity_selection_fails_closed(self):
@@ -18,11 +18,17 @@ class LocalSigningTests(unittest.TestCase):
         self.assertEqual(env, {'PATH': '/bin', 'APPLE_SIGNING_IDENTITY': 'A' * 40})
 
     def test_verified_bundle_requires_sealing_and_stable_development_requirement(self):
-        metadata = 'Identifier=app.hahakigami.desktop\nAuthority=Apple Development: Fixture\nTeamIdentifier=TEAM\nInfo.plist entries=10\nSealed Resources version=2\ndesignated => identifier "app.hahakigami.desktop" and anchor apple generic\n'
+        metadata = 'Identifier=app.hahakigami.desktop\nAuthority=Apple Development: Fixture\nTeamIdentifier=TEAM\nInfo.plist entries=10\nSealed Resources version=2\ndesignated => identifier "app.hahakigami.desktop" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: Fixture"\n'
         verify_metadata(metadata, 'app.hahakigami.desktop', False)
         verify_metadata(metadata.replace('designated => ', '# designated => '), 'app.hahakigami.desktop', False)
-        for changed in [metadata.replace('app.hahakigami.desktop', 'other'), metadata.replace('Info.plist entries=10', 'Info.plist=not bound'), metadata.replace('Sealed Resources version=2', 'Sealed Resources=none'), metadata.replace('anchor apple generic', 'cdhash H"123"'), metadata.replace('Authority=Apple Development: Fixture', 'Signature=adhoc'), metadata.replace('TeamIdentifier=TEAM\n', '')]:
+        for changed in [metadata.replace('app.hahakigami.desktop', 'other'), metadata.replace('Info.plist entries=10', 'Info.plist=not bound'), metadata.replace('Sealed Resources version=2', 'Sealed Resources=none'), metadata.replace('anchor apple generic', 'cdhash H"123"'), metadata.replace('anchor apple generic', 'anchor apple'), metadata.replace(' and certificate leaf[subject.CN]', ' and certificate 1[subject.CN]'), metadata.replace('designated => identifier "app.hahakigami.desktop"', 'designated => identifier "other"'), metadata.replace('Authority=Apple Development: Fixture', 'Signature=adhoc'), metadata.replace('TeamIdentifier=TEAM\n', '')]:
             with self.assertRaises(ValueError): verify_metadata(changed, 'app.hahakigami.desktop', False)
+
+    def test_leaf_certificate_sha1_reads_signing_certificate(self):
+        import platform
+        if platform.system() != 'Darwin': self.skipTest('codesign is macOS-only')
+        digest = leaf_certificate_sha1('/usr/bin/true')
+        self.assertRegex(digest, r'^[0-9A-F]{40}$')
 
     def test_benchmark_output_rejects_unowned_or_redirected_paths(self):
         from pathlib import Path

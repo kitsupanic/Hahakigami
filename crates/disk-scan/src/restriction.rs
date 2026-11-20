@@ -65,11 +65,17 @@ fn system_path(path: &Path) -> bool {
         &[b"bin"],
         &[b"sbin"],
     ];
-    if parts.first().is_some_and(|name| {
+    // These are volume-level names: also match below an external volume's mount point.
+    let volume_parts = match parts {
+        [b"Volumes", _, rest @ ..] => rest,
+        _ => parts,
+    };
+    if volume_parts.first().is_some_and(|name| {
         [
             b".DocumentRevisions-V100".as_slice(),
             b".fseventsd",
             b".Spotlight-V100",
+            b".Trashes",
         ]
         .contains(name)
     }) {
@@ -244,7 +250,12 @@ mod tests {
     }
     #[test]
     fn startup_metadata_names_match_only_root_components() {
-        for name in [".DocumentRevisions-V100", ".fseventsd", ".Spotlight-V100"] {
+        for name in [
+            ".DocumentRevisions-V100",
+            ".fseventsd",
+            ".Spotlight-V100",
+            ".Trashes",
+        ] {
             assert!(system_path(Path::new(&format!("/{name}/database"))));
             assert!(system_path(Path::new(&format!(
                 "/System/Volumes/Data/{name}/database"
@@ -252,6 +263,39 @@ mod tests {
             assert!(!system_path(Path::new(&format!("/{name}-personal"))));
             assert!(!system_path(Path::new(&format!("/Users/person/{name}"))));
         }
+    }
+    #[test]
+    fn volume_metadata_names_match_below_a_volume_mount_point_only() {
+        for name in [
+            ".DocumentRevisions-V100",
+            ".fseventsd",
+            ".Spotlight-V100",
+            ".Trashes",
+        ] {
+            for volume in [
+                "/Volumes/USB",
+                "/Volumes/My Disk",
+                "/System/Volumes/Data/Volumes/USB",
+            ] {
+                assert!(
+                    system_path(Path::new(&format!("{volume}/{name}"))),
+                    "{volume}/{name}"
+                );
+                assert!(system_path(Path::new(&format!("{volume}/{name}/db"))));
+                assert!(!system_path(Path::new(&format!(
+                    "{volume}/{name}-personal"
+                ))));
+                assert!(!system_path(Path::new(&format!(
+                    "{volume}/Users/person/{name}"
+                ))));
+            }
+            // The volume itself, or a volume named like one, is not metadata.
+            assert!(!system_path(Path::new(&format!("/Volumes/{name}"))));
+            assert!(!system_path(Path::new(&format!("/Volumes/{name}/data"))));
+        }
+        // Only the volume-level names move below a mount point, not the system prefixes.
+        assert!(!system_path(Path::new("/Volumes/USB/usr/bin/tool")));
+        assert!(!system_path(Path::new("/Volumes/USB/System/Library")));
     }
     #[test]
     fn specific_scheduler_postfix_and_management_daemon_paths_are_bounded() {

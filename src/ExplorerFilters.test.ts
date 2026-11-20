@@ -90,8 +90,10 @@ it("rejects invalid ranges while retaining the prior applied range", async () =>
   ]) {
     await fill("Minimum size", bad);
     await click("Apply range");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Previous applied range is unchanged",
+    expect(
+      container.querySelector('[role="alert"]')?.textContent?.trim(),
+    ).toBe(
+      "Enter nonnegative sizes of at least 1 byte within the supported range. Previous applied range is unchanged.",
     );
     expect(applied).toHaveBeenCalledTimes(1);
   }
@@ -101,6 +103,13 @@ it("rejects invalid ranges while retaining the prior applied range", async () =>
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
     "Minimum size must not exceed maximum size",
   );
+});
+it("accepts fractional sizes that round to whole bytes", async () => {
+  await choose("Size range", "custom");
+  await fill("Minimum size", "1.1");
+  await click("Apply range");
+  expect(applied.mock.lastCall?.[0].minBytes).toBe(Math.round(1.1 * 1024 ** 3));
+  expect(container.querySelector('[role="alert"]')).toBeNull();
 });
 it("clear resets custom drafts and category and disabled controls cannot apply", async () => {
   await choose("File category", "audio");

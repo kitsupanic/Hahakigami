@@ -52,3 +52,23 @@ it("drags from the rendered width, clamps, and resets", async () => {
   );
   expect(value).toBeNull();
 });
+
+it("reports max and the measured width when the stored width is unset", async () => {
+  expect(divider.getAttribute("aria-valuemax")).toBe("400");
+  expect(divider.getAttribute("aria-valuenow")).toBe("220");
+  await pointer("pointerdown", 220);
+  await pointer("pointermove", 260);
+  expect(divider.getAttribute("aria-valuenow")).toBe("260");
+});
+
+it("treats a stored width past the window's maximum as the maximum", async () => {
+  value = 480;
+  await act(render);
+  expect(divider.getAttribute("aria-valuenow")).toBe("400");
+  await act(() =>
+    divider.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+    ),
+  );
+  expect(value).toBe(390);
+});

@@ -529,6 +529,30 @@ mod tests {
         assert_eq!(item.identity.birth, Some((secs, nanos)));
     }
     #[test]
+    fn rejects_an_item_outside_the_scan_root() {
+        let d = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let top = std::fs::canonicalize(d.path()).unwrap();
+        let (scanned, other) = (top.join("scanned"), top.join("other"));
+        std::fs::create_dir(&scanned).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let p = other.join("a");
+        std::fs::write(&p, []).unwrap();
+        let item = CheckedItem {
+            path: p.clone(),
+            identity: Identity::read(&p).unwrap(),
+            ancestors: ancestors(&p).unwrap(),
+            volume: Some(Volume::read(&top).unwrap()),
+        };
+        // Sound in every other way: under a root that holds it, it passes.
+        assert!(verify(&item, &top, None, &[]).is_ok());
+        for check in [verify, verify_paths] {
+            assert_eq!(
+                check(&item, &scanned, None, &[]),
+                Err("This location is protected from cleanup.".into())
+            );
+        }
+    }
+    #[test]
     fn rejects_other_or_unknown_volume_before_trash() {
         let d = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
         let root = std::fs::canonicalize(d.path()).unwrap();

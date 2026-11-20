@@ -46,12 +46,16 @@ def main():
               'permissions': 'Inherited unchanged; no user preferences or macOS grants changed.',
               'method': 'One full hardware Auto scan through native test commands; production Auto check in disposable preferences.',
               'limitations': ['No alternating performance comparison or proof of the fastest count.', 'No P/E placement or energy trace.', 'Not a graphical app or OpenDisk acceptance run.'], 'acceptanceMet': False}
+    raw_output.unlink(missing_ok=True)  # stale data must not satisfy a renamed or skipped test
     started = time.monotonic()
     result = subprocess.run([str(binary), '--ignored', '--exact', 'tests::automatic_workers_probe', '--nocapture', '--test-threads=1'], env=env, text=True, capture_output=True, timeout=args.timeout)
     report.update(wallSeconds=time.monotonic()-started, exitCode=result.returncode, binarySha256After=file_hash(binary))
     if fingerprint != report['binarySha256After']:
         raise ValueError('Executable changed; reject evidence')
-    if result.returncode:
+    if not result.returncode and '1 passed' not in result.stdout:
+        report['failure'] = 'Probe test did not run (renamed or filtered out); no evidence recorded.\n' + result.stdout[-2000:]
+        result.returncode = report['exitCode'] = 1
+    elif result.returncode:
         report['failure'] = (result.stderr + result.stdout)[-4000:]
     else:
         report['native'] = json.loads(raw_output.read_text())

@@ -8,7 +8,7 @@ import platform
 import statistics
 import subprocess
 import time
-from benchmark import ROOT, file_hash, scanner_fingerprints
+from benchmark import ROOT, file_hash, rotated, scanner_fingerprints
 from worker_diagnostics_trial import analysis
 
 MODES = ('automatic', 'userInitiated', 'background')
@@ -16,8 +16,7 @@ COVERAGE = ('entries', 'directories', 'errors', 'allocated_bytes')
 
 
 def rotated_order(number, modes=MODES):
-    offset = number % len(modes)
-    return modes[offset:] + modes[:offset]
+    return rotated(modes, number)
 
 
 def validate(raw, workers, mode):
@@ -84,7 +83,7 @@ def main():
     parser.add_argument('--workers', type=int, default=7)
     parser.add_argument('--modes', nargs='+', choices=MODES, default=list(MODES), help='Unique subset of QoS modes')
     parser.add_argument('--path', type=Path, default=Path('/'))
-    parser.add_argument('--rounds', type=int, default=3, help='Initial rotation plus subsequent warm rotations')
+    parser.add_argument('--rounds', type=int, default=6, help='Initial rotation plus subsequent warm rotations')
     parser.add_argument('--timeout', type=int, default=600)
     parser.add_argument('--output', type=Path, default=ROOT / 'benchmark-results/qos-trial.json')
     args = parser.parse_args()
