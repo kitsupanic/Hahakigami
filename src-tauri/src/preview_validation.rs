@@ -47,12 +47,7 @@ impl Item {
             root: snapshot.root.clone(),
             expected: CheckedItem {
                 path: path.clone(),
-                identity: Identity {
-                    device: node.identity.device,
-                    inode: node.identity.inode,
-                    kind: 2,
-                    birth: None,
-                },
+                identity: Identity::of(&node),
                 ancestors,
                 volume: None,
             },

@@ -1,5 +1,5 @@
 //! Validation is repeated immediately before recycling. Native paths never come from an action request.
-use disk_scan::{NodeKind, Snapshot};
+use disk_scan::{NodeKind, NodeRef, Snapshot};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
@@ -41,6 +41,20 @@ fn birth(_: &std::fs::Metadata) -> Option<(i64, i64)> {
     None
 }
 impl Identity {
+    /// What a scan holds for `node`: no birth time (a snapshot has none).
+    pub fn of(node: &NodeRef) -> Self {
+        Self {
+            device: node.identity.device,
+            inode: node.identity.inode,
+            kind: match node.identity.kind {
+                NodeKind::Directory => 1,
+                NodeKind::File => 2,
+                NodeKind::Symlink => 3,
+                NodeKind::Other => 4,
+            },
+            birth: None,
+        }
+    }
     pub fn read(path: &Path) -> Result<Self, String> {
         let m = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let kind = if m.is_dir() {
@@ -71,7 +85,9 @@ impl Identity {
 
 /// Which filesystem an item was on. (device, inode) alone is not enough: a removable volume reformatted and
 /// mounted at the same path can reuse the device number, and FAT/exFAT file IDs come from on-disk layout.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Volume {
     Uuid(String),
     /// The filesystem reports no UUID. shortcut: only (device, inode) protects such volumes, as before.
@@ -151,15 +167,7 @@ pub fn lineage(
         if p.identity.kind != NodeKind::Directory || p.excluded {
             return Err(format!("Excluded or invalid {what} ancestor"));
         }
-        lineage.push((
-            p.path()?,
-            Identity {
-                device: p.identity.device,
-                inode: p.identity.inode,
-                kind: 1,
-                birth: None,
-            },
-        ));
+        lineage.push((p.path()?, Identity::of(&p)));
         parent = p.parent;
     }
     Ok(lineage)
@@ -172,22 +180,11 @@ pub fn checked_item(scan: &Scan, id: u32) -> Result<CheckedItem, String> {
     if n.excluded {
         return Err("Excluded locations cannot be moved to Trash from this scan.".into());
     }
-    let identity = Identity {
-        device: n.identity.device,
-        inode: n.identity.inode,
-        kind: match n.identity.kind {
-            NodeKind::Directory => 1,
-            NodeKind::File => 2,
-            NodeKind::Symlink => 3,
-            NodeKind::Other => 4,
-        },
-        birth: None,
-    };
     let mut lineage = lineage(snapshot, id, "cleanup")?;
     lineage.extend(scan.root_ancestors.iter().cloned());
     Ok(CheckedItem {
         path: n.path()?,
-        identity,
+        identity: Identity::of(&n),
         ancestors: lineage,
         volume: recorded_volume(scan, id),
     })

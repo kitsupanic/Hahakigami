@@ -857,7 +857,7 @@ fn register_scan(
         auto_scope,
     } = opened;
     let scheduling_conditions = platform::scheduling_conditions();
-    let (workers, cached_validation_workers, worker_source) = state
+    let (workers, cached_validation_workers) = state
         .scan_settings
         .lock()
         .unwrap()
@@ -879,7 +879,7 @@ fn register_scan(
             workers,
             cached_validation_workers,
             worker_mode: settings::WorkerMode::Auto,
-            worker_source: worker_source.into(),
+            worker_source: "hardware".into(),
             qos: disk_scan::ScanQos::Automatic,
         },
     )?;
