@@ -107,19 +107,36 @@ export default function createFileTypes(context: {
     };
   });
 
+  // A live scan's map reloads every second or two, but each query walks the whole tree under the
+  // scan's read lock: while running, keep the asked tiles until the revision (or a retry) changes or
+  // the map shows mostly other tiles (the user moved to another folder).
+  let asked: number[] = [],
+    askedSet = new Set<number>(),
+    askedVersion = "";
+  const highlightNodeIds = $derived.by(() => {
+    const ids = context.nodes
+      .filter((node) => node.kind !== "aggregate")
+      .map((node) => node.id);
+    const fresh = version;
+    if (
+      running &&
+      fresh === askedVersion &&
+      ids.filter((id) => askedSet.has(id)).length * 2 >= ids.length
+    )
+      return asked;
+    asked = ids;
+    askedSet = new Set(ids);
+    askedVersion = fresh;
+    return ids;
+  });
+
   $effect(() => {
     const key = highlightKey;
     const scan = scanId;
     const root = nodeId;
     const selected = extension;
-    // A live scan's map reloads every second or two, but each query walks the whole tree under the
-    // scan's read lock: while running, re-query only when the revision (or a retry) changes.
-    void version;
-    const nodes = running ? untrack(() => context.nodes) : context.nodes;
+    const nodeIds = highlightNodeIds;
     if (scan === undefined || root === undefined || selected === null) return;
-    const nodeIds = nodes
-      .filter((node) => node.kind !== "aggregate")
-      .map((node) => node.id);
     untrack(() => (highlightFailure = null));
     let ignore = false;
     queryHighlights(async () => {

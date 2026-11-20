@@ -1048,6 +1048,10 @@ fn a_picked_disk_root_is_the_listed_disk_and_a_plain_folder_is_not() {
     let picked = register_picked(&state, root).unwrap();
     assert!(picked.volume, "a disk root scans in the disk slot");
     assert_eq!(picked.id, listed[0].id, "the pick reuses the listed disk");
+    assert_eq!(
+        picked.name, "Macintosh HD",
+        "the pick keeps the disk's name"
+    );
     let d = fixture();
     let folder = std::fs::canonicalize(d.path()).unwrap();
     assert!(!register_picked(&state, folder).unwrap().volume);

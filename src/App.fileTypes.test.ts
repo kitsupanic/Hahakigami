@@ -566,6 +566,26 @@ it("re-queries file-type highlights once per revision of a live scan, not on eve
   expect(map().dataset.ids).toBe("0,3");
 });
 
+it("re-queries file-type highlights of a live scan when the map shows mostly other tiles", async () => {
+  const report = liveReports();
+  await openTypes();
+  await selectType(".jpg");
+  await report("running", 1000);
+  const before = count("get_file_type_highlights");
+  // Zooming deeper shows tiles the last query never asked about, within the same revision.
+  const original = mock.invoke.getMockImplementation()!;
+  const deeper = [5, 6, 7].map((id) => ({ ...image, id, parentId: 2 }));
+  mock.invoke.mockImplementation((name, args) =>
+    name === "get_map" ? Promise.resolve({ nodes: deeper }) : original(name, args),
+  );
+  await report("running", 2000);
+  expect(count("get_file_type_highlights")).toBe(before + 1);
+  const call = mock.invoke.mock.calls
+    .filter(([name]) => name === "get_file_type_highlights")
+    .at(-1)!;
+  expect(call[1].nodeIds).toEqual([5, 6, 7]);
+});
+
 it("retains scan-wide totals while visiting the current-folder scope", async () => {
   await openTypes();
   await act(() => app().setFocus(folder));

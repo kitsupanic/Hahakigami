@@ -361,6 +361,10 @@ fn retain_target(
             .get(&id)
             .is_some_and(|old| old.identity == guard.identity && old.ancestors == guard.ancestors);
         if unchanged {
+            // A picked disk root keeps the disk's listed name ("Macintosh HD", not "/").
+            if target.volume {
+                target.name = targets[&id].0.name.clone();
+            }
             target.id = id;
         } else {
             guards.remove(&id);
