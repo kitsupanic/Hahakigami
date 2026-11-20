@@ -8,9 +8,8 @@ from clone_accounting_benchmark import execute, normalize, raw_coverage, summari
 
 class CloneBenchmarkTests(unittest.TestCase):
     def test_execute_resolves_relative_output_before_use(self):
-        with tempfile.TemporaryDirectory() as tmp, patch('clone_accounting_benchmark.validate', side_effect=ValueError('stop')) as check:
-            with patch('pathlib.Path.cwd', return_value=Path(tmp)), self.assertRaises(ValueError):
-                execute({}, Path('out'))
+        with patch('clone_accounting_benchmark.validate', side_effect=ValueError('stop')) as check, self.assertRaises(ValueError):
+            execute({}, Path('out'))
         self.assertTrue(check.call_args.args[1].is_absolute())
 
     def test_native_uses_actual_engine_timer_not_process_wall(self):

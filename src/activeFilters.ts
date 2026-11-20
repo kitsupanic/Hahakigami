@@ -64,8 +64,8 @@ export function sizeFilterLabel(
   }
   const lower = exactSize(min);
   const upper = exactSize(max);
-  // Keep the bytes when an end is in bytes or both round alike: mixed units or "≈1 KiB–≈1 KiB" would mislead.
-  return lower === upper || lower.endsWith(" B") || upper.endsWith(" B")
+  // One byte unit for two byte ends; plain bytes too when both round alike, as "≈1 KiB–≈1 KiB" would mislead.
+  return lower === upper || (lower.endsWith(" B") && upper.endsWith(" B"))
     ? `${prefix} ${min}–${max} B`
     : `${prefix} ${lower}–${upper}`;
 }
