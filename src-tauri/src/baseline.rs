@@ -358,6 +358,7 @@ impl Baselines {
                     choose_prepared(&changes, prepared)
                 };
                 let seed = disk_scan::IncrementalSeed {
+                    aliases_resolved: aliases_resolved(&snapshot),
                     snapshot,
                     dirty_paths: changes.paths,
                     dirty_directories: changes.directories,
@@ -432,6 +433,16 @@ impl Ticket<'_> {
     }
 }
 
+/// Whether `Changes::resolve` put every cached alias of each changed inode into the dirty paths, so
+/// the scan needs no catch-all for a changed path it has no node for. `resolve` matches inodes only on
+/// the root's device, so hard links on another one (a `/` scan reaching the Data volume) leave it unsure.
+fn aliases_resolved(snapshot: &Snapshot) -> bool {
+    let device = snapshot.node(0).map(|n| n.identity.device);
+    snapshot
+        .iter_nodes()
+        .all(|n| !n.hard_link || Some(n.identity.device) == device)
+}
+
 fn choose_prepared(
     changes: &events::Changes,
     prepared: Option<PreparedRescan>,
@@ -481,7 +492,8 @@ fn prepare_rescan(
             disk_scan::IncrementalSeed {
                 snapshot: cached.clone(),
                 dirty_paths: vec![],
-                dirty_directories: vec![]
+                dirty_directories: vec![],
+                aliases_resolved: false,
             },
         )
     );
@@ -1128,6 +1140,30 @@ mod tests {
     }
 
     #[test]
+    fn aliases_are_resolved_only_while_every_hard_link_is_on_the_roots_device() {
+        let rig = Rig::new();
+        let scope = rig.dir.path().join("scope");
+        fs::create_dir_all(scope.join("linked")).unwrap();
+        fs::write(scope.join("linked/a"), b"old").unwrap();
+        fs::hard_link(scope.join("linked/a"), scope.join("linked/b")).unwrap();
+        let baseline = snapshot(fs::canonicalize(scope).unwrap());
+        let mut other_device = baseline.clone();
+        let link = other_device.iter_nodes().find(|n| n.hard_link).unwrap().id;
+        other_device
+            .update_node(link, |n| n.identity.device ^= 1)
+            .unwrap();
+        let root = open(&baseline);
+        for (snapshot, resolved) in [(baseline, true), (other_device, false)] {
+            let previous = Taken {
+                snapshot,
+                token: token(1, ago(1000)),
+            };
+            let (start, _) = rig.acquire(&root, Some(previous), ago(1000));
+            assert_eq!(seed(start).aliases_resolved, resolved);
+        }
+    }
+
+    #[test]
     fn a_baseline_with_hard_links_is_never_prepared_and_sees_a_late_alias_write() {
         let rig = Rig::new();
         let scope = rig.dir.path().join("scope");
@@ -1446,6 +1482,7 @@ mod tests {
                 snapshot: cached,
                 dirty_paths: changes.paths,
                 dirty_directories: changes.directories,
+                aliases_resolved: false,
             },
         )
         .unwrap();

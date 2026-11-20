@@ -7,6 +7,10 @@ pub struct IncrementalSeed {
     pub dirty_paths: Vec<PathBuf>,
     /// Listings to reread without invalidating otherwise unchanged descendants.
     pub dirty_directories: Vec<PathBuf>,
+    /// `dirty_paths` already holds every cached alias of each changed inode, so a changed path with no
+    /// cached node (a new file) cannot hide a changed alias. When false, such a path makes every cached
+    /// hard link dirty.
+    pub aliases_resolved: bool,
 }
 /// Requested vector capacities and hash-table payload estimates for reuse scratch.
 /// These per-category samples are not an aggregate concurrent or process-memory peak.
@@ -145,13 +149,14 @@ impl Reuse {
                 touched.insert((node.identity.device, node.identity.inode));
             }
         }
-        let ambiguous_alias_history = marks.values().any(|m| m.requested && m.node.is_none());
+        let mut ambiguous_alias_history =
+            !seed.aliases_resolved && marks.values().any(|m| m.requested && m.node.is_none());
         // An event path whose parent has no node is either a new directory or a cached directory spelled
         // differently (case-insensitive or Unicode-equivalent names), whose cached listing would hide the
         // change. C is the first unmatched component below the nearest cached ancestor M. A new directory
         // has no cached listing and M's is dirty already. A child of M that C matches case-insensitively is
-        // dirtied whole. The loop below spreads either to descendants; such a path also matches no node, so
-        // every cached alias is already dirty and `touched` needs nothing more.
+        // dirtied whole. The loop below spreads either to descendants, whose hard links `touched` never
+        // sees, so dirtying any child makes every cached alias dirty, resolved aliases or not.
         let fold = |name: &std::ffi::OsStr| match name.to_str() {
             Some(name) => name.to_lowercase().into_bytes(),
             None => name.as_encoded_bytes().to_ascii_lowercase(),
@@ -205,6 +210,7 @@ impl Reuse {
             };
             for &node in dirty {
                 subtree_dirty[node as usize] = true;
+                ambiguous_alias_history = true;
             }
         }
         let preparation_marks_payload_capacity_bytes = marks.capacity()
@@ -742,6 +748,15 @@ mod tests {
             dirty_paths: Vec<PathBuf>,
             dirty_directories: Vec<PathBuf>,
         ) -> (Snapshot, ReuseStats) {
+            self.incremental_resolving(seed, dirty_paths, dirty_directories, false)
+        }
+        fn incremental_resolving(
+            &self,
+            seed: Snapshot,
+            dirty_paths: Vec<PathBuf>,
+            dirty_directories: Vec<PathBuf>,
+            aliases_resolved: bool,
+        ) -> (Snapshot, ReuseStats) {
             let authority =
                 ScanRoot::open(self.0.clone(), platform_identity(&self.0).unwrap()).unwrap();
             let store = Arc::new(RwLock::new(Snapshot::empty(self.0.clone())));
@@ -755,6 +770,7 @@ mod tests {
                     dirty_directories,
                     snapshot: Arc::new(seed),
                     dirty_paths,
+                    aliases_resolved,
                 },
             )
             .unwrap();
@@ -778,6 +794,7 @@ mod tests {
             snapshot: Arc::new(snapshot),
             dirty_paths: vec![],
             dirty_directories: vec![dirty.clone()],
+            aliases_resolved: false,
         });
         let cost = |path: &Path| reuse.priorities.get(path).unwrap().1;
         assert_eq!(cost(&dirty), own_cost);
@@ -803,6 +820,7 @@ mod tests {
                 snapshot: snapshot.clone(),
                 dirty_paths: join(paths),
                 dirty_directories: join(directories),
+                aliases_resolved: false,
             });
             [
                 "build",
@@ -911,6 +929,7 @@ mod tests {
                 snapshot: Arc::new(f.full()),
                 dirty_paths: paths,
                 dirty_directories: directories,
+                aliases_resolved: false,
             });
             assert_eq!(validation_worker_count(3, 4, reuse.listings.len()), 3);
         }
@@ -956,6 +975,7 @@ mod tests {
                     snapshot: Arc::new(snapshot),
                     dirty_paths,
                     dirty_directories: vec![],
+                    aliases_resolved: false,
                 },
                 4,
                 |count| workers.lock().unwrap().push(count),
@@ -1368,6 +1388,7 @@ mod tests {
                 snapshot: Arc::new(snapshot.clone()),
                 dirty_paths: paths.into_iter().collect(),
                 dirty_directories: directories.into_iter().collect(),
+                aliases_resolved: false,
             });
             assert_eq!(
                 reuse.listings.keys().cloned().collect::<HashSet<_>>(),
@@ -1453,6 +1474,7 @@ mod tests {
             snapshot: Arc::new(seed.clone()),
             dirty_paths: vec![],
             dirty_directories: vec![],
+            aliases_resolved: false,
         });
         reuse.observe_root(&Ok(entries));
         assert!(!reuse.unchanged_possible);
@@ -1546,6 +1568,7 @@ mod tests {
                 snapshot: Arc::new(seed.clone()),
                 dirty_paths: vec![],
                 dirty_directories: vec![],
+                aliases_resolved: false,
             });
             let expected = platform_identity(&f.0.join("clean/deep")).unwrap();
             let leaf = staged
@@ -1601,6 +1624,32 @@ mod tests {
         assert!(stats.fallback_reason.is_none());
         assert!(stats.reused_entries > 0);
         assert!(stats.unchanged_metadata);
+    }
+    #[test]
+    fn new_file_dirties_cached_hard_links_only_while_aliases_are_unresolved() {
+        let f = Fixture::new();
+        fs::hard_link(f.0.join("clean/deep/kept"), f.0.join("clean/alias")).unwrap();
+        let seed = f.full();
+        // Which of the hard links' folders keep a reusable cached listing.
+        let reusable = |path: &str, aliases_resolved| {
+            let reuse = Reuse::new(IncrementalSeed {
+                snapshot: Arc::new(seed.clone()),
+                dirty_paths: vec![f.0.join(path)],
+                dirty_directories: vec![],
+                aliases_resolved,
+            });
+            ["clean", "clean/deep"].map(|d| reuse.listings.contains_key(&f.0.join(d)))
+        };
+        assert_eq!(reusable("dirty/new.bin", true), [true, true]);
+        assert_eq!(reusable("dirty/new.bin", false), [false, false]);
+        // A path that may spell a cached directory differently hides its hard links from `touched`.
+        assert_eq!(reusable("dirty/NESTED/new.bin", true), [false, false]);
+        fs::write(f.0.join("dirty/new.bin"), b"new").unwrap();
+        let (actual, stats) =
+            f.incremental_resolving(seed, vec![f.0.join("dirty/new.bin")], vec![], true);
+        compare(&actual, &f.full());
+        assert!(stats.fallback_reason.is_none());
+        assert!(stats.reused_entries > 0);
     }
     #[test]
     fn changed_alias_invalidates_all_cached_aliases() {
@@ -1724,6 +1773,7 @@ mod tests {
                 dirty_directories: vec![],
                 snapshot: Arc::new(seed),
                 dirty_paths: vec![f.0.join("dirty/link"), f.0.join("clean/deep/kept")],
+                aliases_resolved: false,
             },
         )
         .unwrap();
@@ -1765,6 +1815,7 @@ mod tests {
             snapshot: Arc::new(seed_for_reuse),
             dirty_paths: vec![destination.clone()],
             dirty_directories: vec![],
+            aliases_resolved: false,
         });
         assert!(planned.listings.contains_key(&f.0.join("clean/deep")));
         drop(planned);
@@ -1796,6 +1847,7 @@ mod tests {
                 snapshot: Arc::new(seed),
                 dirty_paths: vec![destination],
                 dirty_directories: vec![],
+                aliases_resolved: false,
             },
             2,
             |count| workers.lock().unwrap().push(count),
@@ -1908,6 +1960,7 @@ mod tests {
                 snapshot: Arc::new(seed),
                 dirty_paths: vec![new],
                 dirty_directories: vec![],
+                aliases_resolved: false,
             },
             2,
             |count| selections.lock().unwrap().push(count),
@@ -1971,6 +2024,7 @@ mod tests {
                 dirty_directories: vec![],
                 snapshot: Arc::new(seed),
                 dirty_paths: vec![],
+                aliases_resolved: false,
             },
         )
         .unwrap();
@@ -2010,6 +2064,7 @@ mod tests {
                 dirty_directories: vec![],
                 snapshot: Arc::new(seed),
                 dirty_paths: vec![],
+                aliases_resolved: false,
             },
         )
         .unwrap();
@@ -2127,6 +2182,7 @@ mod tests {
             snapshot: Arc::new(seed.clone()),
             dirty_paths: vec![],
             dirty_directories: vec![],
+            aliases_resolved: false,
         });
         for name in ["clean/deep", "twin"] {
             assert!(reuse

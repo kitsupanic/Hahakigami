@@ -13,7 +13,7 @@ pub struct Changes {
     pub paths: Vec<PathBuf>,
     pub directories: Vec<PathBuf>,
     pub shared_inodes: HashSet<u64>,
-    /// An external change cannot be resolved by inode (including directory removal).
+    /// A change cannot be resolved by inode (a file event without one, or an external directory removal).
     pub uncertain_aliases: bool,
 }
 impl Changes {
@@ -580,7 +580,7 @@ mod native {
             if flag & 0x20000 == 0 {
                 if let Some(inode) = inode.filter(|inode| *inode != 0) {
                     collected.changes.shared_inodes.insert(inode);
-                } else if !in_scope {
+                } else {
                     collected.changes.uncertain_aliases = true;
                 }
             } else if !in_scope && !listing_only(flag) {
@@ -1387,6 +1387,26 @@ mod native {
                 Some(42),
             );
             assert!(collected.error.is_some());
+        }
+        #[test]
+        fn a_file_event_without_an_inode_cannot_be_resolved_by_inode() {
+            let state = State {
+                root: PathBuf::from("/private/tmp/root"),
+                since: 10,
+                collected: Mutex::new(Collected::default()),
+                ready: Condvar::new(),
+                abort: AtomicBool::new(false),
+            };
+            let mut collected = Collected::default();
+            for (path, flag, inode, uncertain) in [
+                ("/private/tmp/root/file", 0x10100, Some(42), false),
+                ("/private/tmp/root/dir", 0x20100, None, false),
+                ("/private/tmp/root/file", 0x10100, None, true),
+            ] {
+                collect_event(&state, &mut collected, Path::new(path), flag, 11, inode);
+                assert!(collected.error.is_none());
+                assert_eq!(collected.changes.uncertain_aliases, uncertain, "{path}");
+            }
         }
         #[test]
         fn events_elsewhere_on_the_volume_do_not_use_up_the_event_limit() {
