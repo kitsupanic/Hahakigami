@@ -32,6 +32,8 @@ tauri-plugin-clipboard-manager = "=2.4.1"
 clap = { version = "=4.6.7", features = ["derive"] }
 rmcp = { version = "=3.7.0", default-features = false, features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+# Already locked through tauri; matches names across NFC/NFD spellings.
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

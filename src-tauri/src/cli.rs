@@ -27,12 +27,14 @@ async fn execute(command: Command, service: Arc<Service>) -> Result<(i32, Option
     let result = match command {
         Command::Scan { path } => {
             let scanner = service.clone();
-            let task = tokio::task::spawn_blocking(move || scanner.scan(path));
+            let mut task = tokio::task::spawn_blocking(move || scanner.scan(path));
             tokio::select! {
-                result = task => result.map_err(|error| error.to_string())??,
+                result = &mut task => result.map_err(|error| error.to_string())??,
                 signal = tokio::signal::ctrl_c() => {
                     signal.map_err(|error| error.to_string())?;
                     service.cancel()?;
+                    // Let the scanner see the flag so the status shows the cancelled partial result, not "running".
+                    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
                     return Ok((130, Some(service.status()?)));
                 }
             }

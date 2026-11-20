@@ -39,7 +39,7 @@ function exactSize(bytes: number): string {
     const value = exactValue(bytes, unit.scale);
     if (value !== null) return `${value} ${unit.name}`;
   }
-  // A typed decimal (1.1 GB) is never exact in bytes; round it. A whole rounded value would pose as exact.
+  // A typed decimal (1.1 GiB) is never exact in bytes; round it. A whole rounded value would pose as exact.
   const fit = units.find((unit) => bytes >= Number(unit.scale))!;
   const rounded = +(bytes / Number(fit.scale)).toFixed(2);
   return Number.isInteger(rounded) ? `${bytes} B` : `≈${rounded} ${fit.name}`;

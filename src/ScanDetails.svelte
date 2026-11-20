@@ -4,7 +4,7 @@
   import { coverageLabel, issueSplit } from "./scanCoverage";
   import { dismissPopover } from "./dialogFocus";
   import { bytes, type ScanSummary } from "./types";
-  import { compactBytes, scanTime } from "./uiFormat";
+  import { compactBytes, countLabel, scanTime } from "./uiFormat";
   import type { Snippet } from "svelte";
 
   // The status strip's one details popover. The totals cells open it on Summary and the
@@ -36,7 +36,7 @@
   let countDescription = $derived(
     [
       other
-        ? `${other.toLocaleString()} other scan issue ${other === 1 ? "event" : "events"}`
+        ? countLabel(other, "other scan issue event")
         : "",
     ]
       .filter(Boolean)
@@ -202,8 +202,8 @@
     <div class="scan-status-summary sr-only" id={`${id}-counts`}>
       <strong class="scan-coverage-label">{coverageLabel(summary)}</strong>
       {#if other > 0}<span
-          aria-label={`${other.toLocaleString()} other scan issue ${other === 1 ? "event" : "events"}`}
-          >{other.toLocaleString()} issue {other === 1 ? "event" : "events"}</span
+          aria-label={countLabel(other, "other scan issue event")}
+          >{countLabel(other, "issue event")}</span
         >{/if}
     </div>
     <button

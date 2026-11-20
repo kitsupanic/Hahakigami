@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import { dialogFocus } from "./dialogFocus";
   import { bytes, type NodeView } from "./types";
-  import { compactBytes } from "./uiFormat";
+  import { compactBytes, countLabel } from "./uiFormat";
 
   let {
     items,
@@ -29,10 +29,10 @@
   let others = $derived(items.length - folders - files - links);
   let kindCounts = $derived(
     [
-      folders ? `${folders} ${folders === 1 ? "folder" : "folders"}` : "",
-      files ? `${files} ${files === 1 ? "file" : "files"}` : "",
-      links ? `${links} symbolic ${links === 1 ? "link" : "links"}` : "",
-      others ? `${others} other ${others === 1 ? "item" : "items"}` : "",
+      folders ? countLabel(folders, "folder") : "",
+      files ? countLabel(files, "file") : "",
+      links ? countLabel(links, "symbolic link") : "",
+      others ? countLabel(others, "other item") : "",
     ]
       .filter(Boolean)
       .join(" · ") || "No items",
@@ -88,8 +88,7 @@
     }}
   >
     <h2 id="trash-title">
-      Move {items.length}
-      {items.length === 1 ? "item" : "items"} to Trash?
+      Move {countLabel(items.length, "item")} to Trash?
     </h2>
     <p class="trash-intro">
       {queued ? "Ready items from the current scan" : "Selected items"}
@@ -100,9 +99,10 @@
       </p>
     {:else if selectedCount !== undefined && Number.isSafeInteger(selectedCount) && selectedCount > items.length}
       <p class="trash-scope-note">
-        {selectedCount} selected; {items.length}
-        {items.length === 1 ? "item" : "items"} to move. Selected descendants are
-        included through their parent folders.
+        {selectedCount.toLocaleString()} selected; {countLabel(
+          items.length,
+          "item",
+        )} to move. Selected descendants are included through their parent folders.
       </p>
     {/if}
     <dl class="trash-summary">

@@ -168,7 +168,7 @@
     <strong>
       File types{" "}<small
         >{stats
-          ? `${stats.items.length.toLocaleString()} ${stats.items.length === 1 ? "type" : "types"}`
+          ? countLabel(stats.items.length, "type")
           : ""}</small
       >
     </strong>
@@ -198,7 +198,7 @@
     <strong>{stats ? compactBytes(total, 1) : "—"}</strong> · On disk
     <span
       >{stats
-        ? `${stats.files.toLocaleString()} ${stats.files === 1 ? "file" : "files"}`
+        ? countLabel(stats.files, "file")
         : "Scanned file metadata"}</span
     >
   </p>
@@ -271,8 +271,7 @@
                   >{fileTypeDescription(item.extension)}</span
                 >
                 <small
-                  >{item.files.toLocaleString()}
-                  {item.files === 1 ? "file" : "files"}</small
+                  >{countLabel(item.files, "file")}</small
                 ></span
               >
               <span class="file-type-size"
@@ -303,7 +302,7 @@
       </div>
       <p>
         {selected
-          ? `${selected.files.toLocaleString()} ${selected.files === 1 ? "file" : "files"} · ${compactBytes(selected.allocatedBytes, 1)}`
+          ? `${countLabel(selected.files, "file")} · ${compactBytes(selected.allocatedBytes, 1)}`
           : loading
             ? "Loading type totals…"
             : "No matching files in this scope"}

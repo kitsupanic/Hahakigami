@@ -62,8 +62,6 @@
             scanId: summary.scanId,
             state: summary.state,
             workers: summary.workers,
-            workerMode: summary.workerMode,
-            workerSource: summary.workerSource,
             qos: summary.qos,
             elapsedMs: summary.elapsedMs,
             entries: summary.entries,

@@ -143,6 +143,17 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             assert!(result.structured_content.unwrap()["error"].is_string());
             assert!(!result.content.is_empty());
         }
+        // A relative path is refused, and the finished scan stays queryable.
+        let relative = call(&client, "scan", json!({"path": "relative/dir"})).await;
+        assert_eq!(relative.is_error, Some(true), "{relative:?}");
+        assert!(relative.structured_content.unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("absolute"));
+        assert_eq!(
+            value(&client, "summary", json!({})).await["scanId"],
+            scan_id
+        );
         assert!(client
             .call_tool(CallToolRequestParams::new("list"))
             .await

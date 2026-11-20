@@ -887,8 +887,7 @@
           disabled={blocked || queueBusy || queue.blocked}
           onclick={() => void sq.remove()}
         >
-          <Icon name="minus" size={17} /> Remove {sq.entries.length}
-          queued {sq.entries.length === 1 ? "item" : "items"}
+          <Icon name="minus" size={17} /> Remove {countLabel(sq.entries.length, "queued item")}
         </button>
       {/if}
       <small
@@ -907,7 +906,7 @@
         <small class="queue-inherited-feedback">
           {selection.length === 1
             ? "This item is included through a queued parent folder. Review the queue to remove that folder."
-            : `${sq.inheritedCount} selected ${sq.inheritedCount === 1 ? "item is" : "items are"} included through queued parent folders. Review the queue to remove those folders.`}
+            : `${countLabel(sq.inheritedCount, "selected item is", "selected items are")} included through queued parent folders. Review the queue to remove those folders.`}
         </small>
         <button
           class="queue-review"
@@ -1449,8 +1448,7 @@
                   <Icon name="queue" size={19} />
                   <strong
                     >Cleanup queue <span
-                      >· {queue.entries.length}
-                      {queue.entries.length === 1 ? "item" : "items"}</span
+                      >· {countLabel(queue.entries.length, "item")}</span
                     ></strong
                   >
                   <span

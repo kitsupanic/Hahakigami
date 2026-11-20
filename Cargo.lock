@@ -1400,6 +1400,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "disk-scan",
+ "icu_normalizer",
  "libc",
  "objc2",
  "objc2-app-kit",

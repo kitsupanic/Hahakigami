@@ -1359,11 +1359,11 @@ fn scan_live_internal_reuse(
                             .stats
                             .commit_us
                             .saturating_add(diagnostics::micros(commit.elapsed()));
-                        let mut row = telemetry.snapshot();
+                        let row = &mut s.worker_stats[worker_id - 1];
+                        telemetry.snapshot_into(row);
                         row.busy_us = row
                             .busy_us
                             .saturating_add(diagnostics::micros(busy.elapsed()));
-                        s.worker_stats[worker_id - 1] = row;
                     }
                     {
                         let (lock, cv) = &*queue;

@@ -5,11 +5,17 @@
     type FilterCategory,
   } from "./filterTypes";
   import "./filter.css";
-  const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+  const units = {
+    B: 1,
+    KiB: 1024,
+    MiB: 1024 ** 2,
+    GiB: 1024 ** 3,
+    TiB: 1024 ** 4,
+  };
   const presets: Record<string, number> = {
-    "100mb": 100 * units.MB,
-    "1gb": units.GB,
-    "10gb": 10 * units.GB,
+    "100mb": 100 * units.MiB,
+    "1gb": units.GiB,
+    "10gb": 10 * units.GiB,
   };
   function preset(filter: ExplorerFilter) {
     if (filter.minBytes === null && filter.maxBytes === null) return "any";
@@ -27,12 +33,12 @@
   import { untrack } from "svelte";
   let { value, disabled = false, onChange }: ExplorerFiltersProps = $props();
   let sizePreset = $state.raw(untrack(() => preset(value)));
-  // Remounts show the largest unit that holds the applied bytes exactly, else the largest one they reach, else GB.
+  // Remounts show the largest unit that holds the applied bytes exactly, else the largest one they reach, else GiB.
   let unit: keyof typeof units = $state.raw(
     untrack(() => {
-      const keys = ["TB", "GB", "MB", "KB", "B"] as const;
+      const keys = ["TiB", "GiB", "MiB", "KiB", "B"] as const;
       const largest = Math.max(value.minBytes ?? 0, value.maxBytes ?? 0);
-      if (!largest) return "GB";
+      if (!largest) return "GiB";
       return (
         keys.find(
           (key) =>
@@ -44,7 +50,7 @@
       );
     }),
   );
-  // The shortest decimal that converts back to `bytes`, so 1.1 GB never reads 1.0999….
+  // The shortest decimal that converts back to `bytes`, so 1.1 GiB never reads 1.0999….
   function text(bytes: number) {
     const exact = bytes / units[unit];
     for (let digits = 0; digits <= 15; digits++) {
@@ -145,8 +151,8 @@
         });
       }}
       ><option value="any">Any size</option><option value="100mb"
-        >100 MB+</option
-      ><option value="1gb">1 GB+</option><option value="10gb">10 GB+</option
+        >100 MiB+</option
+      ><option value="1gb">1 GiB+</option><option value="10gb">10 GiB+</option
       ><option value="custom">Custom range</option></select
     ></label
   >{#if sizePreset === "custom"}<div class="custom-size-range">
@@ -185,13 +191,13 @@
       sizePreset = "any";
       minimum = "";
       maximum = "";
-      unit = "GB";
+      unit = "GiB";
       error = "";
       onChange({ ...emptyFilter });
     }}>Clear filters</button
   >{#if error}<p role="alert" class="filter-error">
       {error} Previous applied range is unchanged.
     </p>{/if}<small class="filter-note"
-    >Sizes count 1 KB as 1,024 bytes and use the size you picked. Categories go by file name and extension.</small
+    >Sizes count 1 KiB as 1,024 bytes and use the size you picked. Categories go by file name and extension.</small
   >
 </div>

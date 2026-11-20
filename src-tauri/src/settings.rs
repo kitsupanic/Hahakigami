@@ -2,11 +2,6 @@ use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum WorkerMode {
-    Auto,
-}
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub enum AutoScope {
     Volume,
     Folder,
@@ -58,7 +53,6 @@ fn automatic_worker_count(
 #[serde(rename_all = "camelCase")]
 pub struct SettingsInfo {
     pub workers: usize,
-    pub worker_mode: WorkerMode,
     pub resolved_workers: usize,
     pub qos: disk_scan::ScanQos,
     pub qos_supported: bool,
@@ -108,7 +102,6 @@ impl ScanSettings {
         let (performance_threads, efficiency_threads) = crate::platform::cpu_thread_classes();
         SettingsInfo {
             workers: default_workers,
-            worker_mode: WorkerMode::Auto,
             resolved_workers: default_workers,
             qos: disk_scan::ScanQos::Automatic,
             qos_supported: cfg!(target_os = "macos"),
@@ -151,13 +144,6 @@ impl ScanSettings {
         info.resolved_workers = info.default_workers;
         info
     }
-    #[cfg(test)]
-    pub fn resolve_workers(&self, scope: AutoScope) -> (usize, &'static str) {
-        (
-            self.automatic_info_for_scope(scope).resolved_workers,
-            "hardware",
-        )
-    }
     /// Resolve both pools from one public scheduling snapshot; retired preferences stay ignored.
     pub fn resolve_scan_workers(
         &self,
@@ -195,7 +181,6 @@ impl ScanSettings {
         conditions: crate::platform::SchedulingConditions,
     ) -> SettingsInfo {
         let mut info = self.info_for_conditions(scope, conditions);
-        info.worker_mode = WorkerMode::Auto;
         info.workers = info.default_workers;
         info.resolved_workers = info.default_workers;
         info.qos = disk_scan::ScanQos::Automatic;
@@ -362,7 +347,6 @@ mod auto_tests {
     fn production_auto_resolves_from_hardware_and_scheduling_conditions() {
         let conditions = neutral_conditions();
         let s = ScanSettings::with_cpu_threads(14);
-        assert_eq!(s.info().worker_mode, WorkerMode::Auto);
         assert_eq!(
             s.info_for_conditions(AutoScope::Volume, conditions)
                 .resolved_workers,
@@ -371,10 +355,8 @@ mod auto_tests {
         assert_eq!(ScanSettings::with_cpu_threads(0).info().max_workers, 1);
         for scope in [AutoScope::Volume, AutoScope::Folder] {
             let info = s.automatic_info_for_scope(scope);
-            assert_eq!(info.worker_mode, WorkerMode::Auto);
             assert_eq!(info.qos, disk_scan::ScanQos::Automatic);
             assert_eq!(info.resolved_workers, info.default_workers);
-            assert_eq!(s.resolve_workers(scope).1, "hardware");
             let conditions = crate::platform::SchedulingConditions {
                 active_cpu_threads: Some(14),
                 low_power_mode: false,

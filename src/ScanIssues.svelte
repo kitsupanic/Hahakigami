@@ -6,6 +6,7 @@
   const limit = 100;
   import { untrack } from "svelte";
   import { latestOnly } from "./latestQuery";
+  import { countLabel } from "./uiFormat";
   // The Coverage tab of ScanDetails. Details load only while the tab is shown.
   let { summary, active = false }: { summary: ScanSummary; active?: boolean } =
     $props();
@@ -117,7 +118,7 @@
         ),
       );
       if (!stale())
-        copyMessage = `Copied ${issues.length.toLocaleString()} scan ${issues.length === 1 ? "issue" : "issues"}${issues.length < first.total ? ` of ${first.total.toLocaleString()} recorded events (details truncated)` : ""}.`;
+        copyMessage = `Copied ${countLabel(issues.length, "scan issue")}${issues.length < first.total ? ` of ${first.total.toLocaleString()} recorded events (details truncated)` : ""}.`;
     } catch (e) {
       if (!stale()) copyError = `Could not copy errors: ${String(e)}`;
     } finally {

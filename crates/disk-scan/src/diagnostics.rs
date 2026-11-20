@@ -50,10 +50,31 @@ impl Tracker {
             cpu_start,
         }
     }
-    pub fn snapshot(&self) -> WorkerStats {
-        let mut row = self.stats.clone();
-        row.elapsed_us = micros(self.started.elapsed());
-        row
+    /// A live row, written into `row` so its `qos` buffer is reused: the caller holds the store lock.
+    pub fn snapshot_into(&self, row: &mut WorkerStats) {
+        // Derived `Clone` leaves `clone_from` at its default, which reallocates `qos`.
+        // The literal names every field, so a new one cannot be forgotten.
+        let s = &self.stats;
+        let mut qos = std::mem::take(&mut row.qos);
+        qos.clone_from(&s.qos);
+        *row = WorkerStats {
+            id: s.id,
+            entries: s.entries,
+            directories: s.directories,
+            relative_opens: s.relative_opens,
+            absolute_reopens: s.absolute_reopens,
+            errors: s.errors,
+            elapsed_us: micros(self.started.elapsed()),
+            busy_us: s.busy_us,
+            cpu_us: s.cpu_us,
+            queue_wait_us: s.queue_wait_us,
+            store_wait_us: s.store_wait_us,
+            metadata_us: s.metadata_us,
+            commit_us: s.commit_us,
+            progress_us: s.progress_us,
+            qos,
+            qos_error: s.qos_error,
+        };
     }
     pub fn finish(&mut self) {
         self.stats.cpu_us = self
@@ -181,7 +202,8 @@ mod tests {
     #[test]
     fn thread_telemetry_getters_are_read_only_and_valid() {
         let mut t = Tracker::new(1);
-        let row = t.snapshot();
+        let mut row = WorkerStats::default();
+        t.snapshot_into(&mut row);
         assert!(!row.qos.is_empty());
         assert!(row.cpu_us.is_none());
         t.finish();
@@ -189,6 +211,43 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_ne!(t.stats.qos, "unavailable");
         assert!(t.stats.elapsed_us >= row.elapsed_us);
+    }
+    #[test]
+    fn snapshot_into_overwrites_a_stale_row_and_reuses_its_qos_buffer() {
+        let mut t = Tracker::new(2);
+        t.stats = WorkerStats {
+            entries: 1,
+            directories: 2,
+            relative_opens: 3,
+            absolute_reopens: 4,
+            errors: 5,
+            busy_us: 6,
+            cpu_us: Some(7),
+            queue_wait_us: 8,
+            store_wait_us: 9,
+            metadata_us: 10,
+            commit_us: 11,
+            progress_us: 12,
+            qos_error: Some(13),
+            ..t.stats
+        };
+        let mut row = WorkerStats {
+            id: 99,
+            errors: 99,
+            cpu_us: None,
+            qos: String::with_capacity(64),
+            qos_error: None,
+            ..WorkerStats::default()
+        };
+        let buffer = row.qos.as_ptr();
+        t.snapshot_into(&mut row);
+        assert_eq!(row.qos.as_ptr(), buffer);
+        let mut expected = t.stats.clone();
+        expected.elapsed_us = row.elapsed_us;
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
     }
     #[test]
     fn serializes_worker_fields_in_camel_case() {

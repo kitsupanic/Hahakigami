@@ -340,7 +340,7 @@ it("adds a connected disk and drops an ejected one, keeping the others' ids", as
 
 it("brings a remounted disk back when a chosen folder shares its path", async () => {
   const folder: Target = { ...backup, id: "backup-folder", volume: false };
-  await act(() => app().setTargets((old) => [...old, folder]));
+  await act(() => app().setTargets([...app().targets, folder]));
   mounted = ["/"];
   discovered = [disk, home];
   await refresh();

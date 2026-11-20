@@ -1,11 +1,6 @@
 import { onMount, untrack } from "svelte";
 import createQuickLook from "./createQuickLook.svelte";
 import { createCleanupQueue, tauriQueuePort } from "./cleanupQueue.svelte";
-import {
-  createSessionState,
-  createExplorerState,
-  rawState,
-} from "./appState.svelte";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import "./quickLook.css";
@@ -45,15 +40,11 @@ declare global {
   }
 }
 export default function createApp() {
-  const session = createSessionState(),
-    explorer = createExplorerState();
-  const performanceConfigState = rawState<{
+  let performanceConfig = $state.raw<{
     root: string;
     mode: string;
     interactions?: boolean;
   } | null>(null);
-  const setPerformanceConfig = performanceConfigState.set;
-  let performanceConfig = $derived(performanceConfigState.value);
   const performanceStarted = { current: false };
   const performanceReported = { current: false };
   const performanceRescanned = { current: false };
@@ -62,34 +53,23 @@ export default function createApp() {
   let performanceMapReady = $state.raw(false);
   let performanceMapQueryPending = $state.raw(false);
   let performanceMapQueryEpoch = 0;
-  const performanceEventsReadyState = rawState(!performanceBuild);
-  const setPerformanceEventsReady = performanceEventsReadyState.set;
-  let performanceEventsReady = $derived(performanceEventsReadyState.value);
-  const performanceMapScanState = rawState<string | null>(null);
-  const setPerformanceMapScan = performanceMapScanState.set;
-  let performanceMapScan = $derived(performanceMapScanState.value);
+  let performanceEventsReady = $state.raw(!performanceBuild);
+  let performanceMapScan = $state.raw<string | null>(null);
   onMount(() => {
     if (!performanceBuild) return;
     const receive = () =>
-      setPerformanceConfig(window.__PERFORMANCE_BENCHMARK__ ?? null);
+      (performanceConfig = window.__PERFORMANCE_BENCHMARK__ ?? null);
     receive();
     window.addEventListener("performance-config", receive);
     return () => window.removeEventListener("performance-config", receive);
   });
-  const setTargets = session.setTargets;
-  let targets = $derived(session.targets);
-  const setTarget = session.setTarget;
-  let target = $derived(session.target);
-  const setSummary = session.setSummary;
-  let summary = $derived(session.summary);
-  const setFocus = explorer.setFocus;
-  let focus = $derived(explorer.focus);
-  const setCrumbs = explorer.setCrumbs;
-  let crumbs = $derived(explorer.crumbs);
-  const setPage = explorer.setPage;
-  let page = $derived(explorer.page);
-  const setMap = explorer.setMap;
-  let map = $derived(explorer.map);
+  let targets = $state.raw<Target[]>([]);
+  let target = $state.raw<Target | null>(null);
+  let summary = $state.raw<ScanSummary | null>(null);
+  let focus = $state.raw<NodeView | null>(null);
+  let crumbs = $state.raw<NodeView[]>([]);
+  let page = $state.raw<Page>({ items: [], total: 0 });
+  let map = $state.raw<NodeView[]>([]);
   let mapColorMode = $state<"folder" | "fileType">("folder");
   const queryFileTypeMap = latestOnly();
   const queryMap = latestOnly();
@@ -98,14 +78,10 @@ export default function createApp() {
   function changeMapColorMode(value: "folder" | "fileType") {
     mapColorMode = value;
   }
-  const setSelection = explorer.setSelection;
-  let selection = $derived(explorer.selection);
-  const setMode = explorer.setMode;
-  let mode = $derived(explorer.mode);
-  const setQuery = explorer.setQuery;
-  let query = $derived(explorer.query);
-  const setOffset = explorer.setOffset;
-  let offset = $derived(explorer.offset);
+  let selection = $state.raw<NodeView[]>([]);
+  let mode = $state.raw<"treemap" | "sunburst">("sunburst");
+  let query = $state.raw("");
+  let offset = $state.raw(0);
   // A failure with no dedicated place shows in a modal: plain words first, the raw error as a detail.
   let error = $state.raw("");
   let errorContext = $state.raw<{ title: string; reason: string } | null>(null);
@@ -124,20 +100,15 @@ export default function createApp() {
   const scans = createScanSlots(tauriScanPort, { begin: beginStart });
   // Set by what holds the session (trash review, cleanup). A start in flight blocks only its own
   // slot (`scans.busy`), so a stalled disk never freezes the rest of the UI.
-  const opBusy = rawState(false);
-  const setBusy = opBusy.set;
-  const busy = $derived(opBusy.value);
-  const setCancelling = session.setCancelling;
-  let cancelling = $derived(session.cancelling);
-  const trashState = rawState<{
+  let busy = $state.raw(false);
+  let cancelling = $state.raw(false);
+  let trash = $state.raw<{
     // The scan the review was made for; commit must target it, not whatever is on screen later.
     scanId: string;
     queued?: boolean;
     token: string;
     items: NodeView[];
   } | null>(null);
-  const setTrash = trashState.set;
-  let trash = $derived(trashState.value);
   let queueOpen = $state(false);
   // Home shows the welcome page without discarding the loaded or running scan.
   let homeOpen = $state(false);
@@ -172,7 +143,7 @@ export default function createApp() {
         updateReportQueue(id, state, view, error);
     },
     mutated() {
-      if (trash?.queued) setTrash(null);
+      if (trash?.queued) trash = null;
       clearQueueOpen = false;
     },
     selection: () => selection,
@@ -225,15 +196,15 @@ export default function createApp() {
       // A disk is already in the Disks list; its rescan uses the same slot, so it gets no second row.
       const disk = location.volume ? listedDisk(location.path) : undefined;
       if (!disk)
-        setTargets((old) => [
+        targets = [
           // The backend gives a recreated folder a new id and drops the old one.
-          ...old.filter(
+          ...targets.filter(
             (t) =>
               t.id !== location.id && (t.volume || t.path !== location.path),
           ),
           location,
-        ]);
-      setTarget(disk ?? location);
+        ];
+      target = disk ?? location;
       queueOpen = false;
       // Not awaited: a sleeping disk must not hold the queue busy.
       void start(location);
@@ -249,26 +220,23 @@ export default function createApp() {
     )
       return;
     quickLook.dismiss();
-    setBusy(true);
+    busy = true;
     const scanId = summary.scanId;
     try {
       const review = await cleanupQueue.prepare(scanId);
       // The user may have left the queue page while the review loaded.
       if (queueOpen && summary?.scanId === scanId)
-        setTrash({ ...review, scanId, queued: true });
+        trash = { ...review, scanId, queued: true };
     } catch (e) {
       fail(e);
     } finally {
-      setBusy(false);
+      busy = false;
     }
   }
   const quickLook = createQuickLook();
-  const setFilters = explorer.setFilters;
-  let filters = $derived(explorer.filters);
-  const setDebouncedQuery = explorer.setDebouncedQuery;
-  let debouncedQuery = $derived(explorer.debouncedQuery);
-  const setListLoading = explorer.setListLoading;
-  let listLoading = $derived(explorer.listLoading);
+  let filters = $state.raw<ExplorerFilter>({ ...emptyFilter });
+  let debouncedQuery = $state.raw("");
+  let listLoading = $state.raw(false);
   const listRequest = { current: 0 };
   const filtered = $derived(filterActive(filters));
   const filterKey = $derived(JSON.stringify(filters));
@@ -311,40 +279,36 @@ export default function createApp() {
     listScroll = 0;
     quickLook.dismiss();
     ++listRequest.current;
-    setPage({ items: [], total: 0 });
-    setListLoading(true);
+    page = { items: [], total: 0 };
+    listLoading = true;
   }
   function changeFilters(value: ExplorerFilter) {
     if (JSON.stringify(value) === filterKey) return;
     clearResultsReturn();
     invalidateList();
-    setFilters(value);
-    setOffset(0);
-    setSelection([]);
+    filters = value;
+    offset = 0;
+    selection = [];
   }
   function changeQuery(value: string) {
     if (value === query) return;
     clearResultsReturn();
     invalidateList();
-    setQuery(value);
-    setOffset(0);
-    setSelection([]);
+    query = value;
+    offset = 0;
+    selection = [];
   }
   $effect(() => {
     [query];
     return untrack(() => {
-      const timer = setTimeout(() => setDebouncedQuery(query), 250);
+      const timer = setTimeout(() => (debouncedQuery = query), 250);
       return () => clearTimeout(timer);
     });
   });
-  const setSort = explorer.setSort;
-  let sort = $derived(explorer.sort);
-  const setSortReady = explorer.setSortReady;
-  let sortReady = $derived(explorer.sortReady);
-  const setSortSaving = explorer.setSortSaving;
-  let sortSaving = $derived(explorer.sortSaving);
-  const setSortWarning = explorer.setSortWarning;
-  let sortWarning = $derived(explorer.sortWarning);
+  let sort = $state.raw<SortOrder>("sizeDescending");
+  let sortReady = $state.raw(false);
+  let sortSaving = $state.raw(false);
+  let sortWarning = $state.raw<string | null>(null);
   const sortLock = { current: false };
   const sortEpoch = { current: 0 };
   const sortChoice = { current: 0 };
@@ -357,28 +321,25 @@ export default function createApp() {
       sortEpoch.current === epoch &&
       sortChoice.current === choice;
     if (!isTauri()) {
-      setSortReady(true);
+      sortReady = true;
       return;
     }
     invoke<ExplorerPreferences>("get_explorer_preferences")
       .then((preferences) => {
         if (!current()) return;
         if (!preferences || !isSortOrder(preferences.sort)) {
-          setSortWarning(
-            "Could not load the saved sort order. Using largest first.",
-          );
+          sortWarning =
+            "Could not load the saved sort order. Using largest first.";
         } else {
-          setSort(preferences.sort);
-          setSortWarning(preferences.warning ?? null);
+          sort = preferences.sort;
+          sortWarning = preferences.warning ?? null;
         }
-        setSortReady(true);
+        sortReady = true;
       })
       .catch((failure) => {
         if (!current()) return;
-        setSortWarning(
-          `Could not load the saved sort order. Using largest first. ${String(failure)}`,
-        );
-        setSortReady(true);
+        sortWarning = `Could not load the saved sort order. Using largest first. ${String(failure)}`;
+        sortReady = true;
       });
     return () => {
       cancelled = true;
@@ -388,7 +349,7 @@ export default function createApp() {
   async function persistSort(order: SortOrder) {
     if (sortLock.current || !sortReady) return;
     sortLock.current = true;
-    setSortSaving(true);
+    sortSaving = true;
     const epoch = sortEpoch.current;
     try {
       const preferences = await invoke<ExplorerPreferences>(
@@ -398,16 +359,14 @@ export default function createApp() {
       if (!preferences || preferences.sort !== order)
         throw new Error("Invalid preference response");
       if (epoch === sortEpoch.current && sort === order)
-        setSortWarning(preferences.warning ?? null);
+        sortWarning = preferences.warning ?? null;
     } catch (failure) {
       if (epoch === sortEpoch.current && sort === order)
-        setSortWarning(
-          `Sort order is on now, but it couldn't be saved. ${String(failure)}`,
-        );
+        sortWarning = `Sort order is on now, but it couldn't be saved. ${String(failure)}`;
     } finally {
       sortLock.current = false;
       if (epoch === sortEpoch.current) {
-        setSortSaving(false);
+        sortSaving = false;
         // Returning can restore an earlier choice while the browse choice saves.
         // Serialize that final choice after the outstanding write completes.
         if (sort !== order) void persistSort(sort);
@@ -419,23 +378,15 @@ export default function createApp() {
       return;
     ++sortChoice.current;
     invalidateList();
-    setSort(order);
-    setOffset(0);
-    setSelection([]);
+    sort = order;
+    offset = 0;
+    selection = [];
     void persistSort(order);
   }
-  const accessState = rawState<FullDiskAccess | null>(null);
-  const setAccess = accessState.set;
-  let access = $derived(accessState.value);
-  const accessOpenState = rawState(false);
-  const setAccessOpen = accessOpenState.set;
-  let accessOpen = $derived(accessOpenState.value);
-  const accessBusyState = rawState(false);
-  const setAccessBusy = accessBusyState.set;
-  let accessBusy = $derived(accessBusyState.value);
-  const accessErrorState = rawState("");
-  const setAccessError = accessErrorState.set;
-  let accessError = $derived(accessErrorState.value);
+  let access = $state.raw<FullDiskAccess | null>(null);
+  let accessOpen = $state.raw(false);
+  let accessBusy = $state.raw(false);
+  let accessError = $state.raw("");
   // The user came back from System Settings and Full Disk Access is still off.
   let accessReturned = $state.raw(false);
   // The dialog was opened because a scan is waiting on Full Disk Access.
@@ -445,8 +396,7 @@ export default function createApp() {
     target: Target | null;
     // The blocked request was Scan all disks: "Scan anyway" runs it again for every disk.
     scanAll?: true;
-  } | null =
-    null;
+  } | null = null;
   const generation = { current: 0 };
   const navigation = $state({ current: 0 });
   // The Scan target of the scan on screen.
@@ -487,7 +437,7 @@ export default function createApp() {
       return true;
     }
     quickLook.dismiss();
-    setSelection([node]);
+    selection = [node];
     return quickLook.open({ scanId: summary!.scanId, nodeId: node.id });
   }
   const previewNode = $derived(selection.length === 1 ? selection[0] : null);
@@ -519,19 +469,19 @@ export default function createApp() {
     ++generation.current;
     ++navigation.current;
     activeId.current = scanId;
-    setSummary(s);
-    setFocus(null);
-    setCrumbs([]);
-    setSelection([]);
-    setMap([]);
-    setPage({ items: [], total: 0 });
-    setOffset(0);
-    setQuery("");
-    setDebouncedQuery("");
-    setFilters({ ...emptyFilter });
+    summary = s;
+    focus = null;
+    crumbs = [];
+    selection = [];
+    map = [];
+    page = { items: [], total: 0 };
+    offset = 0;
+    query = "";
+    debouncedQuery = "";
+    filters = { ...emptyFilter };
     ++listRequest.current;
-    setTrash(null);
-    setCancelling(false);
+    trash = null;
+    cancelling = false;
   }
   let toast = $state.raw<AppToast | null>(null);
   let toastId = 0;
@@ -542,22 +492,22 @@ export default function createApp() {
     toast = null;
   }
   async function loadAccess(current = () => true) {
-    setAccessBusy(true);
-    setAccessError("");
+    accessBusy = true;
+    accessError = "";
     try {
       const info = await invoke<FullDiskAccess>("full_disk_access_status");
-      if (current()) setAccess(info);
+      if (current()) access = info;
       return info;
     } catch (e) {
-      if (current()) setAccessError(String(e));
+      if (current()) accessError = String(e);
     } finally {
-      if (current()) setAccessBusy(false);
+      if (current()) accessBusy = false;
     }
   }
   function openAccess() {
     quickLook.dismiss();
-    setAccessError("");
-    setAccessOpen(true);
+    accessError = "";
+    accessOpen = true;
     void loadAccess();
   }
   function closeAccess() {
@@ -565,8 +515,8 @@ export default function createApp() {
     accessPrompt = false;
     openedSettings = false;
     accessReturned = false;
-    setAccessError("");
-    setAccessOpen(false);
+    accessError = "";
+    accessOpen = false;
   }
   // Only starting a scan waits on Full Disk Access; unknown never blocks.
   function blockScan(request: NonNullable<typeof blockedScan>) {
@@ -574,7 +524,7 @@ export default function createApp() {
     accessPrompt = true;
     openedSettings = false;
     accessReturned = false;
-    setAccessOpen(true);
+    accessOpen = true;
   }
   function scanBlocked(request: NonNullable<typeof blockedScan>) {
     if (access?.status !== "off" || access.scanAnyway) return false;
@@ -583,15 +533,15 @@ export default function createApp() {
   }
   async function scanAnyway() {
     const request = blockedScan;
-    setAccessBusy(true);
-    setAccessError("");
+    accessBusy = true;
+    accessError = "";
     try {
-      setAccess(await invoke<FullDiskAccess>("scan_without_full_disk_access"));
+      access = await invoke<FullDiskAccess>("scan_without_full_disk_access");
     } catch (e) {
-      setAccessError(String(e));
+      accessError = String(e);
       return;
     } finally {
-      setAccessBusy(false);
+      accessBusy = false;
     }
     closeAccess();
     if (request?.scanAll) await scanAllDisks();
@@ -602,7 +552,7 @@ export default function createApp() {
       await invoke("open_full_disk_access");
       openedSettings = true;
     } catch (e) {
-      setAccessError(String(e));
+      accessError = String(e);
     }
   }
   async function recheckAccess() {
@@ -618,14 +568,14 @@ export default function createApp() {
   async function relaunch() {
     if (quickLook.isPending()) return;
     quickLook.dismiss();
-    setAccessBusy(true);
-    setAccessError("");
+    accessBusy = true;
+    accessError = "";
     try {
       await invoke("restart_app");
     } catch (e) {
-      setAccessError(String(e));
+      accessError = String(e);
     } finally {
-      setAccessBusy(false);
+      accessBusy = false;
     }
   }
   async function chooseFolder(): Promise<Target | null | void> {
@@ -651,17 +601,15 @@ export default function createApp() {
       const chosen = await invoke<Target | null>("choose_folder");
       if (!current()) return;
       if (chosen) {
-        setTarget(chosen);
-        setTargets((previous) =>
-          previous.some((item) => item.id === chosen.id)
-            ? previous
-            : [
-                ...previous.filter(
-                  (item) => item.volume || item.path !== chosen.path,
-                ),
-                chosen,
-              ],
-        );
+        target = chosen;
+        targets = targets.some((item) => item.id === chosen.id)
+          ? targets
+          : [
+              ...targets.filter(
+                (item) => item.volume || item.path !== chosen.path,
+              ),
+              chosen,
+            ];
       }
       return chosen;
     } catch (e) {
@@ -695,9 +643,9 @@ export default function createApp() {
       invoke<Target[]>("discover_targets")
         .then((t) => {
           if (cancelled) return;
-          setTargets(t);
+          targets = t;
           // The startup disk (first volume) is selected at launch.
-          setTarget(t.find((item) => item.volume) ?? t[0] ?? null);
+          target = t.find((item) => item.volume) ?? t[0] ?? null;
         })
         .catch((e) => {
           if (!cancelled) fail(e);
@@ -734,7 +682,10 @@ export default function createApp() {
         );
         if (cancelled || busy) return;
         // A volume still in the mount table but missing from `found` failed to register this time; it is not ejected.
-        const present = new Set([...found.map((item) => item.path), ...mounted]);
+        const present = new Set([
+          ...found.map((item) => item.path),
+          ...mounted,
+        ]);
         // A refused scan means another volume now sits at the path: it replaces the old target, so a scan uses its new id.
         const fresh = new Map(found.map((item) => [item.path, item]));
         const kept = targets
@@ -744,7 +695,8 @@ export default function createApp() {
           );
         const added = found.filter(
           // Only volumes count: a chosen folder may share a disk's path.
-          (item) => !targets.some((old) => old.volume && old.path === item.path),
+          (item) =>
+            !targets.some((old) => old.volume && old.path === item.path),
         );
         const next = [...kept, ...added];
         const startup =
@@ -757,15 +709,14 @@ export default function createApp() {
         );
         const swapped = rediscover;
         rediscover = false;
-        setTargets(next);
+        targets = next;
         if (swapped && liveTarget?.volume)
           liveTarget = fresh.get(liveTarget.path) ?? liveTarget;
         dropEjected(gone, startup);
         if (target?.volume && !kept.includes(target))
-          setTarget(
+          target =
             kept.find((item) => item.volume && item.path === target?.path) ??
-              startup,
-          );
+            startup;
       } catch {
         // The next tick tries again.
       } finally {
@@ -815,7 +766,7 @@ export default function createApp() {
         if (cancelled) off();
         else {
           unsubscribe = off;
-          setPerformanceEventsReady(true);
+          performanceEventsReady = true;
         }
       })
       .catch((e) => {
@@ -851,7 +802,7 @@ export default function createApp() {
       );
       if (!location) return;
       performanceStarted.current = true;
-      setTarget(location);
+      target = location;
       void start(location);
     });
   });
@@ -928,7 +879,8 @@ export default function createApp() {
     // Selecting or opening another place since the press leaves the view to that place.
     const pressed = { id: target?.id, home: homeOpen, queue: queueOpen };
     let taken = false;
-    const samePlace = () => g === generation.current && target?.id === pressed.id;
+    const samePlace = () =>
+      g === generation.current && target?.id === pressed.id;
     const performanceClock = performanceBuild
       ? emit("performance-start")
       : undefined;
@@ -971,24 +923,24 @@ export default function createApp() {
         ++navigation.current;
         activeId.current = id;
         ++listRequest.current;
-        setSummary(null);
-        setCancelling(false);
-        setTrash(null);
-        setFocus(null);
-        setCrumbs([]);
-        setSelection([]);
-        setMap([]);
-        setPage({ items: [], total: 0 });
-        setOffset(0);
-        setQuery("");
-        setDebouncedQuery("");
-        setFilters({ ...emptyFilter });
+        summary = null;
+        cancelling = false;
+        trash = null;
+        focus = null;
+        crumbs = [];
+        selection = [];
+        map = [];
+        page = { items: [], total: 0 };
+        offset = 0;
+        query = "";
+        debouncedQuery = "";
+        filters = { ...emptyFilter };
       },
       event(s, restarted) {
         // Progress from a scan whose results are not on screen only updates its slot.
         if (activeId.current !== s.scanId) return;
         if (s.state === "running") performanceProgressUpdates++;
-        if (s.state !== "running") setCancelling(false);
+        if (s.state !== "running") cancelling = false;
         if (
           s.state === "cancelled" &&
           !restarted &&
@@ -999,9 +951,11 @@ export default function createApp() {
               ? "Scan cancelled. Partial results are shown."
               : `Scan of ${liveTarget?.name ?? "the disk"} cancelled.`,
           );
-        setSummary(s);
+        summary = s;
       },
-      fetched: setSummary,
+      fetched: (fetched) => {
+        summary = fetched;
+      },
       failed(e) {
         const accessOff = String(e).includes("FULL_DISK_ACCESS_OFF");
         // Scan all reports its failures together, but a disk swapped at its path still needs rediscovery.
@@ -1011,11 +965,11 @@ export default function createApp() {
         if (!how.batch && g !== generation.current) return true;
         if (accessOff) {
           // The backend probed again and found access off: show that state. Scan all asks once.
-          setAccess((old) => ({
+          access = {
             status: "off",
             scanAnyway: false,
-            appPath: old?.appPath ?? "",
-          }));
+            appPath: access?.appPath ?? "",
+          };
           if (!how.batch || !blockedScan) {
             blockScan(blocking);
             void loadAccess();
@@ -1040,7 +994,8 @@ export default function createApp() {
       id: target?.id,
       home: homeOpen,
       // The disk whose results are on screen, else the selected one.
-      key: (exploring ? displayedSlot : null) ?? (target ? slotKey(target) : null),
+      key:
+        (exploring ? displayedSlot : null) ?? (target ? slotKey(target) : null),
     };
     const failures = await scans.scanAll(() => disks, {
       takeView: (key) =>
@@ -1081,8 +1036,8 @@ export default function createApp() {
         .then((n) => {
           // Progress events re-run this effect every ~100 ms; a reply for the same scan still applies until focus is set.
           if (!ignore || (summary?.scanId === snapshot.scanId && !focus)) {
-            setFocus(n);
-            setCrumbs([n]);
+            focus = n;
+            crumbs = [n];
           }
         })
         .catch((e) => {
@@ -1125,9 +1080,7 @@ export default function createApp() {
           .then((nodes) => {
             if (!current()) return;
             const fresh = new Map(nodes.map((node) => [node.id, node]));
-            setSelection((old) =>
-              old.map((node) => fresh.get(node.id) ?? node),
-            );
+            selection = selection.map((node) => fresh.get(node.id) ?? node);
           })
           .catch((failure) => {
             if (current()) fail(failure);
@@ -1163,7 +1116,7 @@ export default function createApp() {
         nodeId = focus.id;
       invoke<NodeView>("get_node", { scanId, nodeId })
         .then((node) => {
-          if (!ignore) setFocus(node);
+          if (!ignore) focus = node;
         })
         .catch((failure) => {
           if (!ignore) fail(failure);
@@ -1190,13 +1143,13 @@ export default function createApp() {
                 }
                 performanceMapQueryPending = false;
               }
-              setMap(result.nodes);
+              map = result.nodes;
               if (
                 performanceBuild &&
                 snapshot.state === "completed" &&
                 snapshot.scanPhase === "done"
               )
-                setPerformanceMapScan(scanId);
+                performanceMapScan = scanId;
             }
           })
           .catch((failure) => {
@@ -1231,7 +1184,7 @@ export default function createApp() {
     return untrack(() => {
       const request = ++listRequest.current;
       if (!summary || !focus || !sortReady) return;
-      setListLoading(true);
+      listLoading = true;
       // Preserve valid rows during background scan revisions; user changes
       // synchronously clear rows through invalidateList before requesting again.
       // Raw text changes invalidate prior results immediately, before debounce.
@@ -1269,17 +1222,17 @@ export default function createApp() {
               // live refresh. Request the last valid page without an inverted range.
               quickLook.dismiss();
               ++listRequest.current;
-              setPage({ items: [], total: result.total });
-              setOffset(lastOffset);
+              page = { items: [], total: result.total };
+              offset = lastOffset;
               return;
             }
-            setPage(result);
+            page = result;
           })
           .catch((failure) => {
             if (current()) fail(failure);
           })
           .finally(() => {
-            if (current()) setListLoading(false);
+            if (current()) listLoading = false;
           });
       });
       return () => {
@@ -1325,7 +1278,7 @@ export default function createApp() {
         id = parent.parentId;
       }
       if (activeId.current === scanId && navigation.current === nav)
-        setCrumbs(chain);
+        crumbs = chain;
     } catch (e) {
       if (activeId.current === scanId && navigation.current === nav) fail(e);
     }
@@ -1336,16 +1289,16 @@ export default function createApp() {
   ) {
     const nav = ++navigation.current;
     invalidateList();
-    setFocus(snapshot.focus);
-    setCrumbs(snapshot.crumbs.length ? [...snapshot.crumbs] : [snapshot.focus]);
-    setQuery(snapshot.query);
-    setDebouncedQuery(snapshot.query);
-    setFilters({ ...snapshot.filters });
+    focus = snapshot.focus;
+    crumbs = snapshot.crumbs.length ? [...snapshot.crumbs] : [snapshot.focus];
+    query = snapshot.query;
+    debouncedQuery = snapshot.query;
+    filters = { ...snapshot.filters };
     const sortChanged = sort !== snapshot.sort;
     ++sortChoice.current;
-    setSort(snapshot.sort);
-    setOffset(snapshot.offset);
-    setSelection([...snapshot.selection]);
+    sort = snapshot.sort;
+    offset = snapshot.offset;
+    selection = [...snapshot.selection];
     listScroll = snapshot.scroll;
     listScrollRestore = { id: ++scrollRestoreId, top: snapshot.scroll };
     resultsReturn = returnPoint;
@@ -1402,13 +1355,13 @@ export default function createApp() {
     const scanId = summary.scanId;
     const nav = ++navigation.current;
     invalidateList();
-    setFocus(n);
-    setOffset(0);
-    setQuery("");
-    setDebouncedQuery("");
-    setFilters({ ...emptyFilter });
+    focus = n;
+    offset = 0;
+    query = "";
+    debouncedQuery = "";
+    filters = { ...emptyFilter };
     ++listRequest.current;
-    setSelection([n]);
+    selection = [n];
     await loadCrumbs(n, scanId, nav);
   }
   function returnToResults() {
@@ -1437,19 +1390,17 @@ export default function createApp() {
       selection[0].id !== nodes[0].id
     )
       quickLook.dismiss();
-    setSelection(nodes);
+    selection = nodes;
   }
   function select(n: NodeView, multi = false) {
     if (n.kind === "aggregate") return;
     if (multi || selection.length !== 1 || selection[0].id !== n.id)
       quickLook.dismiss();
-    setSelection((old) =>
-      multi
-        ? old.some((x) => x.id === n.id)
-          ? old.filter((x) => x.id !== n.id)
-          : [...old, n]
-        : [n],
-    );
+    selection = multi
+      ? selection.some((x) => x.id === n.id)
+        ? selection.filter((x) => x.id !== n.id)
+        : [...selection, n]
+      : [n];
   }
   async function prepareTrash() {
     if (
@@ -1462,18 +1413,18 @@ export default function createApp() {
     )
       return;
     quickLook.dismiss();
-    setBusy(true);
+    busy = true;
     const scanId = summary.scanId;
     try {
       const review = await invoke<{ token: string; items: NodeView[] }>(
         "prepare_trash",
         { scanId, nodeIds: selection.map((n) => n.id) },
       );
-      if (summary?.scanId === scanId) setTrash({ ...review, scanId });
+      if (summary?.scanId === scanId) trash = { ...review, scanId };
     } catch (e) {
       fail(e);
     } finally {
-      setBusy(false);
+      busy = false;
     }
   }
   async function commitTrash() {
@@ -1484,7 +1435,7 @@ export default function createApp() {
     };
     const scanId = review.scanId;
     const rescanTarget = liveTarget;
-    setBusy(true);
+    busy = true;
     try {
       const result = await invoke<{ staleScanIds?: string[] } | null>(
         review.queued ? "commit_cleanup_queue" : "commit_trash",
@@ -1503,7 +1454,7 @@ export default function createApp() {
         result,
       );
       cleanupReport = report;
-      setTrash(null);
+      trash = null;
       void refreshQueue();
       // An unconfirmed reply may still have moved files, so it invalidates too.
       if (
@@ -1515,11 +1466,11 @@ export default function createApp() {
         clearNavigationHistory();
         // A cleanup that moved anything invalidates these results before a replacement scan starts.
         scans.drop(scanId);
-        setSummary(null);
+        summary = null;
         void start(rescanTarget);
       }
     } catch (e) {
-      setTrash(null);
+      trash = null;
       cleanupReport = {
         ...cleanupResult(
           ++cleanupReportId,
@@ -1531,7 +1482,7 @@ export default function createApp() {
       };
       void refreshQueue();
     } finally {
-      setBusy(false);
+      busy = false;
     }
   }
   const inspected = $derived(selection[selection.length - 1] || focus);
@@ -1540,7 +1491,7 @@ export default function createApp() {
       focus &&
       focus.id !== summary.rootId &&
       crumbs[0]?.id === summary.rootId
-      ? crumbs.find((node) => node.id === focus.parentId)
+      ? crumbs.find((node) => node.id === focus?.parentId)
       : undefined,
   );
   // A selected target describes the next scan, never the identity of existing results.
@@ -1591,7 +1542,7 @@ export default function createApp() {
   // A disk without a scan opens the welcome page with it selected.
   function openDisk(place: Target) {
     if (sessionBlocked) return;
-    setTarget(place);
+    target = place;
     if (scans.slots[slotKey(place)]) showSlot(slotKey(place));
     else showHome();
   }
@@ -1611,10 +1562,10 @@ export default function createApp() {
     ++generation.current;
     activeId.current = null;
     liveTarget = null;
-    setSelection([]);
-    setSummary(null);
-    setTrash(null);
-    if (wasShown) setTarget(startup);
+    selection = [];
+    summary = null;
+    trash = null;
+    if (wasShown) target = startup;
     void refreshQueue();
   }
   // The explorer (map, file list, inspector) is what the user is looking at.
@@ -1950,47 +1901,47 @@ export default function createApp() {
     get accessReturned() {
       return accessReturned;
     },
-    get setTargets() {
-      return setTargets;
+    setTargets: (value: Target[]) => {
+      targets = value;
     },
-    get setTarget() {
-      return setTarget;
+    setTarget: (value: Target | null) => {
+      target = value;
     },
-    get setSummary() {
-      return setSummary;
+    setSummary: (value: ScanSummary | null) => {
+      summary = value;
     },
-    get setFocus() {
-      return setFocus;
+    setFocus: (value: NodeView | null) => {
+      focus = value;
     },
-    get setCrumbs() {
-      return setCrumbs;
+    setCrumbs: (value: NodeView[]) => {
+      crumbs = value;
     },
-    get setSelection() {
-      return setSelection;
+    setSelection: (value: NodeView[]) => {
+      selection = value;
     },
-    get setMode() {
-      return setMode;
+    setMode: (value: "treemap" | "sunburst") => {
+      mode = value;
     },
-    get setOffset() {
-      return setOffset;
+    setOffset: (value: number) => {
+      offset = value;
     },
     get setError() {
       return setError;
     },
-    get setBusy() {
-      return setBusy;
+    setBusy: (value: boolean) => {
+      busy = value;
     },
-    get setCancelling() {
-      return setCancelling;
+    setCancelling: (value: boolean) => {
+      cancelling = value;
     },
-    get setTrash() {
-      return setTrash;
+    setTrash: (value: typeof trash) => {
+      trash = value;
     },
-    get setAccessOpen() {
-      return setAccessOpen;
+    setAccessOpen: (value: boolean) => {
+      accessOpen = value;
     },
-    get setAccessError() {
-      return setAccessError;
+    setAccessError: (value: string) => {
+      accessError = value;
     },
     get quickLook() {
       return quickLook;
