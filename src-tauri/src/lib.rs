@@ -220,7 +220,11 @@ impl Session {
             .unwrap_or(self.workers)
     }
     fn summary(&self) -> Summary {
-        let s = self.store.read().unwrap();
+        self.summary_of(&self.store.read().unwrap())
+    }
+    /// `summary` of `s`, the store this session's guard already holds: reading the store again on the same thread
+    /// can deadlock once a writer is waiting.
+    fn summary_of(&self, s: &Snapshot) -> Summary {
         if s.state != ScanState::Running {
             let _ = self.completed_at_ms.compare_exchange(
                 0,
@@ -572,18 +576,28 @@ fn end_panicked_scan(s: &Session, channel: &impl Progress) {
     s.finishing.store(false, Ordering::Release);
     channel.report(s.summary());
 }
+/// Why a finished scan cannot start the next rescan, when its accounting is the reason. It asks the test
+/// `baseline::eligible` starts with, so no case of it ends without a word.
+fn reuse_note(snapshot: &Snapshot) -> Option<&'static str> {
+    (!snapshot.incremental_accounting_eligible()).then_some("Clone sharing or uncertain accounting requires a full scan; incremental reuse is disabled for these results.")
+}
 /// The volume of each region a scan walked, read once as the scan ends (never from code the UI polls), keyed by
 /// the region's root node. A region starts at the scan root, at a device change (a mount) and at a firmlink: a scan
 /// of "/" spans the System and Data volumes under one `st_dev`, so devices alone would give Data items the System
 /// volume. Excluded nodes are skipped, so no mount the scan did not enter is touched; a region whose volume cannot
 /// be read is left out, and its items then fail closed against the enclosing region's volume.
-fn scan_volumes(snapshot: &Snapshot) -> HashMap<u32, safety::Volume> {
+fn read_volumes(regions: Vec<(u32, PathBuf)>) -> HashMap<u32, safety::Volume> {
+    regions
+        .into_iter()
+        .filter_map(|(id, path)| Some((id, safety::Volume::read(&path).ok()?)))
+        .collect()
+}
+/// The path of each region's root node, taken from the results so that `read_volumes` touches the disk (a mount
+/// that hangs) with no lock on them.
+fn volume_paths(snapshot: &Snapshot) -> Vec<(u32, PathBuf)> {
     volume_regions(snapshot, &disk_scan::firmlink_paths())
         .into_iter()
-        .filter_map(|id| {
-            let path = snapshot.path(id).ok()?;
-            Some((id, safety::Volume::read(&path).ok()?))
-        })
+        .filter_map(|id| Some((id, snapshot.path(id).ok()?)))
         .collect()
 }
 fn volume_regions(snapshot: &Snapshot, firmlinks: &[PathBuf]) -> Vec<u32> {
@@ -743,7 +757,7 @@ fn run_scan(
                 if !s.begin_caching() {
                     return None;
                 }
-                channel.report(s.summary());
+                channel.report(s.summary_of(&snapshot));
                 s.completed_at_ms.store(now_ms(), Ordering::Release);
                 Some(cache_store::ScanMetadata {
                     started_at_ms: s.started_at_ms,
@@ -760,19 +774,19 @@ fn run_scan(
             *s.cache_token.lock().unwrap() = Some(published.token);
         }
     }
-    {
+    let (reuse_note, regions) = {
         let snapshot = s.store.read().unwrap();
-        if snapshot.accounting.shared || !snapshot.accounting.checks_complete {
-            s.scan_details.lock().unwrap().fallback_reason = Some(
-                "Clone sharing or uncertain accounting requires a full scan; incremental reuse is disabled for these results.".into()
-            );
-        }
+        (
+            reuse_note(&snapshot),
+            (snapshot.state == ScanState::Completed).then(|| volume_paths(&snapshot)),
+        )
+    };
+    if let Some(note) = reuse_note {
+        s.scan_details.lock().unwrap().fallback_reason = Some(note.into());
     }
-    {
-        let snapshot = s.store.read().unwrap();
-        if snapshot.state == ScanState::Completed {
-            let _ = s.volumes.set(scan_volumes(&snapshot));
-        }
+    // After the results are released: reading a volume can hang on a stuck mount.
+    if let Some(regions) = regions {
+        let _ = s.volumes.set(read_volumes(regions));
     }
     s.store.write().unwrap().stats.elapsed_ms = pipeline_started.elapsed().as_millis() as u64;
     s.scan_details.lock().unwrap().phase = "done".into();
@@ -1622,18 +1636,25 @@ async fn reveal_node(
 ) -> Result<(), String> {
     let _activity = Activity::begin(&state.activity)?;
     let s = state.scans.find(&scan_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _held = s.hold(Need::Live)?;
-        // Copied out so the store is not read-locked while Finder opens, which can take seconds.
-        let path = {
-            let snapshot = s.store.read().unwrap();
-            let n = snapshot.node(node_id).ok_or("Unknown node")?;
-            n.path()?
-        };
-        platform::reveal(&path)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || reveal_in(&s, node_id, platform::reveal))
+        .await
+        .map_err(|e| e.to_string())?
+}
+/// Shows node `node_id` of `s` with `reveal`, once the item and its ancestors on disk are still what the scan
+/// recorded: a path now holding another item is not shown as this one.
+fn reveal_in(
+    s: &Session,
+    node_id: u32,
+    reveal: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let _held = s.hold(Need::Live)?;
+    // Copied out so the store is not read-locked while Finder opens, which can take seconds.
+    let item = {
+        let snapshot = s.store.read().map_err(|e| e.to_string())?;
+        preview_validation::Item::for_reveal(&snapshot, node_id, &s.root_ancestors)?
+    };
+    item.verify_paths()?;
+    reveal(&item.path)
 }
 #[tauri::command]
 async fn prepare_trash(

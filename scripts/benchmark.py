@@ -9,9 +9,9 @@ import platform
 import statistics
 import subprocess
 import time
+from refs import REFS
 
 ROOT = Path(__file__).resolve().parents[1]
-OPENDISK_REF = "f7551cf21a5c35a963c607401ba5705ec0869b64"
 
 
 def summarize(runs):
@@ -73,7 +73,7 @@ def run(app, scope, path, phase, number, args):
             if app == "hahakigami" and str(raw.get("state", "")).lower() != "completed":
                 record["success"] = False
                 record["error"] = f"Unexpected scan state: {raw.get('state')}"
-    except (subprocess.TimeoutExpired, OSError, ValueError) as error:
+    except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         record.update(success=False, error=str(error), wall_ms=(time.monotonic() - started) * 1000)
     print(f"{scope} {phase} {number}: {app} "
           f"elapsed={record.get('elapsed_ms', '?')}ms entries={record.get('entries', '?')} "
@@ -88,9 +88,14 @@ def command_output(*command):
         return None
 
 
+def rotated(items, number):
+    offset = number % len(items)
+    return items[offset:] + items[:offset]
+
+
 def file_hash(path):
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -131,7 +136,7 @@ def main():
         "swift_version": command_output("swiftc", "--version"),
         "hahakigami_git_revision": command_output("git", "-C", str(ROOT), "rev-parse", "HEAD"),
         "hahakigami_worktree_modified": bool(command_output("git", "-C", str(ROOT), "status", "--porcelain")),
-        "opendisk_ref": OPENDISK_REF, "opendisk_mode": args.opendisk_mode,
+        "opendisk_ref": REFS["OpenDisk"], "opendisk_mode": args.opendisk_mode,
         "workers": args.workers, "rounds": args.rounds,
         "binary_sha256": {"hahakigami": file_hash(args.rust_bin), "opendisk": file_hash(args.opendisk_bin)},
         "scanner_source_sha256": scanner_fingerprints(),
@@ -150,11 +155,12 @@ def main():
     for scope, path in scopes:
         for app in ["hahakigami", "opendisk"]:
             report["runs"].append(run(app, scope, path, "initial", 0, args))
+            save()
         for number in range(1, args.rounds + 1):
             order = ["opendisk", "hahakigami"] if number % 2 else ["hahakigami", "opendisk"]
             for app in order:
                 report["runs"].append(run(app, scope, path, "warm", number, args))
-    save()
+                save()
     print(json.dumps(report["scopes"], indent=2), flush=True)
 
 

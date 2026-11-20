@@ -230,6 +230,9 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .compact-sidebar .scan-track > span {
+    transition: none;
+  }
   .compact-sidebar .scan-track.indeterminate > span {
     animation: none;
     width: 100%;

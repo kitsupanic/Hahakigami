@@ -31,7 +31,7 @@ struct Benchmark {
             if let node = snapshot.treeStore.node(id: id), node.isAutoSummarized || (node.isPackage && snapshot.treeStore.children(of: id).isEmpty) { summarized += 1 }
         }
         let report: [String: Any] = [
-            "schema_version": 2, "source_ref": "df1235bfb05acb7a678718166491bcc27817d95d",
+            "schema_version": 2, "source_ref": benchmarkSourceRef,
             "comparator": "Radix", "mode": "engine", "cache": "none",
             "elapsed_ms": elapsed, "peak_rss_bytes": usage.ru_maxrss,
             "entries": snapshot.treeStore.nodeCount,

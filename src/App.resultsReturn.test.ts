@@ -710,3 +710,24 @@ it("disables Enclosing Folder for blocked views and incomplete or mismatched par
   await up();
   expect(app().focus?.id).toBe(folder.id);
 });
+it("hides the back bar and ignores the return on Home or the queue", async () => {
+  await resultPage();
+  await browse();
+  expect(container.textContent).toContain("Back to results");
+  const filters = calls("filter_nodes").length;
+  for (const [show, hide] of [
+    [() => app().showHome(), () => app().showResults()],
+    [() => app().showQueue(true), () => app().showQueue(false)],
+  ]) {
+    await act(show);
+    await flush();
+    expect(container.textContent).not.toContain("Back to results");
+    await act(() => app().returnToResults());
+    expect(app().resultsReturn).not.toBeNull();
+    expect(app().focus?.id).toBe(1);
+    expect(calls("filter_nodes")).toHaveLength(filters);
+    await act(hide);
+    await flush();
+  }
+  expect(container.textContent).toContain("Back to results");
+});

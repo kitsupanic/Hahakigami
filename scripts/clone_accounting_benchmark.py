@@ -7,7 +7,8 @@ from pathlib import Path
 import statistics
 
 from coverage_compare import compare
-from performance_suite import digest, fingerprints, run, schedule
+from benchmark import file_hash
+from performance_suite import fingerprints, run, schedule
 
 
 def normalize(result, layer):
@@ -85,7 +86,7 @@ def execute(config, output):
     helpers = [Path(__file__).resolve(), Path(__file__).with_name('performance_suite.py').resolve(),
         Path(__file__).with_name('coverage_compare.py').resolve()]
     def hashes():
-        return fingerprints(frozen) | {str(path): digest(path) for path in helpers}
+        return fingerprints(frozen) | {str(path): file_hash(path) for path in helpers}
     before = hashes()
     report = {'config': config, 'complete': False, 'hashes_before': before, 'runs': [], 'exports': [],
         'limitations': ['Warm OS caches; no cache purge.', 'Five warm samples plus separate initial observations; no timed retries or exclusions.',

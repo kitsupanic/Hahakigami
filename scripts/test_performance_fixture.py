@@ -51,6 +51,8 @@ class FixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'containing filesystem is hfs'): apfs_volume('/tmp')
         with patch('performance_fixture.subprocess.check_output', side_effect=subprocess.CalledProcessError(1,['df'])):
             with self.assertRaisesRegex(RuntimeError,'status unknown'): apfs_volume('/tmp')
+        with patch('performance_fixture.subprocess.check_output', side_effect=subprocess.TimeoutExpired(['df'],30)):
+            with self.assertRaisesRegex(RuntimeError,'status unknown'): apfs_volume('/tmp')
 
 
 class MutationIsolationTests(unittest.TestCase):

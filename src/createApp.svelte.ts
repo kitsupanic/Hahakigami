@@ -212,7 +212,16 @@ export default function createApp() {
     targets.find((t) => t.volume && t.path === path);
   function scanQueue(entryId: string) {
     if (sessionBlocked) return;
+    // The lookup can take seconds; what the user opened meanwhile keeps the view.
+    const seen = { g: generation.current, id: target?.id, trash, queueOpen };
     return cleanupQueue.scan(entryId, async (location) => {
+      if (
+        seen.g !== generation.current ||
+        seen.id !== target?.id ||
+        seen.trash !== trash ||
+        seen.queueOpen !== queueOpen
+      )
+        return;
       // A disk is already in the Disks list; its rescan uses the same slot, so it gets no second row.
       const disk = location.volume ? listedDisk(location.path) : undefined;
       if (!disk)
@@ -917,7 +926,7 @@ export default function createApp() {
     // -1 never matches the current generation, so this start never takes the view.
     let g = how.takeView ? ++generation.current : -1;
     // Selecting or opening another place since the press leaves the view to that place.
-    const pressed = { id: target?.id, home: homeOpen };
+    const pressed = { id: target?.id, home: homeOpen, queue: queueOpen };
     let taken = false;
     const samePlace = () => g === generation.current && target?.id === pressed.id;
     const performanceClock = performanceBuild
@@ -927,19 +936,32 @@ export default function createApp() {
     return {
       ready: performanceClock,
       // After taking the view, the start stops being `home` (accepted closes it).
-      current: () => (taken || homeOpen === pressed.home) && samePlace(),
+      current: () =>
+        (taken || (homeOpen === pressed.home && queueOpen === pressed.queue)) &&
+        samePlace(),
       accepted(id, replaced) {
         // The backend just replaced the scan on screen, so its id is dead: this start's scan takes its place.
-        if (replaced !== undefined && !homeOpen && activeId.current === replaced) {
+        if (
+          replaced !== undefined &&
+          !homeOpen &&
+          !queueOpen &&
+          activeId.current === replaced
+        ) {
           g = generation.current;
           pressed.id = target?.id;
           pressed.home = homeOpen;
         }
         // Only the newest start takes the view; the others update their sidebar rows.
-        if (!samePlace() || homeOpen !== pressed.home) return;
+        if (
+          !samePlace() ||
+          homeOpen !== pressed.home ||
+          queueOpen !== pressed.queue
+        )
+          return;
         taken = true;
         // A rejected target leaves the displayed workspace usable.
         homeOpen = false;
+        queueOpen = false;
         clearResultsReturn();
         clearNavigationHistory();
         liveTarget = t;
@@ -1394,6 +1416,8 @@ export default function createApp() {
     if (
       !snapshot ||
       !summary ||
+      homeOpen ||
+      queueOpen ||
       snapshot.scanId !== summary.scanId ||
       activeId.current !== snapshot.scanId ||
       sessionBlocked ||
@@ -1733,7 +1757,9 @@ export default function createApp() {
       return exploring;
     },
     get toggleSidebar() {
-      return !accessOpen && !trash && !clearQueueOpen;
+      return (
+        !accessOpen && !trash && !clearQueueOpen && !cleanupReport && !error
+      );
     },
     get toggleFileList() {
       return exploring;
@@ -1796,6 +1822,9 @@ export default function createApp() {
     },
     get queueBusy() {
       return queueBusy;
+    },
+    get queueTargeting() {
+      return cleanupQueue.targeting;
     },
     get queueError() {
       return cleanupQueue.error;

@@ -1,6 +1,6 @@
 //! Read-only identity and readability checks. This never applies Trash protection rules.
 use crate::safety::{CheckedItem, Identity};
-use disk_scan::{NodeKind, Snapshot};
+use disk_scan::{NodeKind, NodeRef, Snapshot};
 use std::{
     fs::{File, OpenOptions},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -11,6 +11,12 @@ pub(crate) struct Item {
     pub path: PathBuf,
     expected: CheckedItem,
     root: PathBuf,
+    /// Shown for Reveal in Finder rather than previewed: same checks, wording that fits the action.
+    reveal: bool,
+}
+/// The preview wording, or the reveal wording when `reveal`.
+fn say(reveal: bool, preview: &str, shown: &str) -> String {
+    if reveal { shown } else { preview }.into()
 }
 impl Item {
     pub fn from_snapshot(
@@ -22,6 +28,25 @@ impl Item {
         if node.identity.kind != NodeKind::File || node.parent.is_none() || node.excluded {
             return Err("Select one regular, non-excluded file to preview.".into());
         }
+        Self::checked(snapshot, node_id, &node, root_ancestors, false)
+    }
+    /// The same ancestry and identity checks for showing a node in Finder: any kind, the scan root and an excluded
+    /// node included, since nothing is opened or moved.
+    pub fn for_reveal(
+        snapshot: &Snapshot,
+        node_id: u32,
+        root_ancestors: &[(PathBuf, Identity)],
+    ) -> Result<Self, String> {
+        let node = snapshot.node(node_id).ok_or("Unknown node")?;
+        Self::checked(snapshot, node_id, &node, root_ancestors, true)
+    }
+    fn checked(
+        snapshot: &Snapshot,
+        node_id: u32,
+        node: &NodeRef,
+        root_ancestors: &[(PathBuf, Identity)],
+        reveal: bool,
+    ) -> Result<Self, String> {
         let path = node.path()?;
         if !snapshot.root.is_absolute()
             || !path.starts_with(&snapshot.root)
@@ -29,17 +54,24 @@ impl Item {
                 .components()
                 .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
         {
-            return Err("Preview path is outside the scan location.".into());
+            return Err(say(
+                reveal,
+                "Preview path is outside the scan location.",
+                "This item is outside the scan location.",
+            ));
         }
-        let mut ancestors = crate::safety::lineage(snapshot, node_id, "preview")?;
+        let mut ancestors =
+            crate::safety::lineage(snapshot, node_id, if reveal { "reveal" } else { "preview" })?;
         ancestors.extend_from_slice(root_ancestors);
         // The recorded lineage must account for every lexical ancestor. This
         // rejects symlink substitutions without rejecting macOS firmlink paths.
         for path in path.ancestors().skip(1) {
             if !ancestors.iter().any(|(recorded, _)| recorded == path) {
-                return Err(
-                    "Preview ancestry is not fully registered. Rescan this location.".into(),
-                );
+                return Err(say(
+                    reveal,
+                    "Preview ancestry is not fully registered. Rescan this location.",
+                    "This item's folders are not fully registered. Rescan to reveal it.",
+                ));
             }
         }
         Ok(Self {
@@ -47,10 +79,11 @@ impl Item {
             root: snapshot.root.clone(),
             expected: CheckedItem {
                 path: path.clone(),
-                identity: Identity::of(&node),
+                identity: Identity::of(node),
                 ancestors,
                 volume: None,
             },
+            reveal,
         })
     }
     pub fn open_checked(&self) -> Result<File, String> {
@@ -70,17 +103,30 @@ impl Item {
         self.verify_paths()?;
         Ok(file)
     }
-    fn verify_paths(&self) -> Result<(), String> {
+    /// Whether the item and its ancestors on disk are still the ones the scan recorded.
+    pub fn verify_paths(&self) -> Result<(), String> {
         if !self.path.starts_with(&self.root) {
-            return Err("Preview path is outside the scan location.".into());
+            return Err(say(
+                self.reveal,
+                "Preview path is outside the scan location.",
+                "This item is outside the scan location.",
+            ));
         }
         for (path, expected) in &self.expected.ancestors {
             if Identity::read(path)? != *expected {
-                return Err("A preview ancestor changed. Rescan this location.".into());
+                return Err(say(
+                    self.reveal,
+                    "A preview ancestor changed. Rescan this location.",
+                    "A folder above this item moved or changed since the scan. Rescan to reveal it.",
+                ));
             }
         }
         if Identity::read(&self.path)? != self.expected.identity {
-            return Err("The selected file changed. Rescan before previewing.".into());
+            return Err(say(
+                self.reveal,
+                "The selected file changed. Rescan before previewing.",
+                "This item moved or changed since the scan. Rescan to reveal it.",
+            ));
         }
         Ok(())
     }

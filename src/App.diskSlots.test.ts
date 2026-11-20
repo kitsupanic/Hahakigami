@@ -494,6 +494,26 @@ it("rescans a queue entry's disk in that disk's own slot without adding a second
   expect(diskRow("Macintosh HD").getAttribute("aria-current")).toBe("page");
 });
 
+it("leaves the view alone when the queue entry's lookup returns after the user switched disk", async () => {
+  await scanDisk("Macintosh HD");
+  const standard = mock.invoke.getMockImplementation()!;
+  let release!: () => void;
+  const lookup = new Promise<void>((resolve) => (release = resolve));
+  mock.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "cleanup_queue_target") await lookup;
+    return standard(command, args);
+  });
+  queueTarget = { ...photos, id: "photos-queue" };
+  await act(() => void app().scanQueue("entry"));
+  await click(diskRow("Backup"));
+  const before = calls("start_scan").length;
+  release();
+  await settle();
+  expect(calls("start_scan")).toHaveLength(before);
+  expect(app().target).toBe(backup);
+  expect(app().homeOpen).toBe(true);
+});
+
 it("lists a queue entry's folder as a folder scan", async () => {
   await scanDisk("Macintosh HD");
   queueTarget = { ...photos, id: "photos-queue" };

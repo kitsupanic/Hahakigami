@@ -46,10 +46,32 @@ pub(crate) struct CachedListing {
     // Derived from the same owned entries during staging, never an independent hint.
     pub(crate) has_directories: bool,
 }
-pub(crate) struct Reuse {
-    listings: HashMap<PathBuf, (Identity, u32, bool)>,
+/// Scheduling hints. Keyed by inode, not path: a path per directory is most of the footprint of a
+/// million-directory rescan. Inodes are unique here because aliased directories are left out.
+pub(crate) struct Priorities {
     seed: Arc<Snapshot>,
-    pub(crate) priorities: Arc<HashMap<PathBuf, (Identity, u64)>>,
+    /// (device, inode) -> (seed node id, cost)
+    costs: HashMap<(u64, u64), (u32, u64)>,
+}
+impl Priorities {
+    /// The seed path is rebuilt only on a hit; a hint needs the exact identity and path.
+    pub(crate) fn cost(&self, path: &Path, identity: &Identity) -> u64 {
+        match self.costs.get(&(identity.device, identity.inode)) {
+            Some(&(id, cost))
+                if self.seed.node(id).is_some_and(|n| n.identity == *identity)
+                    && self.seed.path(id).is_ok_and(|seed_path| seed_path == path) =>
+            {
+                cost
+            }
+            _ => 0,
+        }
+    }
+}
+pub(crate) struct Reuse {
+    /// (device, inode) -> (seed node id, has directories); see `Priorities` for why not a path.
+    listings: HashMap<(u64, u64), (u32, bool)>,
+    seed: Arc<Snapshot>,
+    pub(crate) priorities: Arc<Priorities>,
     stats: ReuseStats,
     reused_directories: u64,
     pub(crate) new_hardlink: bool,
@@ -162,6 +184,8 @@ impl Reuse {
             None => name.as_encoded_bytes().to_ascii_lowercase(),
         };
         let mut children_by_fold: HashMap<u32, HashMap<Vec<u8>, Vec<u32>>> = HashMap::new();
+        // Ancestors whose non-ASCII children were already dirtied: any unmatched non-ASCII name widens to the same set.
+        let mut widened_non_ascii = HashSet::new();
         for (path, _) in marks.iter().filter(|(_, m)| m.requested) {
             let parent_unmatched = path
                 .parent()
@@ -196,6 +220,7 @@ impl Reuse {
                         // shortcut: no normalization crate to tell NFC from NFD, so every non-ASCII child
                         // may be the one spelled differently (both forms of a non-ASCII name stay non-ASCII,
                         // bar a few singletons such as U+037E); compare normalized names once one is a dependency.
+                        None if !widened_non_ascii.insert(id) => continue,
                         None => {
                             non_ascii = index
                                 .iter()
@@ -246,26 +271,6 @@ impl Reuse {
                 costs[parent as usize] = costs[parent as usize].saturating_add(costs[index]);
             }
         }
-        let priorities: Arc<HashMap<PathBuf, (Identity, u64)>> = Arc::new(
-            seed.snapshot
-                .iter_nodes()
-                .filter(|node| node.is_directory && costs[node.id as usize] > 0)
-                .map(|node| {
-                    (
-                        path_cursor
-                            .path(node.id)
-                            .expect("validated seed path")
-                            .to_path_buf(),
-                        (node.identity.clone(), costs[node.id as usize]),
-                    )
-                })
-                .collect(),
-        );
-        let preparation_workload_capacity_bytes = subtree_dirty.capacity()
-            + listing_dirty.capacity()
-            + direct_listing_dirty.capacity()
-            + costs.capacity() * std::mem::size_of::<u64>();
-        drop(costs);
         // A directory hard link gives one inode several nodes, but the scan lists
         // only the first to commit, so a rescan can flip which copy has the
         // children. Neither copy's cached listing may be reused.
@@ -277,7 +282,31 @@ impl Reuse {
             .map(|n| (n.identity.device, n.identity.inode))
             .filter(|inode| !seen_directories.insert(*inode))
             .collect();
-        let listings: HashMap<PathBuf, (Identity, u32, bool)> = seed
+        let priorities = Arc::new(Priorities {
+            seed: seed.snapshot.clone(),
+            costs: seed
+                .snapshot
+                .iter_nodes()
+                .filter(|node| {
+                    node.is_directory
+                        && costs[node.id as usize] > 0
+                        && !aliased_directories
+                            .contains(&(node.identity.device, node.identity.inode))
+                })
+                .map(|node| {
+                    (
+                        (node.identity.device, node.identity.inode),
+                        (node.id, costs[node.id as usize]),
+                    )
+                })
+                .collect(),
+        });
+        let preparation_workload_capacity_bytes = subtree_dirty.capacity()
+            + listing_dirty.capacity()
+            + direct_listing_dirty.capacity()
+            + costs.capacity() * std::mem::size_of::<u64>();
+        drop(costs);
+        let listings: HashMap<(u64, u64), (u32, bool)> = seed
             .snapshot
             .iter_nodes()
             .filter(|n| {
@@ -287,12 +316,8 @@ impl Reuse {
             })
             .map(|n| {
                 (
-                    path_cursor
-                        .path(n.id)
-                        .expect("validated seed")
-                        .to_path_buf(),
+                    (n.identity.device, n.identity.inode),
                     (
-                        n.identity.clone(),
                         n.id,
                         n.children()
                             .iter()
@@ -303,15 +328,15 @@ impl Reuse {
             .collect();
         let storage=ReuseStorageStats {
             seed_snapshot_retained_capacity_bytes: crate::storage::buffer_stats(&seed.snapshot).retained_capacity_bytes,
-            directory_index_payload_capacity_bytes: listings.capacity()*std::mem::size_of::<(PathBuf,(Identity,u32,bool))>() + listings.keys().map(|p|p.capacity()).sum::<usize>(),
-            scheduling_index_payload_capacity_bytes: priorities.capacity()*std::mem::size_of::<(PathBuf,(Identity,u64))>() + priorities.keys().map(|p|p.capacity()).sum::<usize>(),
+            directory_index_payload_capacity_bytes: listings.capacity()*std::mem::size_of::<((u64,u64),(u32,bool))>(),
+            scheduling_index_payload_capacity_bytes: priorities.costs.capacity()*std::mem::size_of::<((u64,u64),(u32,u64))>(),
             known_hardlinks_payload_capacity_bytes: known_hardlinks.capacity()*std::mem::size_of::<(u64,u64)>(),
             root_child_ids_capacity_bytes: root_listing.capacity()*std::mem::size_of::<u32>(),
             preparation_workload_capacity_bytes,
             preparation_path_cursor_capacity_bytes:path_cursor.capacity_bytes(),
             preparation_marks_payload_capacity_bytes,
             preparation_touched_payload_capacity_bytes: touched.capacity()*std::mem::size_of::<(u64,u64)>(),
-            estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload and owned path buffers, excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing buffer, not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
+            estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload (plus owned path buffers for preparation marks), excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing buffer, not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
             ..Default::default()
         };
         let seed = seed.snapshot;
@@ -378,20 +403,19 @@ impl Reuse {
             storage.root_seen_payload_capacity_bytes = root_seen_capacity;
         }
     }
-    pub(crate) fn take_listing(
-        &mut self,
-        path: &Path,
-        expected: &Identity,
-    ) -> Option<CachedListing> {
-        let (identity, id, has_directories) = self.listings.remove(path)?;
-        if identity != *expected {
-            return None;
-        }
+    /// Removes the candidate under the shared lock; it must pass `CachedListing::verified` before use.
+    /// A candidate that fails stays removed, as before: the directory is simply read fresh.
+    pub(crate) fn take_listing(&mut self, expected: &Identity) -> Option<CachedListing> {
+        let (id, has_directories) = self.listings.remove(&(expected.device, expected.inode))?;
         Some(CachedListing {
             seed: self.seed.clone(),
             id,
             has_directories,
         })
+    }
+    #[cfg(test)]
+    fn take_checked(&mut self, path: &Path, expected: &Identity) -> Option<CachedListing> {
+        self.take_listing(expected)?.verified(path, expected)
     }
     pub(crate) fn mark_reused(&mut self, entries: usize, listing_capacity: usize) {
         self.reused_directories += 1;
@@ -661,6 +685,11 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
 }
 
 impl CachedListing {
+    /// The seed path walk is allocating, so it runs here, after the `Reuse` lock is released.
+    pub(crate) fn verified(self, path: &Path, expected: &Identity) -> Option<Self> {
+        (self.seed.node(self.id)?.identity == *expected && self.seed.path(self.id).ok()? == path)
+            .then_some(self)
+    }
     #[cfg(test)]
     pub(crate) fn materialize(self) -> Vec<std::io::Result<Entry>> {
         self.materialize_with_storage().0
@@ -715,6 +744,23 @@ mod tests {
 
     use super::*;
     use std::os::unix::fs::symlink;
+    fn listing_paths(reuse: &Reuse) -> HashMap<PathBuf, u32> {
+        let path = |id: &u32| reuse.seed.path(*id).unwrap();
+        reuse
+            .listings
+            .values()
+            .map(|(id, _)| (path(id), *id))
+            .collect()
+    }
+    fn priority_costs(reuse: &Reuse) -> HashMap<PathBuf, u64> {
+        let path = |id: &u32| reuse.seed.path(*id).unwrap();
+        reuse
+            .priorities
+            .costs
+            .values()
+            .map(|(id, cost)| (path(id), *cost))
+            .collect()
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -796,14 +842,32 @@ mod tests {
             dirty_directories: vec![dirty.clone()],
             aliases_resolved: false,
         });
-        let cost = |path: &Path| reuse.priorities.get(path).unwrap().1;
+        let costs = priority_costs(&reuse);
+        let cost = |path: &Path| costs[path];
         assert_eq!(cost(&dirty), own_cost);
         assert!(cost(&f.0.join("dirty")) > own_cost);
         assert!(cost(&f.0) > cost(&f.0.join("dirty")));
-        assert!(!reuse.priorities.contains_key(&f.0.join("clean")));
-        assert!(!reuse.priorities.contains_key(&f.0.join("clean/deep")));
-        assert!(reuse.listings.contains_key(&f.0.join("clean/deep")));
-        assert!(!reuse.listings.contains_key(&dirty));
+        assert!(!costs.contains_key(&f.0.join("clean")));
+        assert!(!costs.contains_key(&f.0.join("clean/deep")));
+        let listings = listing_paths(&reuse);
+        assert!(listings.contains_key(&f.0.join("clean/deep")));
+        assert!(!listings.contains_key(&dirty));
+        // A hint needs the identity and the seed path: the same inode elsewhere, or another inode, gets none.
+        let identity = reuse
+            .seed
+            .node(listings[&f.0.join("clean/deep")])
+            .unwrap()
+            .identity;
+        assert_eq!(reuse.priorities.cost(&f.0.join("clean/deep"), &identity), 0);
+        let dirty_identity = platform_identity(&dirty).unwrap();
+        assert_eq!(reuse.priorities.cost(&dirty, &dirty_identity), own_cost);
+        assert_eq!(
+            reuse.priorities.cost(&f.0.join("moved"), &dirty_identity),
+            0
+        );
+        let mut replacement = dirty_identity.clone();
+        replacement.inode += 1;
+        assert_eq!(reuse.priorities.cost(&dirty, &replacement), 0);
     }
     #[test]
     fn event_path_with_an_unmatched_parent_dirties_only_what_it_may_spell() {
@@ -829,7 +893,7 @@ mod tests {
                 "build/caf\u{e9}",
                 "clean/deep",
             ]
-            .map(|d| reuse.listings.contains_key(&f.0.join(d)))
+            .map(|d| listing_paths(&reuse).contains_key(&f.0.join(d)))
         };
         // Exact spelling, a new file, and a new directory with a file dirty only the listings above them.
         assert_eq!(
@@ -877,6 +941,51 @@ mod tests {
         assert_eq!(stats.fallback_reason, None);
         assert!(stats.reused_entries > 0);
         compare(&actual, &f.full());
+    }
+    #[test]
+    fn many_events_under_one_new_non_ascii_folder_widen_the_siblings_once() {
+        // A wide folder of non-ASCII children and an event burst under one new non-ASCII name.
+        let f = Fixture::new();
+        let mut snapshot = f.full();
+        let wide = 8_000u32;
+        edit_nodes(&mut snapshot, |nodes, root| {
+            let template = nodes
+                .iter()
+                .find(|n| n.is_directory && n.id != 0)
+                .unwrap()
+                .clone();
+            for i in 0..wide {
+                let mut node = template.clone();
+                node.id = nodes.len() as u32;
+                node.parent = Some(0);
+                node.children.clear();
+                node.name = format!("caf\u{e9}{i}");
+                node.path = root.join(&node.name);
+                nodes[0].children.push(node.id);
+                nodes.push(node);
+            }
+        });
+        snapshot.stats.entries = snapshot.node_count() as u64;
+        let snapshot = Arc::new(snapshot);
+        let listings = |events: u32| {
+            let started = std::time::Instant::now();
+            let reuse = Reuse::new(IncrementalSeed {
+                snapshot: snapshot.clone(),
+                dirty_paths: (0..events)
+                    .map(|i| f.0.join(format!("\u{65b0}/{i}")))
+                    .collect(),
+                dirty_directories: vec![],
+                aliases_resolved: false,
+            });
+            let mut kept: Vec<_> = reuse.listings.values().map(|(id, _)| *id).collect();
+            kept.sort_unstable();
+            (kept, started.elapsed())
+        };
+        let (one, _) = listings(1);
+        let (many, elapsed) = listings(wide);
+        assert_eq!(many, one);
+        // Every event used to rebuild the whole non-ASCII sibling list: seconds, not milliseconds.
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -1390,11 +1499,9 @@ mod tests {
                 dirty_directories: directories.into_iter().collect(),
                 aliases_resolved: false,
             });
-            assert_eq!(
-                reuse.listings.keys().cloned().collect::<HashSet<_>>(),
-                expected
-            );
-            for (path, (_, id, _)) in &reuse.listings {
+            let listings = listing_paths(&reuse);
+            assert_eq!(listings.keys().cloned().collect::<HashSet<_>>(), expected);
+            for (path, id) in &listings {
                 let entries = CachedListing {
                     seed: reuse.seed.clone(),
                     id: *id,
@@ -1554,6 +1661,29 @@ mod tests {
         assert!(stats.reused_entries > 0);
     }
     #[test]
+    fn cached_listing_needs_its_inode_at_its_path() {
+        let f = Fixture::new();
+        let seed = Arc::new(f.full());
+        let plan = || {
+            Reuse::new(IncrementalSeed {
+                snapshot: seed.clone(),
+                dirty_paths: vec![],
+                dirty_directories: vec![],
+                aliases_resolved: false,
+            })
+        };
+        let deep = f.0.join("clean/deep");
+        let expected = platform_identity(&deep).unwrap();
+        assert!(plan().take_checked(&deep, &expected).is_some());
+        // The inode is indexed on its own: the seed path must still match, and so must the inode.
+        assert!(plan()
+            .take_checked(&f.0.join("clean/moved"), &expected)
+            .is_none());
+        let mut replacement = expected.clone();
+        replacement.inode += 1;
+        assert!(plan().take_checked(&deep, &replacement).is_none());
+    }
+    #[test]
     fn cached_leaf_replacement_and_symlink_fail_fresh_identity_without_reuse() {
         for link in [false, true] {
             let f = Fixture::new();
@@ -1572,7 +1702,7 @@ mod tests {
             });
             let expected = platform_identity(&f.0.join("clean/deep")).unwrap();
             let leaf = staged
-                .take_listing(&f.0.join("clean/deep"), &expected)
+                .take_checked(&f.0.join("clean/deep"), &expected)
                 .unwrap();
             assert!(!leaf.has_directories);
             assert_eq!(staged.stats.reused_entries, 0);
@@ -1638,7 +1768,7 @@ mod tests {
                 dirty_directories: vec![],
                 aliases_resolved,
             });
-            ["clean", "clean/deep"].map(|d| reuse.listings.contains_key(&f.0.join(d)))
+            ["clean", "clean/deep"].map(|d| listing_paths(&reuse).contains_key(&f.0.join(d)))
         };
         assert_eq!(reusable("dirty/new.bin", true), [true, true]);
         assert_eq!(reusable("dirty/new.bin", false), [false, false]);
@@ -1817,7 +1947,7 @@ mod tests {
             dirty_directories: vec![],
             aliases_resolved: false,
         });
-        assert!(planned.listings.contains_key(&f.0.join("clean/deep")));
+        assert!(listing_paths(&planned).contains_key(&f.0.join("clean/deep")));
         drop(planned);
         let authority = ScanRoot::open(f.0.clone(), platform_identity(&f.0).unwrap()).unwrap();
         let store = Arc::new(RwLock::new(Snapshot::empty(f.0.clone())));
@@ -2186,11 +2316,11 @@ mod tests {
         });
         for name in ["clean/deep", "twin"] {
             assert!(reuse
-                .take_listing(&f.0.join(name), &identity_at(&seed, name))
+                .take_checked(&f.0.join(name), &identity_at(&seed, name))
                 .is_none());
         }
         assert!(reuse
-            .take_listing(
+            .take_checked(
                 &f.0.join("dirty/nested"),
                 &identity_at(&seed, "dirty/nested")
             )

@@ -16,16 +16,16 @@ MARKER = '.hahakigami-performance-fixture.json'
 def apfs_volume(path):
     """Resolve an existing directory to its device; diskutil rejects arbitrary dirs."""
     try:
-        output = subprocess.check_output(['/bin/df', '-P', str(Path(path).resolve())], text=True)
+        output = subprocess.check_output(['/bin/df', '-P', str(Path(path).resolve())], text=True, timeout=30)
         lines = output.splitlines()
         if len(lines) != 2:
             raise RuntimeError('Cannot resolve containing volume from df output')
         device = lines[1].split()[0]
         if not device.startswith('/dev/'):
             raise RuntimeError(f'Containing filesystem has no disk device: {device}')
-        data = subprocess.check_output(['/usr/sbin/diskutil', 'info', '-plist', device])
+        data = subprocess.check_output(['/usr/sbin/diskutil', 'info', '-plist', device], timeout=30)
         info = plistlib.loads(data)
-    except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException) as error:
+    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException) as error:
         raise RuntimeError('Unable to query containing filesystem; APFS status unknown') from error
     filesystem = info.get('FilesystemType')
     if not isinstance(filesystem, str):

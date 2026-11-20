@@ -720,17 +720,6 @@ impl Drop for PanicWake<'_> {
         }
     }
 }
-fn scheduling_cost(
-    priorities: &HashMap<PathBuf, (Identity, u64)>,
-    path: &Path,
-    identity: &Identity,
-) -> u64 {
-    priorities
-        .get(path)
-        .filter(|(expected, _)| expected == identity)
-        .map_or(0, |(_, cost)| *cost)
-}
-
 fn traversal_allowed(
     path: &Path,
     root: &Path,
@@ -1057,8 +1046,9 @@ fn scan_live_internal_reuse(
                     };
                     let metadata = Instant::now();
                     #[cfg(unix)]
-                    let cached =
-                        reuse.and_then(|r| r.lock().unwrap().take_listing(&path, &expected));
+                    let cached = reuse
+                        .and_then(|r| r.lock().unwrap().take_listing(&expected))
+                        .and_then(|listing| listing.verified(&path, &expected));
                     #[cfg(unix)]
                     let retain = |fd| {
                         if cached
@@ -1225,7 +1215,7 @@ fn scan_live_internal_reuse(
                                         break;
                                     }
                                     match item {
-                                        Err(e) if vanished(&e) => {}
+                                        Err(e) if vanished(&e) || dataless(&e) => {}
                                         Err(e) => io_issue(&mut s, path.clone(), e),
                                         Ok(e) => {
                                             // Only verified alias parents need full paths for file
@@ -1301,8 +1291,7 @@ fn scan_live_internal_reuse(
                                             {
                                                 let n = s.node(nid).unwrap();
                                                 let cost = priorities.map_or(0, |hints| {
-                                                    scheduling_cost(
-                                                        hints,
+                                                    hints.cost(
                                                         child_path.as_deref().unwrap(),
                                                         &n.identity,
                                                     )
@@ -1739,24 +1728,6 @@ mod tests {
             assert_eq!(queue.pop().unwrap().id, id);
         }
         assert!(queue.pop().is_none());
-    }
-    #[test]
-    fn scheduling_hint_requires_exact_identity_and_path() {
-        let identity = Identity {
-            device: 1,
-            inode: 2,
-            kind: NodeKind::Directory,
-        };
-        let path = PathBuf::from("/fixture/branch");
-        let hints = HashMap::from([(path.clone(), (identity.clone(), 100))]);
-        assert_eq!(scheduling_cost(&hints, &path, &identity), 100);
-        let mut replacement = identity.clone();
-        replacement.inode += 1;
-        assert_eq!(scheduling_cost(&hints, &path, &replacement), 0);
-        assert_eq!(
-            scheduling_cost(&hints, Path::new("/fixture/new"), &identity),
-            0
-        );
     }
     #[cfg(unix)]
     #[test]

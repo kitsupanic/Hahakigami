@@ -10,8 +10,19 @@
   let dragging = $state(false);
   let gesture: { id: number; x: number; width: number } | null = null;
   const maximum = () => Math.max(MIN, Math.min(480, window.innerWidth * 0.4));
+  // The sidebar renders at min(value, 40vw), so a stored width past the maximum reads as the maximum.
   const current = () =>
-    value ?? divider.previousElementSibling?.getBoundingClientRect().width ?? MIN;
+    Math.min(
+      value ??
+        divider.previousElementSibling?.getBoundingClientRect().width ??
+        MIN,
+      maximum(),
+    );
+  // Measured after mount so the responsive default still reports a width.
+  let valueNow = $state<number>();
+  $effect(() => {
+    valueNow = Math.round(current());
+  });
   function update(next: number) {
     onChange(Math.round(Math.max(MIN, Math.min(maximum(), next))));
   }
@@ -57,7 +68,8 @@
   aria-orientation="vertical"
   aria-controls="locations-sidebar"
   aria-valuemin={MIN}
-  aria-valuenow={value ?? undefined}
+  aria-valuemax={Math.round(maximum())}
+  aria-valuenow={valueNow}
   title="Drag to resize · Arrow keys to adjust · Double-click or Enter to reset"
   onpointerdown={start}
   onpointermove={move}

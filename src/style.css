@@ -16,10 +16,8 @@ select {
 button {
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
   background: var(--panel);
   color: inherit;
-  padding: 8px 12px;
 }
 button:hover:not(:disabled) {
   background: var(--soft);
@@ -88,23 +86,12 @@ small {
   font-size: var(--font-caption);
 }
 main {
-  margin-left: 230px;
   flex: 1;
-  padding: 35px 34px 20px;
   min-width: 0;
 }
 header {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 16px;
   margin-bottom: 25px;
-}
-h1 {
-  font-size: var(--font-large);
-  letter-spacing: -0.8px;
-  margin: 0 0 9px;
-  font-weight: 650;
 }
 header p {
   margin: 0;
@@ -112,42 +99,17 @@ header p {
   font-size: var(--font-secondary);
 }
 .primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-  font-weight: 600;
   padding: 11px 20px;
   font-size: var(--font-secondary);
 }
-.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
 .progress {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  background: var(--panel);
-  padding: 15px 19px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
   margin-bottom: 18px;
-  font-size: var(--font-secondary);
-}
-.progress > span {
-  color: var(--success);
-}
-.progress strong {
-  font-weight: 600;
 }
 .progress small {
-  display: block;
   margin-top: 5px;
-  font-size: var(--font-caption);
 }
 .progress b {
   margin-left: auto;
-  font-size: var(--font-title2);
-  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .access {
@@ -204,42 +166,27 @@ header p {
   font-weight: 600;
 }
 .explorer {
-  display: flex;
   gap: 17px;
-  height: 410px;
 }
 .visual {
   flex: 1;
   min-width: 0;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .panel-title {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 15px 18px;
-  border-bottom: 1px solid var(--line);
-  font-size: var(--font-secondary);
-}
-.panel-title strong {
-  font-weight: 600;
 }
 .panel-title small {
-  font-size: var(--font-caption);
   margin-left: 7px;
   font-weight: 400;
 }
 .map-wrap {
   position: relative;
   flex: 1;
-  min-height: 0;
-  padding: 13px 14px 30px;
 }
 .map-wrap canvas {
   display: block;
@@ -249,11 +196,7 @@ header p {
 }
 .map-caption {
   position: absolute;
-  bottom: 9px;
-  left: 15px;
   color: var(--muted);
-  font-size: var(--font-caption);
-  max-width: 90%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -269,21 +212,8 @@ header p {
   pointer-events: none;
 }
 .inspector {
-  width: 220px;
-  padding: 20px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  overflow: auto;
-}
-.inspector .side-label {
-  margin: 0 0 15px;
-}
-.inspector h2 {
-  font-size: var(--font-title3);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  margin: 0 0 8px;
 }
 .path {
   font-size: var(--font-caption);
@@ -291,18 +221,10 @@ header p {
   overflow-wrap: anywhere;
   line-height: 1.6;
 }
-.inspector dl {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  font-size: var(--font-caption);
-  gap: 12px;
-  margin: 20px 0;
-}
 .inspector dt {
   color: var(--muted);
 }
 .inspector dd {
-  margin: 0;
   font-variant-numeric: tabular-nums;
 }
 .inspector button {
@@ -321,22 +243,11 @@ header p {
 .file-list {
   border: 1px solid var(--line);
   background: var(--panel);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
   margin-top: 18px;
 }
 .table-head,
 .row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 130px 110px;
-  gap: 12px;
-  padding: 11px 18px;
   text-align: left;
-}
-.table-head {
-  font-size: var(--font-caption);
-  color: var(--muted);
-  background: var(--soft);
 }
 .rows {
   height: 230px;
@@ -347,9 +258,7 @@ header p {
   border-radius: 0;
   border-bottom: 1px solid var(--line);
   width: 100%;
-  font-size: var(--font-caption);
   align-items: center;
-  min-height: 38px;
 }
 .row span:first-child {
   overflow: hidden;
@@ -375,25 +284,13 @@ header p {
   color: var(--warning);
   font-style: normal;
 }
-.row.selected {
-  background: var(--soft);
-  color: var(--accent-text);
-}
 .pagination {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  padding: 8px 14px;
   border-top: 1px solid var(--line);
-  font-size: var(--font-caption);
   color: var(--muted);
 }
 .pagination span {
   margin-right: auto;
-}
-.pagination button {
-  padding: 4px 8px;
-  font-size: var(--font-caption);
 }
 .no-files {
   text-align: center;
@@ -403,7 +300,6 @@ header p {
 }
 .welcome {
   text-align: center;
-  padding: 85px 20px;
 }
 .welcome h2 {
   font-size: var(--font-large);
@@ -422,8 +318,6 @@ header p {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: var(--scrim);
-  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -434,17 +328,13 @@ header p {
   max-width: 90vw;
   background: var(--panel);
   padding: 26px;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-modal);
 }
 .modal h2 {
-  font-size: var(--font-title2);
   margin: 0;
 }
 .modal p {
   font-size: var(--font-secondary);
   color: var(--muted);
-  line-height: 1.6;
 }
 .modal ul {
   list-style: none;
@@ -794,10 +684,4 @@ header p {
 }
 .scan-issue-list p {
   margin: 6px 0;
-}
-
-.cleanup-page {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 24px;
 }

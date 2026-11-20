@@ -279,6 +279,10 @@ pub fn boot_session() -> Option<String> {
     None
 }
 #[cfg(not(target_os = "macos"))]
+pub fn namespace(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+#[cfg(not(target_os = "macos"))]
 pub fn replay_with_abortable_load_on_volume<T: Send>(
     _: &Path,
     _: &Path,
@@ -467,7 +471,9 @@ mod native {
             }
         }
     }
-    fn namespace(path: &Path) -> PathBuf {
+    /// The spelling the journal reports `path` in: the Data volume's firmlink prefix removed, `/var`, `/tmp` and
+    /// `/etc` as their `/private` targets.
+    pub fn namespace(path: &Path) -> PathBuf {
         let path = path
             .strip_prefix("/System/Volumes/Data")
             .ok()
@@ -1790,5 +1796,5 @@ mod native {
 pub use native::replay_with_load_on_volume;
 #[cfg(target_os = "macos")]
 pub use native::{
-    boot_session, current_id, journal_identity, replay_with_abortable_load_on_volume,
+    boot_session, current_id, journal_identity, namespace, replay_with_abortable_load_on_volume,
 };

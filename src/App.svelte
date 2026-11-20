@@ -457,12 +457,13 @@
     guardianTheme: () => applyGuardian(!theme.guardian),
     back: () => app.goBack(),
     forward: () => app.goForward(),
-    enclosing: () => parentFolder && open(parentFolder),
-    openFolder: () => selection.length === 1 && open(selection[0]),
+    enclosing: () => app.can.enclosing && parentFolder && open(parentFolder),
+    openFolder: () =>
+      app.can.openFolder && selection.length === 1 && open(selection[0]),
     cleanupQueue: () => app.showQueue(true),
     quickLook: toggleQuickLook,
     reveal: revealInFinder,
-    addToQueue: () => app.queueSelection.add(),
+    addToQueue: () => app.can.addToQueue && app.queueSelection.add(),
     trash: reviewTrash,
   };
   // Modal dialogs, loading screens and the filters popover own the keyboard.
@@ -910,7 +911,7 @@
         </small>
         <button
           class="queue-review"
-          disabled={blocked || queueBusy || !!trash}
+          disabled={!app.can.cleanupQueue}
           onclick={() => app.showQueue(true)}>Review queue</button
         >
       {/if}
@@ -997,7 +998,7 @@
   class:macos-titlebar={macosTitlebar}
   class:navigation-sidebar-hidden={!locationsSidebarVisible}
   style:--sidebar-width={locationsSidebarVisible && sidebarWidth
-    ? `${sidebarWidth}px`
+    ? `min(${sidebarWidth}px, 40vw)`
     : undefined}
   use:captureDialogOpener={(element) => (dialogOpener = element)}
   data-native-busy={listLoading}
@@ -1089,6 +1090,7 @@
                     class:primary={!group.readyHere && !group.onlyElsewhere}
                     class:cleanup-primary={!group.readyHere && !group.onlyElsewhere}
                     disabled={queueBusy ||
+                      app.queueTargeting ||
                       blocked ||
                       app.queueRootBusy(group.root) ||
                       queue.blocked}
@@ -1175,7 +1177,7 @@
     {/if}
 
     {#if !queueOpen}
-      {#if resultsReturn}
+      {#if resultsReturn && summary}
         <div
           class="results-return-context"
           aria-label="Return to search results"
@@ -1461,7 +1463,7 @@
                       : "Ready for review"}
                   </span>
                   <button
-                    disabled={blocked || !!trash}
+                    disabled={!app.can.cleanupQueue}
                     onclick={() => app.showQueue(true)}>Review queue</button
                   >
                 </div>
@@ -1703,7 +1705,7 @@
     <CleanupResults
       report={app.cleanupReport}
       {queueOpen}
-      disabled={blocked || queueBusy || !!trash}
+      disabled={!app.can.cleanupQueue}
       opener={dialogOpener}
       onQueue={() => {
         app.dismissCleanupReport();

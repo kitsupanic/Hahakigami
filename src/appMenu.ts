@@ -180,7 +180,12 @@ export async function createAppMenu(commands: MenuCommands): Promise<AppMenu> {
     const set = (key: string, value: unknown, write: () => Promise<void>) => {
       if (applied.get(key) === value) return;
       applied.set(key, value);
-      writes.push(write());
+      // A failed native write is forgotten, so the next sync retries it.
+      const written = write();
+      written.catch(() => {
+        if (applied.get(key) === value) applied.delete(key);
+      });
+      writes.push(written);
     };
     for (const [id, item] of items) {
       const enabled = available(id, state);

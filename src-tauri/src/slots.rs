@@ -23,6 +23,8 @@ pub(crate) const RESULTS_CHANGED: &str = "Results changed after cleanup. Rescan 
 /// The scan is still running, finishing, cancelled or failed: nothing that needs its results can go ahead.
 pub(crate) const NOT_COMPLETED: &str = "Wait for a completed scan first.";
 const GONE: &str = "This scan is no longer active.";
+/// A scan thread panicked while it held the results.
+const UNAVAILABLE: &str = "This scan's results are unavailable. Rescan this location.";
 /// How long a rescan waits for a read of the old results before it scans without them as a baseline. Ordinary
 /// reads (a list query, a queue refresh) end well within it; one stuck on a hung disk does not.
 const BASELINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
@@ -45,7 +47,7 @@ pub(crate) struct Session {
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) root_ancestors: Vec<(PathBuf, safety::Identity)>,
     /// The volume of each region the scan walked, keyed by the region's root node; set when a live scan completes
-    /// (`scan_volumes`); an item with no recorded region fails cleanup closed.
+    /// (`read_volumes`); an item with no recorded region fails cleanup closed.
     pub(crate) volumes: std::sync::OnceLock<HashMap<u32, safety::Volume>>,
     pub(crate) ticket: Mutex<Option<safety::Ticket>>,
     /// False once the results no longer match the disk or the scan was replaced. Goes false only through
@@ -182,7 +184,8 @@ impl Session {
             .then_some(snapshot)
     }
     fn completed(&self) -> Result<RwLockReadGuard<'_, Snapshot>, String> {
-        let snapshot = self.store.read().unwrap();
+        // Quick Look's authority callback reaches this, where unwinding aborts the process: an error, never a panic.
+        let snapshot = self.store.read().map_err(|_| UNAVAILABLE)?;
         if self.finishing.load(Ordering::Acquire) || snapshot.state != ScanState::Completed {
             return Err(NOT_COMPLETED.into());
         }
@@ -207,7 +210,8 @@ impl Session {
                     std::thread::sleep(std::time::Duration::from_millis(5))
                 }
                 Err(TryLockError::WouldBlock) => return None,
-                Err(TryLockError::Poisoned(e)) => panic!("{e}"),
+                // A panic here would leave the new session, already registered, running with no thread.
+                Err(TryLockError::Poisoned(_)) => return None,
             }
         };
         if snapshot.root != root || !baseline::eligible(&snapshot) {
@@ -668,6 +672,34 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(old.take_baseline(Path::new("/elsewhere")).is_none());
         assert!(start.elapsed() < BASELINE_WAIT / 2);
+    }
+
+    #[test]
+    fn a_poisoned_store_gives_no_baseline_and_an_error_instead_of_a_panic() {
+        let (_dir, root) = dir();
+        let old = ended(&root, scan_of(&root));
+        *old.cache_token.lock().unwrap() = Some(token());
+        // A scan thread that panics while it writes the results.
+        assert!(std::thread::scope(|scope| scope
+            .spawn(|| {
+                let _write = old.store.write().unwrap();
+                panic!("scan thread failed");
+            })
+            .join())
+        .is_err());
+        assert!(old.store.is_poisoned());
+        // The start between `replace` and the scan thread must go on without a baseline.
+        assert!(old.take_baseline(&root).is_none());
+        // Quick Look's callback gets an error, not an unwind.
+        assert_eq!(old.peek_completed().err().unwrap(), UNAVAILABLE);
+        assert_eq!(
+            old.hold(Need::LiveCompleted)
+                .unwrap()
+                .completed_snapshot()
+                .err()
+                .unwrap(),
+            UNAVAILABLE
+        );
     }
 
     #[test]

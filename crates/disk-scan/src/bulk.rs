@@ -557,7 +557,9 @@ fn visit_with_reader(
             return Err(io::Error::from_raw_os_error(libc::EINTR));
         }
         stats.queries += 1;
-        let count = crate::retry::interrupted(Some(cancel), |_| reader(&mut buffer))?;
+        // No retry on this descriptor: the kernel may have advanced the offset, so an EINTR reaches
+        // the caller (cancellation is checked above), like the listing path, which relists on a fresh one.
+        let count = reader(&mut buffer)?;
         if count == 0 {
             return Ok(());
         }
@@ -1959,6 +1961,24 @@ mod tests {
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
         assert_eq!(stats.queries, 1);
         assert_eq!(stats.peak_bytes, BULK_BUFFER_BYTES);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn interrupted_read_reaches_the_caller_instead_of_retrying_the_descriptor() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut stats = CloneReadStats::default();
+        let mut calls = 0;
+        let result = visit_with_reader(
+            &cancel,
+            &mut stats,
+            |_| {
+                calls += 1;
+                Err(io::Error::from_raw_os_error(libc::EINTR))
+            },
+            &mut |_| Ok(()),
+        );
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+        assert_eq!(calls, 1);
     }
     #[cfg(target_os = "macos")]
     #[test]

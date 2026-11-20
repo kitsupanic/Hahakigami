@@ -58,7 +58,7 @@ struct Benchmark {
         getrusage(RUSAGE_SELF, &usage)
         let reachability = tree.reachabilityBitmap()
         let output: [String: Any] = [
-            "schema_version": 2, "source_ref": "f7551cf21a5c35a963c607401ba5705ec0869b64",
+            "schema_version": 2, "source_ref": benchmarkSourceRef,
             "complete": unreadable == 0,
             "coverage_limitations": ["Scanner retains String names; invalid UTF-8 original bytes unavailable.", "Only directory/file kinds and hard-link identities retained; symlink kind unavailable.", "Allocated sizes deduplicate hard links but not APFS clones."],
             "comparator": "OpenDisk", "mode": mode, "cache": "disabled_no_io_shim",

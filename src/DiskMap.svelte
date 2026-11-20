@@ -855,8 +855,14 @@
     hover = null;
     onHover?.(null);
   }
+  // Last pointer position, so a still pointer re-hits each new layout instead of losing its hover.
+  let pointer: { clientX: number; clientY: number } | null = null;
   function moveHover(e: MouseEvent) {
-    const next = hitNode(e) ?? null;
+    pointer = { clientX: e.clientX, clientY: e.clientY };
+    refreshHover();
+  }
+  function refreshHover() {
+    const next = (pointer && hitNode(pointer)) ?? null;
     if (next === hover) return;
     hover = next;
     onHover?.(
@@ -877,7 +883,12 @@
     return () => query?.removeEventListener("change", rearm);
   });
   onDestroy(clearHover);
-  function hitNode(e: MouseEvent) {
+  $effect(() => {
+    if (!layoutCurrent) return;
+    void shapes;
+    untrack(refreshHover);
+  });
+  function hitNode(e: { clientX: number; clientY: number }) {
     if (!layoutCurrent) return undefined;
     const rect = canvas!.getBoundingClientRect(),
       x = e.clientX - rect.left,
@@ -918,7 +929,10 @@
         ? folderFor(captionNode ?? undefined)?.path
         : undefined)}
     onmousemove={moveHover}
-    onmouseleave={clearHover}
+    onmouseleave={() => {
+      pointer = null;
+      clearHover();
+    }}
     onclick={(e) => {
       let n: NodeView | undefined;
       if (startsClickPair(e.detail)) {

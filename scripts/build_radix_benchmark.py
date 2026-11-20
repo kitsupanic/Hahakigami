@@ -7,9 +7,10 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+from refs import REFS, write_swift_ref
 
 ROOT = Path(__file__).resolve().parents[1]
-REF = "df1235bfb05acb7a678718166491bcc27817d95d"
+REF = REFS["Radix"]
 
 
 def run(command, **kwargs):
@@ -46,7 +47,7 @@ def main():
     run(["swiftc", "-O", "-swift-version", "6", "-default-isolation", "MainActor",
          "-enable-upcoming-feature", "InferIsolatedConformances", "-enable-upcoming-feature", "NonisolatedNonsendingByDefault",
          "-parse-as-library", "-target", f"{platform.machine()}-apple-macos14.0", "-o", str(binary),
-         *map(str, files), str(adapter)])
+         *map(str, files), str(adapter), str(write_swift_ref(cache, "Radix"))])
     (cache / "radix-benchmark-build.json").write_text(json.dumps({"source_ref": REF,
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "source_sha256": {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files},

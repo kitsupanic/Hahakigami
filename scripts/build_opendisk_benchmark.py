@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 import platform
 import subprocess
+from refs import REFS, write_swift_ref
 
 ROOT = Path(__file__).resolve().parents[1]
-REF = "f7551cf21a5c35a963c607401ba5705ec0869b64"
+REF = REFS["OpenDisk"]
 SOURCE_FILES = [
     "Services/Scanning/ScanEngine.swift",
     "Services/Scanning/TraversalScanner.swift",
@@ -47,7 +48,7 @@ def main():
     subprocess.run([
         "swiftc", "-O", "-swift-version", "6", "-parse-as-library",
         "-target", f"{arch}-apple-macos15.0", "-o", str(binary), *files,
-        str(ROOT / "scripts" / "OpenDiskNoCache.swift"),
+        str(ROOT / "scripts" / "OpenDiskNoCache.swift"), str(write_swift_ref(cache, "OpenDisk")),
         str(ROOT / "scripts" / "OpenDiskBenchmark.swift"),
     ], check=True, timeout=900)
     tracked_files = [Path(p) for p in files]

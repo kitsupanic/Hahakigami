@@ -14,20 +14,23 @@ import plistlib
 from pathlib import Path
 import shutil
 import subprocess
+from refs import REFS
 
 ROOT = Path(__file__).resolve().parents[1]
-REFS = {"Radix": "df1235bfb05acb7a678718166491bcc27817d95d", "OpenDisk": "f7551cf21a5c35a963c607401ba5705ec0869b64"}
 
 
 def checked(command, **kwargs):
     return subprocess.run(command, check=True, timeout=1800, **kwargs)
 
 
+def replaced(text, old, new, where, once=True):
+    if text.count(old) != 1 if once else old not in text:
+        raise ValueError(f"Pinned instrumentation anchor changed in {where}: {old[:60]!r}")
+    return text.replace(old, new)
+
+
 def replace_once(path, old, new):
-    text = path.read_text()
-    if text.count(old) != 1:
-        raise ValueError(f"Pinned instrumentation anchor changed in {path}: {old[:60]!r}")
-    path.write_text(text.replace(old, new))
+    path.write_text(replaced(path.read_text(), old, new, path))
 
 
 BOOTSTRAP = r'''
@@ -178,8 +181,8 @@ def instrument_results_canvases(app, name):
             text = canvas.read_text()
             end = text.index("\n}\n") + 3
             base, rest = text[:end], text[end:]
-            base = base.replace("    let renderVersion: Int", "    let renderVersion: Int\n    let benchmarkContentID: UUID", 1)
-            base = base.replace("lhs.renderVersion == rhs.renderVersion", "lhs.renderVersion == rhs.renderVersion && lhs.benchmarkContentID == rhs.benchmarkContentID", 1)
+            base = replaced(base, "    let renderVersion: Int", "    let renderVersion: Int\n    let benchmarkContentID: UUID", canvas)
+            base = replaced(base, "lhs.renderVersion == rhs.renderVersion", "lhs.renderVersion == rhs.renderVersion && lhs.benchmarkContentID == rhs.benchmarkContentID", canvas)
             old = "            }\n        }\n    }\n}"
             callback = """            }
             let drawnAt = DispatchTime.now().uptimeNanoseconds
@@ -194,12 +197,12 @@ def instrument_results_canvases(app, name):
             canvas.write_text("import Dispatch\n" + base.replace(old, callback) + rest)
             view = directory / f"{kind}ChartView.swift"
             text = view.read_text()
-            text = text.replace("renderVersion: chartModel.renderedLayoutVersion,", "renderVersion: chartModel.renderedLayoutVersion,\n                    benchmarkContentID: treeStore.contentID,", 1)
+            text = replaced(text, "renderVersion: chartModel.renderedLayoutVersion,", "renderVersion: chartModel.renderedLayoutVersion,\n                    benchmarkContentID: treeStore.contentID,", view)
             marker = f"private struct {kind}RenderedChartLayer: View {{"
             offset = text.index(marker)
             before, layer = text[:offset], text[offset:]
-            layer = layer.replace("    let renderVersion: Int", "    let renderVersion: Int\n    let benchmarkContentID: UUID", 1)
-            layer = layer.replace("renderVersion: renderVersion", "renderVersion: renderVersion,\n                benchmarkContentID: benchmarkContentID", 1)
+            layer = replaced(layer, "    let renderVersion: Int", "    let renderVersion: Int\n    let benchmarkContentID: UUID", view)
+            layer = replaced(layer, "renderVersion: renderVersion", "renderVersion: renderVersion,\n                benchmarkContentID: benchmarkContentID", view)
             # Sunburst's memberwise call had no comma; Treemap's already did.
             text = before + layer
             old = "                    layoutID: layoutRequestID\n                )\n            }"
@@ -215,13 +218,13 @@ def instrument_results_canvases(app, name):
     else:
         chart = app / "Views" / "Charts" / "RingsChartView.swift"
         text = chart.read_text()
-        text = text.replace("    let root: ChartItem", "    let root: ChartItem\n    var benchmarkFinal = false", 1)
-        text = text.replace("    @State private var layout: RingsChartLayout.Layout?", "    @State private var layout: RingsChartLayout.Layout?\n    @State private var layoutSourceRoot: ChartItem?", 1)
-        text = text.replace("StaticChartLayer(layout: layout)", "StaticChartLayer(layout: layout, benchmarkFinal: benchmarkFinal && layoutSourceRoot == root)", 1)
-        text = text.replace("layout = RingsChartLayout.layout(root: root, in: geometry.size, freeBytes: freeBytes)", "layout = RingsChartLayout.layout(root: root, in: geometry.size, freeBytes: freeBytes)\n                layoutSourceRoot = root")
+        text = replaced(text, "    let root: ChartItem", "    let root: ChartItem\n    var benchmarkFinal = false", chart)
+        text = replaced(text, "    @State private var layout: RingsChartLayout.Layout?", "    @State private var layout: RingsChartLayout.Layout?\n    @State private var layoutSourceRoot: ChartItem?", chart)
+        text = replaced(text, "StaticChartLayer(layout: layout)", "StaticChartLayer(layout: layout, benchmarkFinal: benchmarkFinal && layoutSourceRoot == root)", chart)
+        text = replaced(text, "layout = RingsChartLayout.layout(root: root, in: geometry.size, freeBytes: freeBytes)", "layout = RingsChartLayout.layout(root: root, in: geometry.size, freeBytes: freeBytes)\n                layoutSourceRoot = root", chart, once=False)
         offset = text.index("private struct StaticChartLayer: View, Equatable {")
         before, layer = text[:offset], text[offset:]
-        layer = layer.replace("    let layout: RingsChartLayout.Layout", "    let layout: RingsChartLayout.Layout\n    let benchmarkFinal: Bool", 1)
+        layer = replaced(layer, "    let layout: RingsChartLayout.Layout", "    let layout: RingsChartLayout.Layout\n    let benchmarkFinal: Bool", chart)
         old = "            }\n        }\n    }\n}"
         end = layer.index("\n}\n") + 3
         base, rest = layer[:end], layer[end:]

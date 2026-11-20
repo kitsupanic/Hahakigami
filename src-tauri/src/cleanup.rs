@@ -54,6 +54,21 @@ pub(crate) enum TrashOutcomeStatus {
 
 const MOUNTS_UNREADABLE: &str = "Could not read the mounted volumes. Try again.";
 
+/// What the protection rules read from this machine: the home folder and the mount points. Passed in, so tests can
+/// give a folder a mount.
+pub(crate) struct Host {
+    pub(crate) home: Option<PathBuf>,
+    pub(crate) mounts: Vec<PathBuf>,
+}
+impl Host {
+    pub(crate) fn read() -> Result<Self, String> {
+        Ok(Self {
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            mounts: platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?,
+        })
+    }
+}
+
 /// What a review covers.
 pub(crate) enum Pick<'a> {
     /// Nodes the person selected in this scan.
@@ -164,7 +179,7 @@ fn issue(
         .iter()
         .map(|&id| Ok((snapshot.path(id)?, id)))
         .collect::<Result<_, String>>()?;
-    let items = selection(s, snapshot, ids, None)?;
+    let items = selection(s, snapshot, ids, None, &Host::read()?)?;
     let issues = issue_index(s, snapshot);
     let views = items
         .iter()
@@ -197,6 +212,18 @@ pub(crate) fn commit(
     token: &str,
     queued: bool,
     others: &[Arc<Session>],
+    trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
+) -> Result<TrashResult, String> {
+    commit_on(s, queue, token, queued, others, Host::read, trash)
+}
+/// `commit` with the home folder and mounts from `host`, read once the ticket is spent and the disk checks begin.
+pub(crate) fn commit_on(
+    s: &Session,
+    queue: &Mutex<Queue>,
+    token: &str,
+    queued: bool,
+    others: &[Arc<Session>],
+    host: impl FnOnce() -> Result<Host, String>,
     trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<TrashResult, String> {
     let held = s.hold(Need::LiveCompleted)?;
@@ -232,7 +259,7 @@ pub(crate) fn commit(
     // Only the root is needed, so the store is not held across the Trash calls either.
     let root = held.completed_snapshot()?.root.clone();
     let (mut result, successful, failures, moved_unconfirmed) =
-        execute(&ticket.items, &root, trash)?;
+        execute(&ticket.items, &root, &host()?, trash)?;
     // A failed Trash step can still have moved something (an unconfirmed receipt): the scan no longer matches.
     if result.trashed > 0 || moved_unconfirmed {
         s.invalidate();
@@ -280,13 +307,13 @@ type Execution = (
 fn execute(
     items: &[safety::CheckedItem],
     root: &Path,
+    host: &Host,
     mut trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<Execution, String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mounts = platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?;
+    let (home, mounts) = (host.home.as_deref(), &host.mounts);
     // Verify all first, so a stale ticket moves nothing; then again just before each item's move.
     for item in items {
-        safety::verify(item, root, home.as_deref(), &mounts)?;
+        safety::verify(item, root, home, mounts)?;
     }
     let mut result = TrashResult {
         trashed: 0,
@@ -300,7 +327,7 @@ fn execute(
     let mut failures = vec![];
     let mut moved_unconfirmed = false;
     for (review_index, item) in items.iter().enumerate() {
-        let step = safety::verify(item, root, home.as_deref(), &mounts).and_then(|_| {
+        let step = safety::verify(item, root, home, mounts).and_then(|_| {
             trash(item).inspect_err(|_| {
                 // The reviewed item is no longer where it was: the failed step moved something.
                 moved_unconfirmed |=
@@ -337,7 +364,7 @@ pub(crate) fn add(s: &Session, queue: &Mutex<Queue>, node_ids: &[u32]) -> Result
     // Queue before store. Queue edits need the activity gate, so this copy stays current while `held`.
     let queued = queue.lock().unwrap().clone();
     let snapshot = held.completed_snapshot()?;
-    let items = selection(s, &snapshot, node_ids, Some(&queued))?;
+    let items = selection(s, &snapshot, node_ids, Some(&queued), &Host::read()?)?;
     let candidates = cleanup_queue::candidates(&scan_view(s, &snapshot, false), items, node_ids)?;
     // Release the store before the queue: the lock order is operation, queue, store.
     drop(snapshot);
@@ -386,6 +413,7 @@ pub(crate) fn selection(
     snapshot: &Snapshot,
     node_ids: &[u32],
     queued: Option<&Queue>,
+    host: &Host,
 ) -> Result<Vec<safety::CheckedItem>, String> {
     if node_ids.is_empty() {
         return Err("Select at least one item.".into());
@@ -400,12 +428,10 @@ pub(crate) fn selection(
         queued.retain_uncovered(&mut items);
         queued.check_room(&items)?;
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mounts = platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?;
     for item in &mut items {
         // Read before `verify`, so a file replaced in between fails it.
         item.pin_birth();
-        safety::verify(item, &snapshot.root, home.as_deref(), &mounts)?;
+        safety::verify(item, &snapshot.root, host.home.as_deref(), &host.mounts)?;
     }
     Ok(items)
 }
@@ -446,10 +472,16 @@ fn statuses(
 mod tests {
     use super::*;
     use crate::{
-        tests::{install, snapshot},
+        tests::{install, snapshot, Recording},
         AppState,
     };
     use std::time::Duration;
+
+    const PROTECTED: &str = "This location is protected from cleanup.";
+    const QUEUE_CHANGED: &str = "Cleanup queue changed. Review ready items again.";
+    fn host(home: Option<PathBuf>, mounts: Vec<PathBuf>) -> impl FnOnce() -> Result<Host, String> {
+        move || Ok(Host { home, mounts })
+    }
 
     fn home_dir() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
@@ -593,5 +625,153 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.trashed, 1);
         assert!(result.invalidated);
+    }
+
+    #[test]
+    fn an_excluded_node_and_what_lies_under_it_are_refused_for_review_and_for_the_queue() {
+        let (_dir, root) = home_dir();
+        std::fs::create_dir(root.join("mount")).unwrap();
+        std::fs::write(root.join("mount/inner"), b"x").unwrap();
+        std::fs::write(root.join("plain"), b"p").unwrap();
+        let mut scan = snapshot(root.clone());
+        let id = |scan: &Snapshot, name: &str| {
+            scan.iter_nodes()
+                .find(|n| n.path().unwrap() == root.join(name))
+                .unwrap()
+                .id
+        };
+        let (mount, inner, plain) = (
+            id(&scan, "mount"),
+            id(&scan, "mount/inner"),
+            id(&scan, "plain"),
+        );
+        scan.update_node(mount, |n| n.excluded = true).unwrap();
+        let s = install(&AppState::default(), scan);
+        let queue = Mutex::new(Queue::default());
+        // The node itself, and a child that is not excluded but sits under an excluded folder.
+        for (id, error) in [
+            (
+                mount,
+                "Excluded locations cannot be moved to Trash from this scan.",
+            ),
+            (inner, "Excluded or invalid cleanup ancestor"),
+        ] {
+            assert_eq!(review(&s, Pick::Nodes(&[id])).err().as_deref(), Some(error));
+            assert_eq!(add(&s, &queue, &[id]).err().as_deref(), Some(error));
+        }
+        assert!(s.ticket.lock().unwrap().is_none());
+        assert!(queue.lock().unwrap().entries.is_empty());
+        // An ordinary item of the same scan is reviewed.
+        assert!(review(&s, Pick::Nodes(&[plain])).is_ok());
+    }
+
+    #[test]
+    fn a_folder_that_gains_a_mount_or_is_home_after_review_is_refused_at_commit_with_nothing_trashed(
+    ) {
+        let (_dir, root) = home_dir();
+        let folder = root.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(root.join("plain"), b"p").unwrap();
+        let state = AppState::default();
+        let queue = Mutex::new(Queue::default());
+        for (case, home, mounts) in [
+            ("a mount under it", None, vec![folder.join("mnt")]),
+            ("a mount at it", None, vec![folder.clone()]),
+            ("it is the home folder", Some(folder.clone()), vec![]),
+        ] {
+            let (s, token) = reviewed(&state, &root);
+            let mut trash = Recording::ok();
+            let refused = commit_on(&s, &queue, &token, false, &[], host(home, mounts), |i| {
+                trash.trash(i)
+            });
+            assert_eq!(refused.err().as_deref(), Some(PROTECTED), "{case}");
+            // The whole batch is refused up front, the plain file beside the folder too.
+            assert!(trash.calls.is_empty(), "{case}");
+            assert!(s.is_valid(), "{case}");
+        }
+        // With neither, the same review goes through.
+        let (s, token) = reviewed(&state, &root);
+        let mut trash = Recording::ok();
+        let result = commit_on(&s, &queue, &token, false, &[], host(None, vec![]), |i| {
+            trash.trash(i)
+        })
+        .unwrap();
+        assert_eq!((result.trashed, trash.calls.len()), (2, 2));
+    }
+
+    #[test]
+    fn a_review_refuses_a_folder_that_holds_a_mount_or_is_home() {
+        let (_dir, root) = home_dir();
+        let folder = root.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        let state = AppState::default();
+        let scan = snapshot(root.clone());
+        let id = scan
+            .iter_nodes()
+            .find(|n| n.path().unwrap() == folder)
+            .unwrap()
+            .id;
+        let s = install(&state, scan);
+        let snapshot = s.store.read().unwrap();
+        let select = |host: Host| {
+            selection(&s, &snapshot, &[id], None, &host)
+                .err()
+                .as_deref()
+                .map(str::to_owned)
+        };
+        let none = || Host {
+            home: None,
+            mounts: vec![],
+        };
+        assert_eq!(select(none()), None);
+        let mount = Host {
+            mounts: vec![folder.join("mnt")],
+            ..none()
+        };
+        assert_eq!(select(mount).as_deref(), Some(PROTECTED));
+        let home = Host {
+            home: Some(folder.clone()),
+            ..none()
+        };
+        assert_eq!(select(home).as_deref(), Some(PROTECTED));
+    }
+
+    #[test]
+    fn a_ticket_commits_only_through_its_own_endpoint_and_not_while_the_queue_is_blocked() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let state = AppState::default();
+        let storage = tempfile::tempdir().unwrap();
+        let queue = Mutex::new(Queue::load(storage.path().join("queue")));
+        let scan = snapshot(root.clone());
+        let ids: Vec<_> = scan
+            .iter_nodes()
+            .filter(|n| n.parent == Some(0))
+            .map(|n| n.id)
+            .collect();
+        let s = install(&state, scan);
+        add(&s, &queue, &ids).unwrap();
+        let scans = state.scans.sessions();
+        let mut trash = Recording::ok();
+        // A ticket of the direct review, spent on the queue's endpoint.
+        let token = review(&s, Pick::Nodes(&ids)).unwrap().token;
+        let refused = commit(&s, &queue, &token, true, &[], |i| trash.trash(i));
+        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        // A ticket of the queue's review, spent on the direct endpoint.
+        let token = review(&s, Pick::Queue(&queue, &scans)).unwrap().token;
+        let refused = commit(&s, &queue, &token, false, &[], |i| trash.trash(i));
+        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        // A queue that turned unreadable after its review.
+        let token = review(&s, Pick::Queue(&queue, &scans)).unwrap().token;
+        queue.lock().unwrap().blocked = true;
+        let refused = commit(&s, &queue, &token, true, &[], |i| trash.trash(i));
+        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        queue.lock().unwrap().blocked = false;
+        assert!(trash.calls.is_empty());
+        assert!(s.is_valid());
+        // Its own endpoint, with the queue as reviewed, moves it.
+        let token = review(&s, Pick::Queue(&queue, &scans)).unwrap().token;
+        let result = commit(&s, &queue, &token, true, &[], |i| trash.trash(i)).unwrap();
+        assert_eq!((result.trashed, trash.calls.len()), (1, 1));
     }
 }

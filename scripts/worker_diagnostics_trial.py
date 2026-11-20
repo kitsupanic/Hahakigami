@@ -7,7 +7,7 @@ from pathlib import Path
 import platform
 import subprocess
 import time
-from benchmark import ROOT, file_hash, scanner_fingerprints
+from benchmark import ROOT, file_hash, rotated, scanner_fingerprints
 
 PHASES = ('metadataUs', 'storeWaitUs', 'commitUs', 'progressUs')
 
@@ -70,7 +70,7 @@ def main():
         args.output.write_text(json.dumps(report, indent=2) + '\n')
     save()
     for round_number in range(args.rounds):
-        order = args.counts[round_number % len(args.counts):] + args.counts[:round_number % len(args.counts)]
+        order = rotated(args.counts, round_number)
         for count in order:
             record = {'round': round_number + 1, 'phase': 'initial' if round_number == 0 else 'warm', 'workers': count}
             started = time.monotonic()
