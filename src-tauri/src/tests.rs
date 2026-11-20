@@ -1039,6 +1039,20 @@ fn registering_a_location_again_keeps_one_entry() {
     assert_eq!(state.target_guards.lock().unwrap().len(), 1);
 }
 #[test]
+fn a_picked_disk_root_is_the_listed_disk_and_a_plain_folder_is_not() {
+    let state = AppState::default();
+    let root = PathBuf::from("/");
+    let mut disk = platform::target(&root, "Macintosh HD".into());
+    disk.volume = true;
+    let listed = register_all(&state, vec![(disk, root.clone())]);
+    let picked = register_picked(&state, root).unwrap();
+    assert!(picked.volume, "a disk root scans in the disk slot");
+    assert_eq!(picked.id, listed[0].id, "the pick reuses the listed disk");
+    let d = fixture();
+    let folder = std::fs::canonicalize(d.path()).unwrap();
+    assert!(!register_picked(&state, folder).unwrap().volume);
+}
+#[test]
 fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
     tauri::async_runtime::block_on(async {
         let app = app(AppState::default());

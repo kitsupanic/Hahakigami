@@ -234,10 +234,13 @@ impl LiveSlots {
     fn find(&self, id: &str) -> Option<Arc<Session>> {
         self.slots.values().find(|s| s.id == id).cloned()
     }
+    fn release_ended(&mut self) {
+        self.draining.retain(|s| session_running(s));
+    }
     /// Whether any scan runs, a draining one included: restart cannot overlap a scan at all. Drained scans
     /// that ended are released here.
     fn any_running(&mut self) -> bool {
-        self.draining.retain(|s| session_running(s));
+        self.release_ended();
         !self.draining.is_empty() || self.slots.values().any(|s| session_running(s))
     }
     /// Whether this slot's own scan runs: the only thing that stops a scan starting there.
@@ -313,7 +316,7 @@ impl Slots {
     /// neither the slot table nor the caller's locks are held for it. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.lock();
-        live.draining.retain(|s| session_running(s));
+        live.release_ended();
         let old = live.slots.get(&key).cloned();
         let _operation = old
             .as_ref()
@@ -349,7 +352,7 @@ impl Slots {
     /// A scan that has not ended yet keeps counting as running until it does. An unknown id is a no-op.
     pub(crate) fn discard(&self, id: &str) {
         let mut live = self.lock();
-        live.draining.retain(|s| session_running(s));
+        live.release_ended();
         let key = live
             .slots
             .iter()

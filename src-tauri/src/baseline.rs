@@ -749,11 +749,7 @@ mod tests {
     fn metadata(started_at_ms: u64) -> cache_store::ScanMetadata {
         cache_store::ScanMetadata {
             started_at_ms,
-            completed_at_ms: now_ms(),
             workers: 1,
-            worker_mode: "auto".into(),
-            worker_source: "hardware".into(),
-            qos: disk_scan::ScanQos::Automatic,
         }
     }
     fn token(cursor: u64, full_scan_at_ms: u64) -> Token {
