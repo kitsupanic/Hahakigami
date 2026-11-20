@@ -271,7 +271,12 @@ fn invalidate_overlapping(
     }
     stale
 }
-type Execution = (TrashResult, Vec<PathBuf>, Vec<(PathBuf, String)>, bool);
+type Execution = (
+    TrashResult,
+    Vec<safety::CheckedItem>,
+    Vec<(safety::CheckedItem, String)>,
+    bool,
+);
 fn execute(
     items: &[safety::CheckedItem],
     root: &Path,
@@ -305,7 +310,7 @@ fn execute(
         match step {
             Ok(()) => {
                 result.trashed += 1;
-                successful.push(item.path.clone());
+                successful.push(item.clone());
                 result.outcomes.push(TrashOutcome {
                     review_index,
                     status: TrashOutcomeStatus::Trashed,
@@ -313,7 +318,7 @@ fn execute(
                 });
             }
             Err(error) => {
-                failures.push((item.path.clone(), error.clone()));
+                failures.push((item.clone(), error.clone()));
                 result.outcomes.push(TrashOutcome {
                     review_index,
                     status: TrashOutcomeStatus::Failed,
@@ -374,7 +379,8 @@ pub(crate) fn scan_view<'a>(
 }
 /// The selected nodes of `s` as checked items, collapsed to the outermost and then verified against the scan root.
 /// Only the outermost items touch the disk, and when `queued` is given they must fit its room before any of them
-/// does, so a huge selection is refused without a single disk read.
+/// does, so a huge selection is refused without a single disk read. Items already queued (or under a queued entry)
+/// are left out of the result and unchecked: adding them changes nothing.
 pub(crate) fn selection(
     s: &Session,
     snapshot: &Snapshot,
@@ -391,6 +397,7 @@ pub(crate) fn selection(
         .collect::<Result<Vec<_>, _>>()?;
     let mut items = safety::collapse(items);
     if let Some(queued) = queued {
+        queued.retain_uncovered(&mut items);
         queued.check_room(&items)?;
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);

@@ -177,9 +177,6 @@ header nav button {
   column-gap: 14px;
   row-gap: 0;
 }
-.explorer.inspector-collapsed {
-  grid-template-columns: minmax(0, 1fr);
-}
 .visual {
   grid-column: 1;
   grid-row: 1;
@@ -417,20 +414,6 @@ header nav button {
 .file-contents {
   font-size: var(--font-caption);
   line-height: 12px;
-}
-.file-share {
-  display: block;
-  width: 100%;
-  height: 7px;
-  border-radius: var(--radius-xs);
-  overflow: hidden;
-  background: var(--share-track);
-  flex-shrink: 0;
-}
-.file-share > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
 }
 .pagination {
   display: flex;
@@ -1473,9 +1456,6 @@ header nav button {
     grid-template-rows: 200px 260px auto;
     min-height: 0;
   }
-  .explorer.inspector-collapsed {
-    grid-template-rows: 200px 260px;
-  }
   .inspector {
     grid-column: 1;
     grid-row: 3;
@@ -1554,9 +1534,6 @@ header nav button {
   gap: 8px 14px;
   flex: 1 0 460px;
   min-height: 0;
-}
-.analysis-layout.inspector-collapsed {
-  grid-template-columns: minmax(0, 1fr);
 }
 .analysis-layout:not(.has-scan) {
   display: flex;

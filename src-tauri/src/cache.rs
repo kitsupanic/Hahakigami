@@ -1,5 +1,7 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{atomic, open, sync_dir, unusable, ScanMetadata, Store};
+use crate::cache_store::{
+    atomic, open, sync_dir, unusable, verified_nonshared, ScanMetadata, Store,
+};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -64,8 +66,6 @@ pub struct Cache {
 }
 pub fn eligible(s: &Snapshot) -> bool {
     s.incremental_accounting_eligible()
-        && s.accounting.warnings.is_empty()
-        && s.accounting.deduction_bytes == 0
         && s.state == ScanState::Completed
         && !s.stats.incomplete
         && s.stats.errors == 0
@@ -115,11 +115,7 @@ impl Cache {
         }
         let r: Record = serde_json::from_reader(BufReader::new(file.take(16 * 1024)))?;
         if r.version != 3
-            || r.accounting.model != disk_scan::AccountingModel::FullClonesV1
-            || !r.accounting.checks_complete
-            || r.accounting.shared
-            || !r.accounting.warnings.is_empty()
-            || r.accounting.deduction_bytes != 0
+            || !verified_nonshared(&r.accounting)
             || r.token.cursor == 0
             || r.token.epoch.is_empty()
             || r.token.epoch.len() > 256
@@ -383,11 +379,7 @@ mod tests {
     fn metadata() -> ScanMetadata {
         ScanMetadata {
             started_at_ms: crate::now_ms(),
-            completed_at_ms: crate::now_ms(),
             workers: 1,
-            worker_mode: "auto".into(),
-            worker_source: "hardware".into(),
-            qos: disk_scan::ScanQos::Automatic,
         }
     }
     #[test]

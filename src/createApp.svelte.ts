@@ -633,20 +633,10 @@ export default function createApp() {
       return;
     choosingFolder = true;
     const request = ++folderRequest;
-    const g = generation.current,
-      nav = navigation.current;
-    const scanId = activeId.current,
-      previousTarget = target,
-      previousSummary = summary;
+    const previousTarget = target;
+    // Another scan may take the view while the dialog is open; the chosen folder still counts.
     const current = () =>
-      !disposed &&
-      request === folderRequest &&
-      generation.current === g &&
-      navigation.current === nav &&
-      activeId.current === scanId &&
-      target === previousTarget &&
-      // Progress replaces the summary object of a scan that keeps running while the dialog is open.
-      summary?.scanId === previousSummary?.scanId;
+      !disposed && request === folderRequest && target === previousTarget;
     quickLook.dismiss();
     try {
       const chosen = await invoke<Target | null>("choose_folder");
@@ -1845,6 +1835,9 @@ export default function createApp() {
     },
     get summary() {
       return summary;
+    },
+    get revision() {
+      return revision;
     },
     get focus() {
       return focus;

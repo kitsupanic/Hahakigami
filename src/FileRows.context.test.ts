@@ -32,6 +32,7 @@ it("identifies same-named global results by parent path and keeps branch colors"
   const props = {
     items: [first, second],
     selection: [],
+    scanBytes: 100,
     running: false,
     onSelect: selected,
     onOpen: vi.fn(),
@@ -48,8 +49,6 @@ it("identifies same-named global results by parent path and keeps branch colors"
     expect(container.querySelector<HTMLElement>(".file-name")!.title).toBe(
       first.path,
     );
-    const bars = container.querySelectorAll<HTMLElement>(".file-share > span");
-    expect(bars[0].style.background).toBe(bars[1].style.background);
     await act(() =>
       container.querySelector<HTMLElement>('[role="treeitem"]')!.click(),
     );
@@ -79,6 +78,7 @@ it("virtualizes two-line result rows through the last item", async () => {
       root.render(FileRows, {
         items,
         selection: [],
+        scanBytes: 100,
         running: false,
         showParentPaths: true,
         onSelect: vi.fn(),
@@ -115,6 +115,7 @@ it("links a nested hover to its closest visible row without selecting or scrolli
   const props = {
     items: [folder, node(3, "/Other")],
     selection: [3],
+    scanBytes: 100,
     running: false,
     onSelect,
     onOpen: vi.fn(),
@@ -174,6 +175,7 @@ it("publishes expanded child ancestry and does not scroll offscreen rows into ho
   const props = {
     items,
     selection: [],
+    scanBytes: 100,
     running: false,
     onSelect: vi.fn(),
     onOpen: vi.fn(),

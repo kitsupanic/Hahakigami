@@ -375,23 +375,39 @@ impl Queue {
         self.blocked = false;
         Ok(())
     }
+    fn queued_keys(&self) -> Keys<'_> {
+        self.entries
+            .iter()
+            .map(|c| (&c.volume, c.item.path.as_path()))
+            .collect()
+    }
+    /// Drops the items that are, or lie under, a queued entry: adding them changes nothing, so they need no checks.
+    pub fn retain_uncovered(&self, items: &mut Vec<CheckedItem>) {
+        let queued = self.queued_keys();
+        items.retain(|i| !covered(&queued, i));
+    }
     /// Fails as `add` would when `items` (outermost only) cannot be merged in under `MAX_ENTRIES`, from paths alone
     /// so it can run before any disk check: an item under a queued entry adds nothing, one above queued entries
-    /// replaces them.
+    /// replaces them. Only paths on the same volume overlap: a card ejected and another mounted at the same path
+    /// are different places.
     pub fn check_room(&self, items: &[CheckedItem]) -> Result<(), String> {
         self.require_mutable()?;
-        let queued: std::collections::HashSet<&Path> =
-            self.entries.iter().map(|c| c.item.path.as_path()).collect();
-        let new: std::collections::HashSet<&Path> =
-            items.iter().map(|i| i.path.as_path()).collect();
-        let added = items
+        let queued = self.queued_keys();
+        let new: std::collections::HashSet<(&Option<Volume>, &Path)> = items
             .iter()
-            .filter(|i| !i.path.ancestors().any(|a| queued.contains(a)))
-            .count();
+            .map(|i| (&i.volume, i.path.as_path()))
+            .collect();
+        let added = items.iter().filter(|i| !covered(&queued, i)).count();
         let replaced = self
             .entries
             .iter()
-            .filter(|c| c.item.path.ancestors().skip(1).any(|a| new.contains(a)))
+            .filter(|c| {
+                c.item
+                    .path
+                    .ancestors()
+                    .skip(1)
+                    .any(|a| new.contains(&(&c.volume, a)))
+            })
             .count();
         if self.entries.len() - replaced + added > MAX_ENTRIES {
             return Err(FULL.into());
@@ -407,14 +423,14 @@ impl Queue {
             .chain(candidates)
             .enumerate()
             .collect();
-        candidates.sort_by(|a, b| a.1.item.path.cmp(&b.1.item.path));
+        candidates
+            .sort_by(|a, b| (&a.1.volume, &a.1.item.path).cmp(&(&b.1.volume, &b.1.item.path)));
         let mut entries: Vec<(usize, Candidate)> = Vec::new();
         for c in candidates {
-            // Native path order groups descendants; stable sorting keeps existing duplicates.
-            if entries
-                .last()
-                .is_some_and(|p| c.1.item.path.starts_with(&p.1.item.path))
-            {
+            // Volume then native path order groups descendants; stable sorting keeps existing duplicates.
+            if entries.last().is_some_and(|p| {
+                p.1.volume == c.1.volume && c.1.item.path.starts_with(&p.1.item.path)
+            }) {
                 continue;
             }
             entries.push(c);
@@ -460,23 +476,31 @@ impl Queue {
     pub fn clear(&mut self) -> Result<(), String> {
         self.publish(vec![], true)
     }
+    /// Entries under a trashed item are gone, and a failed item's own entry records the error. Both only match an
+    /// entry on the item's volume.
     pub fn outcomes(
         &mut self,
-        paths: &[PathBuf],
-        failures: &[(PathBuf, String)],
+        trashed: &[CheckedItem],
+        failures: &[(CheckedItem, String)],
     ) -> Result<(), String> {
         let mut changed = false;
         let entries: Vec<_> = self
             .entries
             .iter()
             .filter_map(|c| {
-                if paths.iter().any(|p| c.item.path.starts_with(p)) {
+                if trashed
+                    .iter()
+                    .any(|t| t.volume == c.volume && c.item.path.starts_with(&t.path))
+                {
                     changed = true;
                     return None;
                 }
                 let mut c = c.clone();
                 // Exact path: a failed folder never tried the queued entries under it.
-                if let Some((_, error)) = failures.iter().find(|(p, _)| *p == c.item.path) {
+                if let Some((_, error)) = failures
+                    .iter()
+                    .find(|(f, _)| f.volume == c.volume && f.path == c.item.path)
+                {
                     let error: String = error.chars().take(4096).collect();
                     if c.last_error.as_ref() != Some(&error) {
                         changed = true;
@@ -493,8 +517,8 @@ impl Queue {
         self.publish(entries, false)
     }
     #[cfg(test)]
-    pub fn prune(&mut self, paths: &[PathBuf]) -> Result<(), String> {
-        self.outcomes(paths, &[])
+    pub fn prune(&mut self, trashed: &[CheckedItem]) -> Result<(), String> {
+        self.outcomes(trashed, &[])
     }
 }
 #[derive(Serialize)]
@@ -520,6 +544,14 @@ pub(crate) struct View {
     pub blocked: bool,
 }
 
+type Keys<'a> = std::collections::HashSet<(&'a Option<Volume>, &'a Path)>;
+/// Whether `item` is, or lies under, an entry of `queued` on its own volume.
+fn covered(queued: &Keys, item: &CheckedItem) -> bool {
+    item.path
+        .ancestors()
+        .any(|a| queued.contains(&(&item.volume, a)))
+}
+
 /// The queue entries for `items`, the checked items of `node_ids` in `scan`.
 pub(crate) fn candidates(
     scan: &Scan,
@@ -530,12 +562,7 @@ pub(crate) fn candidates(
     let root = snapshot.node(0).ok_or("Missing scan root")?;
     let root = Guard {
         path: snapshot.root.clone(),
-        identity: Identity {
-            device: root.identity.device,
-            inode: root.identity.inode,
-            kind: 1,
-            birth: None,
-        },
+        identity: Identity::of(&root),
     };
     let guards = |lineage: &[(PathBuf, Identity)]| {
         lineage
@@ -659,12 +686,7 @@ pub(crate) fn statuses(
             }
             matches
         };
-        let root_identity = snapshot.node(0).map(|n| Identity {
-            device: n.identity.device,
-            inode: n.identity.inode,
-            kind: 1,
-            birth: None,
-        });
+        let root_identity = snapshot.node(0).map(|n| Identity::of(&n));
         for (c, exact) in entries {
             let found = matches.get(c.item.path.as_path()).copied();
             let (status, reason, node_id) = if !exact {
@@ -889,7 +911,7 @@ mod tests {
         assert_eq!(queue.entries[0].id, parent.id);
         queue.add(vec![child]).unwrap();
         assert_eq!(queue.entries[0].id, parent.id);
-        queue.prune(&[folder]).unwrap();
+        queue.prune(&[parent.checked()]).unwrap();
         assert!(Queue::load(storage).entries.is_empty());
     }
     #[test]
@@ -1192,13 +1214,15 @@ mod tests {
         q.add(vec![candidate(&root, &child)]).unwrap();
         let revision = q.revision;
         // The folder failed to trash; the entry under it was never tried.
-        q.outcomes(&[], &[(folder.clone(), "folder failed".into())])
+        let item = |path: &Path| candidate(&root, path).checked();
+        q.outcomes(&[], &[(item(&folder), "folder failed".into())])
             .unwrap();
         assert_eq!((q.revision, &q.entries[0].last_error), (revision, &None));
-        q.outcomes(&[], &[(child, "child failed".into())]).unwrap();
+        q.outcomes(&[], &[(item(&child), "child failed".into())])
+            .unwrap();
         assert_eq!(q.entries[0].last_error.as_deref(), Some("child failed"));
         // A trashed folder does take its descendants with it.
-        q.outcomes(&[folder], &[]).unwrap();
+        q.outcomes(&[item(&folder)], &[]).unwrap();
         assert!(q.entries.is_empty());
     }
     #[test]

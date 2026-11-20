@@ -18,25 +18,20 @@ export default function createFileTypes(context: {
     queryHighlights = latestOnly();
   let choice = $state.raw<{ scanId: string; extension: string } | null>(null);
   let retry = $state(0);
-  let loaded = $state.raw<{ key: string; stats: FileTypeStats } | null>(null);
-  let scanLoaded = $state.raw<{ key: string; stats: FileTypeStats } | null>(
-    null,
-  );
+  // Stats are keyed by scan and folder; `version` (revision and retry) says how fresh they are, so
+  // the last ones stay on screen while a newer revision loads.
+  type Loaded = { key: string; version: string; stats: FileTypeStats };
+  let loaded = $state.raw<Loaded | null>(null);
+  let scanLoaded = $state.raw<Loaded | null>(null);
   let disposed = false;
   onDestroy(() => {
     disposed = true;
   });
   let failure = $state.raw<{ key: string; message: string } | null>(null);
-  let highlighted = $state.raw<{
-    key: string;
-    nodes: NodeView[];
-    ids: number[];
-  } | null>(null);
-  let highlightFailure = $state.raw<{
-    key: string;
-    nodes: NodeView[];
-    message: string;
-  } | null>(null);
+  let highlighted = $state.raw<{ key: string; ids: number[] } | null>(null);
+  let highlightFailure = $state.raw<{ key: string; message: string } | null>(
+    null,
+  );
   const scanId = $derived(context.summary?.scanId);
   const nodeId = $derived(
     scope === "folder" ? context.focus?.id : context.summary?.rootId,
@@ -49,59 +44,59 @@ export default function createFileTypes(context: {
   const revision = $derived(
     `${context.summary?.state}:${Math.floor((context.summary?.elapsedMs ?? 0) / 10000)}`,
   );
-  const statsKey = $derived(`${scanId}:${nodeId}:${revision}:${retry}`);
-  const highlightKey = $derived(`${statsKey}:${JSON.stringify(extension)}`);
+  const running = $derived(context.summary?.state === "running");
+  const statsScope = $derived(`${scanId}:${nodeId}`);
+  const version = $derived(`${revision}:${retry}`);
+  const statsKey = $derived(`${statsScope}:${version}`);
+  const highlightKey = $derived(`${statsScope}:${JSON.stringify(extension)}`);
   const stats = $derived(
-    loaded?.key === statsKey
-      ? loaded.stats
-      : scanLoaded?.key === statsKey
-        ? scanLoaded.stats
-        : null,
+    (loaded?.key === statsScope
+      ? loaded
+      : scanLoaded?.key === statsScope
+        ? scanLoaded
+        : null
+    )?.stats ?? null,
   );
   const error = $derived(failure?.key === statsKey ? failure.message : "");
+  // Ids of tiles no longer shown are harmless: the map only matches tiles it has.
   const highlights = $derived(
-    highlighted?.key === highlightKey && highlighted.nodes === context.nodes
-      ? highlighted.ids
-      : [],
+    highlighted?.key === highlightKey ? highlighted.ids : [],
   );
   const highlightError = $derived(
-    highlightFailure?.key === highlightKey &&
-      highlightFailure.nodes === context.nodes
-      ? highlightFailure.message
-      : "",
+    highlightFailure?.key === highlightKey ? highlightFailure.message : "",
   );
   const highlightsLoading = $derived(
-    extension !== null &&
-      !highlightError &&
-      !(
-        highlighted?.key === highlightKey && highlighted.nodes === context.nodes
-      ),
+    extension !== null && !highlightError && highlighted?.key !== highlightKey,
   );
 
   $effect(() => {
     const enabled = context.enabled;
     const key = statsKey;
+    const scope = statsScope;
+    const fresh = version;
     const scan = scanId;
     const root = nodeId;
     if (!enabled || scan === undefined || root === undefined) return;
-    if (untrack(() => loaded?.key === key || scanLoaded?.key === key)) return;
-    const version = revision;
+    const cached = () =>
+      [loaded, scanLoaded].some(
+        (entry) => entry?.key === scope && entry.version === fresh,
+      );
+    if (untrack(cached)) return;
     let ignore = false;
     queryStats(async () => {
       // A previous in-flight query may fill the cache while this job is queued.
-      if (ignore || disposed || loaded?.key === key || scanLoaded?.key === key)
-        return;
+      if (ignore || disposed || cached()) return;
       await invoke<FileTypeStats>("get_file_types", {
         scanId: scan,
         nodeId: root,
       })
         .then((result) => {
           // Cache a valid in-flight result even when its panel has just been hidden.
-          if (disposed || scanId !== scan || revision !== version) return;
+          if (disposed || scanId !== scan) return;
           if (failure?.key === key) failure = null;
-          if (root === context.summary?.rootId)
-            scanLoaded = { key, stats: result };
-          else loaded = { key, stats: result };
+          const entry = { key: scope, version: fresh, stats: result };
+          if (root === context.summary?.rootId) scanLoaded = entry;
+          else loaded = entry;
         })
         .catch((reason) => {
           if (!ignore) failure = { key, message: String(reason) };
@@ -112,16 +107,37 @@ export default function createFileTypes(context: {
     };
   });
 
+  // A live scan's map reloads every second or two, but each query walks the whole tree under the
+  // scan's read lock: while running, keep the asked tiles until the revision (or a retry) changes or
+  // the map shows mostly other tiles (the user moved to another folder).
+  let asked: number[] = [],
+    askedSet = new Set<number>(),
+    askedVersion = "";
+  const highlightNodeIds = $derived.by(() => {
+    const ids = context.nodes
+      .filter((node) => node.kind !== "aggregate")
+      .map((node) => node.id);
+    const fresh = version;
+    if (
+      running &&
+      fresh === askedVersion &&
+      ids.filter((id) => askedSet.has(id)).length * 2 >= ids.length
+    )
+      return asked;
+    asked = ids;
+    askedSet = new Set(ids);
+    askedVersion = fresh;
+    return ids;
+  });
+
   $effect(() => {
     const key = highlightKey;
     const scan = scanId;
     const root = nodeId;
     const selected = extension;
-    const nodes = context.nodes;
+    const nodeIds = highlightNodeIds;
     if (scan === undefined || root === undefined || selected === null) return;
-    const nodeIds = nodes
-      .filter((node) => node.kind !== "aggregate")
-      .map((node) => node.id);
+    untrack(() => (highlightFailure = null));
     let ignore = false;
     queryHighlights(async () => {
       if (ignore) return;
@@ -132,11 +148,10 @@ export default function createFileTypes(context: {
         nodeIds,
       })
         .then((ids) => {
-          if (!ignore) highlighted = { key, nodes, ids };
+          if (!ignore) highlighted = { key, ids };
         })
         .catch((reason) => {
-          if (!ignore)
-            highlightFailure = { key, nodes, message: String(reason) };
+          if (!ignore) highlightFailure = { key, message: String(reason) };
         });
     });
     return () => {
