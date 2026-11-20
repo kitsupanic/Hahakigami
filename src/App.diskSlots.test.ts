@@ -594,7 +594,7 @@ it("cancels only the scan on screen and keeps its partial results while the othe
     ["cancel_scan", { scanId: "scan-backup-2" }],
   ]);
   await progress("scan-backup-2", { state: "cancelled", entries: 7 });
-  expect(tag("Backup")).toBe("Scanned");
+  expect(tag("Backup")).toBe("Cancelled");
   expect(app().scanSlots["/Volumes/Backup"].summary?.state).toBe("cancelled");
   expect(app().scanSlots["/Volumes/Backup"].summary?.entries).toBe(7);
   expect(app().summary?.state).toBe("cancelled");
@@ -643,7 +643,7 @@ it("keeps a failed scan's partial results and leaves the other scans running", a
   await scanDisk("Macintosh HD");
   await scanDisk("Backup");
   await progress("scan-disk-1", { state: "failed", entries: 3 });
-  expect(tag("Macintosh HD")).toBe("Scanned");
+  expect(tag("Macintosh HD")).toBe("Scan failed");
   expect(app().scanSlots["/"].summary?.state).toBe("failed");
   expect(app().scanSlots["/"].summary?.entries).toBe(3);
   expect(tag("Backup")).toBe("Scanning");

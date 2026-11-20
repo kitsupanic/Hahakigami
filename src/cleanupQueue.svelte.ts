@@ -9,7 +9,7 @@ import {
 } from "./queueMarkers";
 import { bandSegments, bandSummary } from "./queueBands";
 import { commonFolder, folderItems } from "./queueFolders";
-import { compactBytes } from "./uiFormat";
+import { compactBytes, countLabel } from "./uiFormat";
 
 /** A Cleanup queue review: the items the backend will move to the Trash, and the token that commits them. */
 type QueueReview = { token: string; items: NodeView[] };
@@ -224,10 +224,10 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
   });
   const tally = $derived(
     [
-      `${view.entries.length} ${view.entries.length === 1 ? "item" : "items"}`,
+      countLabel(view.entries.length, "item"),
       `${compactBytes(bytes)} on disk`,
       view.entries.length > ready.length &&
-        `${view.entries.length - ready.length} not ready`,
+        `${(view.entries.length - ready.length).toLocaleString()} not ready`,
     ]
       .filter(Boolean)
       .join(" · "),
@@ -287,10 +287,10 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         : "Removing from cleanup queue…"
       : removalFeedback
         ? removalFeedback.removed < removalFeedback.attempted
-          ? `Removed ${removalFeedback.removed} of ${removalFeedback.attempted} queued items.`
+          ? `Removed ${removalFeedback.removed.toLocaleString()} of ${removalFeedback.attempted.toLocaleString()} queued items.`
           : removalFeedback.removed === 1
             ? ""
-            : `Removed ${removalFeedback.removed} items from cleanup queue.`
+            : `Removed ${countLabel(removalFeedback.removed, "item")} from cleanup queue.`
         : adding
           ? selection.length === 1
             ? ""
@@ -300,7 +300,7 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
               ? ""
               : "All selected items are in your cleanup queue."
             : queuedCount > 0
-              ? `${queuedCount} of ${selection.length} selected items already queued.`
+              ? `${queuedCount.toLocaleString()} of ${selection.length.toLocaleString()} selected items already queued.`
               : "",
   );
 

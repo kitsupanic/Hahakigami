@@ -376,8 +376,6 @@ fn retired_worker_preferences_cannot_override_new_scans_or_change_existing_sessi
         let end = events.wait_end();
         for summary in events.all() {
             assert_eq!(summary.workers, workers);
-            assert_eq!(summary.worker_mode, settings::WorkerMode::Auto);
-            assert_eq!(summary.worker_source, "hardware");
             assert_eq!(summary.qos, disk_scan::ScanQos::Automatic);
         }
         assert_eq!(end.state, "completed");
@@ -464,8 +462,6 @@ fn install_on(
             root_ancestors,
             workers: 8,
             cached_validation_workers: 8,
-            worker_mode: settings::WorkerMode::Auto,
-            worker_source: "manual".into(),
             qos: disk_scan::ScanQos::Automatic,
         },
         None,
@@ -1469,11 +1465,7 @@ fn automatic_info(state: &AppState, target_id: &str) -> settings::SettingsInfo {
     } else {
         settings::AutoScope::Folder
     };
-    state
-        .scan_settings
-        .lock()
-        .unwrap()
-        .automatic_info_for_scope(scope)
+    settings::ScanSettings::default().automatic_info_for_scope(scope)
 }
 #[test]
 fn hardware_auto_ignores_legacy_preferences_and_is_captured_by_new_sessions() {
@@ -1489,10 +1481,8 @@ fn hardware_auto_ignores_legacy_preferences_and_is_captured_by_new_sessions() {
         let s = state.scans.find(&id).unwrap();
         assert_eq!(s.workers, info.resolved_workers);
         let captured_validation_workers = s.cached_validation_workers;
-        assert_eq!(s.worker_mode, settings::WorkerMode::Auto);
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(s.worker_source, "hardware");
             assert_eq!(info.auto_scope, settings::AutoScope::Folder);
         }
         assert_eq!(s.workers, info.resolved_workers);
@@ -1526,8 +1516,6 @@ fn automatic_workers_probe() {
         .await
         .unwrap();
         let held = state.scans.find(&id).unwrap();
-        assert_eq!(held.worker_source, "hardware");
-        assert_eq!(held.worker_mode, settings::WorkerMode::Auto);
         let captured = held.workers;
         let until = Instant::now() + Duration::from_secs(180);
         loop {
@@ -1543,7 +1531,6 @@ fn automatic_workers_probe() {
         let scanned = scan_summary(app.state(), id.clone()).await.unwrap();
         assert_eq!(held.workers, captured);
         let automatic = automatic_info(&state, &target.id);
-        assert_eq!(automatic.worker_mode, settings::WorkerMode::Auto);
         assert_eq!(automatic.qos, disk_scan::ScanQos::Automatic);
         assert_eq!(automatic.resolved_workers, automatic.default_workers);
         let report = serde_json::json!({"settings":before,"scan":scanned,"automaticAfterLegacyReload":automatic,"capturedWorkers":captured});
@@ -4494,7 +4481,7 @@ fn queue_entries_follow_the_scan_of_their_own_disk() {
     assert_eq!(review_of(&queue, &[&a2, &b], "a2").len(), 1);
     // Once A's entry is gone (cleaned), B's stays ready.
     let cleaned = safety::checked_item(&a.scan(), node_of(&a.snapshot, &a_root.join("file")));
-    queue.prune(&[cleaned.unwrap()]).unwrap();
+    queue.outcomes(&[cleaned.unwrap()], &[]).unwrap();
     assert_eq!(status(&queue, &[&a2, &b], &a_root), None);
     assert_eq!(status(&queue, &[&a2, &b], &b_root), Some("ready".into()));
 }
@@ -4552,6 +4539,30 @@ fn the_fallback_needs_a_usable_disk_scan_that_contains_the_item() {
         standing(&queue, &[&wide, &elsewhere, &disk]),
         is("ready", Some("disk"))
     );
+}
+
+#[test]
+fn queued_siblings_resolve_to_their_own_nodes() {
+    let storage = fixture();
+    let mut queue = queue_of(&storage);
+    let tree = fixture();
+    let root = std::fs::canonicalize(tree.path()).unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    let files: Vec<_> = ["a", "b", "c", "sub/a", "sub/b"]
+        .iter()
+        .map(|name| root.join(name))
+        .collect();
+    for file in &files {
+        std::fs::write(file, b"abc").unwrap();
+    }
+    let folder = held("folder", false, snapshot(root));
+    let paths: Vec<&std::path::Path> = files.iter().map(|p| p.as_path()).collect();
+    queue_nodes(&mut queue, &folder, &paths);
+    let mut expected: Vec<_> = files.iter().map(|p| node_of(&folder.snapshot, p)).collect();
+    expected.sort_unstable();
+    let mut ready = review_of(&queue, &[&folder], "folder");
+    ready.sort_unstable();
+    assert_eq!(ready, expected);
 }
 
 #[test]
@@ -5032,12 +5043,12 @@ fn queued_paths_overlap_only_on_the_same_volume() {
     let reloaded = queue_of(&storage);
     assert!(!reloaded.blocked, "{:?}", reloaded.warning);
     assert_eq!(reloaded.entries.len(), 2);
-    queue.prune(&[parent2.checked()]).unwrap();
+    queue.outcomes(&[parent2.checked()], &[]).unwrap();
     assert_eq!(queue.entries.len(), 1);
     assert_eq!(queue.entries[0].volume, Some(card1.clone()));
     // On its own volume, a trashed folder still takes its entries.
     queue
-        .prune(&[on_volume("DCIM", 1, &card1).checked()])
+        .outcomes(&[on_volume("DCIM", 1, &card1).checked()], &[])
         .unwrap();
     assert!(queue.entries.is_empty());
 }

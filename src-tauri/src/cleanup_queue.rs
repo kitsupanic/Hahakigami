@@ -3,7 +3,7 @@ use crate::safety::{self, CheckedItem, Identity, Scan, Volume};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    ffi::{CString, OsString},
+    ffi::{CString, OsStr, OsString},
     fs::{self, File, OpenOptions},
     io::Read,
     os::fd::{AsRawFd, FromRawFd},
@@ -517,10 +517,6 @@ impl Queue {
         self.require_mutable()?;
         self.publish(entries, false)
     }
-    #[cfg(test)]
-    pub fn prune(&mut self, trashed: &[CheckedItem]) -> Result<(), String> {
-        self.outcomes(trashed, &[])
-    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -660,17 +656,34 @@ pub(crate) fn statuses(
             continue;
         }
         let snapshot = scan.snapshot;
-        // Native paths are matched by walking native names down from the scan root, one lookup per entry,
-        // never by building every node's path. Display strings are never keys.
+        // Native paths are matched by walking native names down from the scan root, never by building every
+        // node's path. Siblings share one parent walk and one name map. Display strings are never keys.
         let walk = !snapshot.has_path_overrides();
         let matches: HashMap<&Path, u32> = if walk {
+            let mut folders: HashMap<&Path, Option<HashMap<&OsStr, u32>>> = HashMap::new();
             entries
                 .iter()
                 .filter_map(|(c, _)| {
-                    Some((
-                        c.item.path.as_path(),
-                        safety::node_at(snapshot, &c.item.path)?,
-                    ))
+                    let path = c.item.path.as_path();
+                    let found = match (path.parent(), path.file_name()) {
+                        (Some(parent), Some(name)) if path != snapshot.root => {
+                            let children = folders.entry(parent).or_insert_with(|| {
+                                let mut map = HashMap::new();
+                                for &child in
+                                    snapshot.children(safety::node_at(snapshot, parent)?).ok()?
+                                {
+                                    if let Ok(name) = snapshot.native_name(child) {
+                                        map.entry(name).or_insert(child);
+                                    }
+                                }
+                                Some(map)
+                            });
+                            let id = *children.as_ref()?.get(name)?;
+                            (snapshot.path(id).ok()? == path).then_some(id)
+                        }
+                        _ => safety::node_at(snapshot, path),
+                    };
+                    Some((path, found?))
                 })
                 .collect()
         } else {
@@ -1016,7 +1029,7 @@ mod tests {
         assert_eq!(queue.entries[0].id, parent.id);
         queue.add(vec![child]).unwrap();
         assert_eq!(queue.entries[0].id, parent.id);
-        queue.prune(&[parent.checked()]).unwrap();
+        queue.outcomes(&[parent.checked()], &[]).unwrap();
         assert!(Queue::load(storage).entries.is_empty());
     }
     #[test]

@@ -462,13 +462,12 @@ fn statuses(
     if !queue.matchable() {
         return HashMap::new();
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
     // Unreadable mount table: report nothing ready rather than check folders with no mounts to protect.
-    let Some(mounts) = platform::mounted_paths() else {
+    let Ok(host) = Host::read() else {
         return HashMap::new();
     };
     with_usable_scans(scans, |scans| {
-        cleanup_queue::statuses(queue, scans, home.as_deref(), &mounts)
+        cleanup_queue::statuses(queue, scans, host.home.as_deref(), &host.mounts)
     })
 }
 

@@ -68,7 +68,7 @@ it("custom edits remain unapplied until Apply and support optional shared units"
     minBytes: null,
     maxBytes: 1.5 * 1024 ** 3,
   });
-  await choose("Size unit", "MB");
+  await choose("Size unit", "MiB");
   await fill("Minimum size", "100");
   await fill("Maximum size", "");
   await click("Apply range");
@@ -168,7 +168,7 @@ it("keeps the typed decimal in the field after Apply", async () => {
   ).toBe("1.1");
 });
 it.each([
-  [Math.round(1.1 * 1024 ** 3), "GB", "1.1"],
+  [Math.round(1.1 * 1024 ** 3), "GiB", "1.1"],
   [1, "B", "1"],
 ])("remounts %s bytes that no unit holds exactly as %s %s", async (bytes, unit, text) => {
   await act(async () => root.unmount());
@@ -203,7 +203,7 @@ it("remounts in the largest unit that holds the applied size exactly", async () 
     container.querySelector<HTMLSelectElement>(
       'select[aria-label="Size unit"]',
     )!.value,
-  ).toBe("MB");
+  ).toBe("MiB");
   expect(
     container.querySelector<HTMLInputElement>(
       'input[aria-label="Minimum size"]',

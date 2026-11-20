@@ -137,8 +137,6 @@ struct Summary {
     exclusions_stored: usize,
     message: Option<String>,
     workers: usize,
-    worker_mode: settings::WorkerMode,
-    worker_source: String,
     qos: disk_scan::ScanQos,
     worker_stats: Vec<disk_scan::WorkerStats>,
     finalization_us: u64,
@@ -286,8 +284,6 @@ impl Session {
                 .find(|issue| !disk_scan::is_system_restriction(issue))
                 .map(|e| format!("{}: {}", e.path.display(), e.message)),
             workers: details.actual_workers.unwrap_or(self.workers),
-            worker_mode: self.worker_mode,
-            worker_source: self.worker_source.clone(),
             qos: self.qos,
             worker_stats: s.worker_stats.clone(),
             finalization_us: s.finalization_us,
@@ -315,7 +311,6 @@ fn issue_index<'a>(
 
 #[derive(Default)]
 struct AppState {
-    scan_settings: Arc<Mutex<settings::ScanSettings>>,
     explorer_preferences: Arc<Mutex<explorer_preferences::Preferences>>,
     sort_requests: Arc<AtomicU64>,
     preview: Arc<quick_look::Registry>,
@@ -875,11 +870,8 @@ fn register_scan(
         auto_scope,
     } = opened;
     let scheduling_conditions = platform::scheduling_conditions();
-    let (workers, cached_validation_workers) = state
-        .scan_settings
-        .lock()
-        .unwrap()
-        .resolve_scan_workers(auto_scope, scheduling_conditions);
+    let (workers, cached_validation_workers) =
+        settings::ScanSettings::default().resolve_scan_workers(auto_scope, scheduling_conditions);
     // Hold through session registration, so restart cannot race a scan.
     let access = state.access_setup.lock().unwrap();
     access.require_scan_allowed()?;
@@ -896,8 +888,6 @@ fn register_scan(
             root_ancestors,
             workers,
             cached_validation_workers,
-            worker_mode: settings::WorkerMode::Auto,
-            worker_source: "hardware".into(),
             qos: disk_scan::ScanQos::Automatic,
         },
     )?;

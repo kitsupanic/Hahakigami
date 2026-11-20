@@ -16,7 +16,7 @@ use std::{
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ScanInput {
-    /// Directory to scan. File contents are never read.
+    /// Absolute path of the directory to scan. File contents are never read.
     path: String,
 }
 
@@ -101,6 +101,10 @@ impl Mcp {
         Parameters(input): Parameters<ScanInput>,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
+        // The server's working directory is unrelated to the client's.
+        if !std::path::Path::new(&input.path).is_absolute() {
+            return CallToolResult::structured_error(json!({"error": "Pass an absolute path"}));
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         tokio::select! {

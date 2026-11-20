@@ -95,9 +95,20 @@ fn natural(a: &[u8], b: &[u8]) -> Ordering {
 }
 pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Result<(), String> {
     let (mut left, mut right) = (PathBuf::new(), PathBuf::new());
+    let first_parent = ids
+        .first()
+        .and_then(|&id| snapshot.node(id))
+        .map(|n| n.parent);
+    let mut one_folder = true;
     for &id in ids.iter() {
-        snapshot.node(id).ok_or("Invalid sort node ID")?;
-        snapshot.path_into(id, &mut left)?;
+        let node = snapshot.node(id).ok_or("Invalid sort node ID")?;
+        one_folder &= Some(node.parent) == first_parent;
+    }
+    // `tie` builds paths only across folders or with path overrides, so only then are they validated here.
+    if !one_folder || snapshot.has_path_overrides() {
+        for &id in ids.iter() {
+            snapshot.path_into(id, &mut left)?;
+        }
     }
     match order {
         Order::SizeDescending | Order::SizeAscending => ids.sort_unstable_by(|&a, &b| {

@@ -350,7 +350,7 @@
         picked.length === 1
           ? `Selected: ${picked[0].name}, ${compactBytes(picked[0].allocatedBytes)}.`
           : picked.length > 1
-            ? `${picked.length} items selected.`
+            ? `${countLabel(picked.length, "item")} selected.`
             : "",
       ]
         .filter(Boolean)

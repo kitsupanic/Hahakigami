@@ -13,7 +13,6 @@ export const qosLabel = (qos: ScanQos) =>
     userInitiated: "Prioritize scan",
     background: "Background",
   })[qos];
-type WorkerMode = "auto" | "manual";
 export interface WorkerStats {
   id: number;
   entries: number;
@@ -72,8 +71,6 @@ export interface ScanSummary {
   cacheWarning?: string | null;
   startedAtMs?: number;
   completedAtMs?: number | null;
-  workerMode?: WorkerMode;
-  workerSource?: "manual" | "hardware" | "conservative" | "calibrated";
   workers: number;
   qos?: ScanQos;
   workerStats: WorkerStats[];

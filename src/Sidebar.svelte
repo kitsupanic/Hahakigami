@@ -35,6 +35,15 @@
   // The slot whose live results are on screen.
   const shownSlot = $derived(explorerShown ? (app.shown?.slot ?? null) : null);
   const folderSlot = $derived(app.scanSlots[FOLDER_SLOT]);
+  // The words ScanStatusLine uses for the same states.
+  const slotTag = (slot: ScanSlot) =>
+    slotScanning(slot)
+      ? "Scanning"
+      : slot.summary?.state === "cancelled"
+        ? "Cancelled"
+        : slot.summary?.state === "failed"
+          ? "Scan failed"
+          : "Scanned";
   // Fraction scanned, known only for a whole volume (used space is the total); null means unknown.
   function scanProgress(slot: ScanSlot, disk?: (typeof app.targets)[number]) {
     if (!slot.summary || slot.summary.state !== "running") return undefined;
@@ -92,7 +101,7 @@
         : `${compactBytes(disk.freeBytes ?? 0)} free of ${compactBytes(disk.totalBytes ?? 0)}`}
     {@const slot = app.scanSlots[disk.path]}
     {@const scanned = !!slot}
-    {@const tag = slot && slotScanning(slot) ? "Scanning" : "Scanned"}
+    {@const tag = slot ? slotTag(slot) : ""}
     {@const progress = slot ? scanProgress(slot, disk) : undefined}
     {@const active =
       (welcomeShown && app.target?.path === disk.path) ||
@@ -134,7 +143,7 @@
     </button>
   {/each}
   {#if folderSlot}
-    {@const tag = slotScanning(folderSlot) ? "Scanning" : "Scanned"}
+    {@const tag = slotTag(folderSlot)}
     {@const progress = scanProgress(folderSlot)}
     {@const active =
       shownSlot === FOLDER_SLOT ||

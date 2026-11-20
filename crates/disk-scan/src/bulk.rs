@@ -260,7 +260,16 @@ pub(crate) fn enumerate_with_accounting(
     observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
     buffer: &mut Vec<u8>,
 ) -> io::Result<Vec<io::Result<Entry>>> {
-    enumerate_attempt(path, cancel, fd, true, warnings, observations, buffer)
+    enumerate_using(
+        path,
+        cancel,
+        fd,
+        true,
+        warnings,
+        observations,
+        buffer,
+        &mut read_batch,
+    )
 }
 #[cfg(target_os = "macos")]
 fn read_batch(fd: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool) -> io::Result<usize> {
@@ -288,28 +297,6 @@ fn read_batch(fd: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool) -> io::R
     } else {
         Ok(count as usize)
     }
-}
-#[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-fn enumerate_attempt(
-    path: &std::path::Path,
-    cancel: &std::sync::atomic::AtomicBool,
-    fd: &std::os::fd::OwnedFd,
-    rich: bool,
-    warnings: &mut Vec<String>,
-    observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
-    buffer: &mut Vec<u8>,
-) -> io::Result<Vec<io::Result<Entry>>> {
-    enumerate_using(
-        path,
-        cancel,
-        fd,
-        rich,
-        warnings,
-        observations,
-        buffer,
-        &mut read_batch,
-    )
 }
 #[cfg(target_os = "macos")]
 fn reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize) {
@@ -1622,7 +1609,7 @@ mod tests {
         // Basic bulk fallback keeps basenames too. Clone probes must still
         // validate exact identity/sizes through the held parent descriptor.
         let fresh = crate::descriptor::reopen(&fd, &expected).unwrap();
-        let baseline = enumerate_attempt(
+        let baseline = enumerate_using(
             &p,
             &cancel,
             &fresh,
@@ -1630,6 +1617,7 @@ mod tests {
             &mut Vec::new(),
             &mut std::collections::VecDeque::new(),
             &mut Vec::new(),
+            &mut read_batch,
         )
         .unwrap();
         let mut probes = crate::clones::prepare(

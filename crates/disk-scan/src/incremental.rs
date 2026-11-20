@@ -336,7 +336,7 @@ impl Reuse {
             preparation_path_cursor_capacity_bytes:path_cursor.capacity_bytes(),
             preparation_marks_payload_capacity_bytes,
             preparation_touched_payload_capacity_bytes: touched.capacity()*std::mem::size_of::<(u64,u64)>(),
-            estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload (plus owned path buffers for preparation marks), excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing buffer, not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
+            estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload (plus owned path buffers for preparation marks), excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing's entry buffer (names too long to store inline are excluded), not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
             ..Default::default()
         };
         let seed = seed.snapshot;
@@ -694,9 +694,8 @@ impl CachedListing {
     pub(crate) fn materialize(self) -> Vec<std::io::Result<Entry>> {
         self.materialize_with_storage().0
     }
+    /// Entries carry bare basenames like a fresh bulk listing; the worker joins the listing directory.
     pub(crate) fn materialize_with_storage(self) -> (Vec<std::io::Result<Entry>>, usize) {
-        let mut path_capacity = 0usize;
-        let mut path_cursor = self.seed.path_cursor();
         let entries: Vec<_> = self
             .seed
             .children(self.id)
@@ -704,28 +703,22 @@ impl CachedListing {
             .iter()
             .map(|id| {
                 let n = self.seed.node(*id).unwrap();
-                path_cursor
-                    .path(*id)
-                    .map(|path| {
-                        let path = path.to_path_buf();
-                        path_capacity += path.capacity();
-                        Entry {
-                            clone_checked: false,
-                            path: path.into(),
-                            device: n.identity.device,
-                            inode: n.identity.inode,
-                            kind: n.identity.kind,
-                            length: n.length,
-                            allocated: n.own_allocated_size,
-                            hard_link: n.hard_link,
-                        }
+                self.seed
+                    .native_name(*id)
+                    .map(|name| Entry {
+                        clone_checked: false,
+                        path: EntryPath::from_native(name),
+                        device: n.identity.device,
+                        inode: n.identity.inode,
+                        kind: n.identity.kind,
+                        length: n.length,
+                        allocated: n.own_allocated_size,
+                        hard_link: n.hard_link,
                     })
                     .map_err(std::io::Error::other)
             })
             .collect();
-        let capacity = entries.capacity() * std::mem::size_of::<std::io::Result<Entry>>()
-            + path_capacity
-            + path_cursor.capacity_bytes();
+        let capacity = entries.capacity() * std::mem::size_of::<std::io::Result<Entry>>();
         (entries, capacity)
     }
 }
@@ -1510,7 +1503,11 @@ mod tests {
                 let actual: Vec<_> = entries
                     .materialize()
                     .into_iter()
-                    .map(|e| e.unwrap().path.to_path_buf())
+                    .map(|e| {
+                        let e = e.unwrap();
+                        assert_eq!(e.path.components().count(), 1, "bare basename");
+                        path.join(&e.path)
+                    })
                     .collect();
                 let expected: Vec<_> = snapshot
                     .iter_nodes()
@@ -1553,6 +1550,24 @@ mod tests {
         assert!(serialized
             .get("largest_materialized_listing_capacity_bytes")
             .is_some());
+    }
+    #[test]
+    fn reused_listings_with_long_names_match_a_fresh_scan() {
+        // Names over 22 bytes leave inline storage; reused children must still rebuild exact paths.
+        let f = Fixture::new();
+        let long = "a-directory-name-longer-than-inline";
+        let deeper = f.0.join("clean").join(long).join(format!("{long}-2"));
+        fs::create_dir_all(&deeper).unwrap();
+        fs::write(deeper.join(format!("{long}.txt")), b"long").unwrap();
+        fs::write(f.0.join("clean/日本語-ファイル"), b"wide").unwrap();
+        let seed = f.full();
+        let (actual, stats) = f.incremental(seed, vec![]);
+        compare(&actual, &f.full());
+        assert!(actual.iter_nodes().any(|n| n.native_name().len() > 22));
+        assert!(stats.unchanged_metadata);
+        // Only the root is read (itself plus its two children): the rest, long names included, is reused.
+        assert_eq!(stats.rescanned_directories, 1);
+        assert_eq!(stats.reused_entries, actual.stats.entries - 3);
     }
     #[test]
     fn archive_retention_proof_rejects_duplicate_root_records_and_noncanonical_names() {

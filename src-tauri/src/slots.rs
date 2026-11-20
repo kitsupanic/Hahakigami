@@ -5,9 +5,7 @@
 //! locks a slot, reads `Session::valid` or checks `finishing` and `Completed` itself, so every command refuses
 //! the same way for the same reason. Lock order: activity gate, access setup, `operation`, cleanup queue, snapshot
 //! store. `Held` reads the store only on `completed_snapshot`, so holding a scan never reverses it.
-use crate::{
-    baseline, budget, filters, now_ms, safety, session_running, settings, sorting, ScanDetails,
-};
+use crate::{baseline, budget, filters, now_ms, safety, session_running, sorting, ScanDetails};
 use disk_scan::{ScanState, Snapshot};
 use std::{
     collections::HashMap,
@@ -64,8 +62,6 @@ pub(crate) struct Session {
     pub(crate) cached_validation_workers: usize,
     // The retained-descriptor share of this scan's budget grant; None for a scan that never ran here.
     pub(crate) descriptor_limit: Option<usize>,
-    pub(crate) worker_mode: settings::WorkerMode,
-    pub(crate) worker_source: String,
     pub(crate) qos: disk_scan::ScanQos,
 }
 
@@ -75,8 +71,6 @@ pub(crate) struct Request {
     pub(crate) root_ancestors: Vec<(PathBuf, safety::Identity)>,
     pub(crate) workers: usize,
     pub(crate) cached_validation_workers: usize,
-    pub(crate) worker_mode: settings::WorkerMode,
-    pub(crate) worker_source: String,
     pub(crate) qos: disk_scan::ScanQos,
 }
 
@@ -130,8 +124,6 @@ impl Session {
             workers: request.workers,
             cached_validation_workers: request.cached_validation_workers,
             descriptor_limit,
-            worker_mode: request.worker_mode,
-            worker_source: request.worker_source,
             qos: request.qos,
         }
     }
@@ -414,8 +406,6 @@ mod tests {
             root_ancestors: vec![],
             workers: 4,
             cached_validation_workers: 4,
-            worker_mode: settings::WorkerMode::Auto,
-            worker_source: "manual".into(),
             qos: disk_scan::ScanQos::Automatic,
         }
     }

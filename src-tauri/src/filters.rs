@@ -3,7 +3,15 @@ use crate::sorting::{self, Order};
 #[cfg(test)]
 use disk_scan::{Node, ScanState};
 use disk_scan::{NodeKind, NodeRef, Snapshot};
+use icu_normalizer::ComposingNormalizerBorrowed;
 use std::os::unix::ffi::OsStrExt;
+
+/// macOS can return decomposed (NFD) names while people type composed (NFC) text.
+fn folded(text: &str) -> String {
+    ComposingNormalizerBorrowed::new_nfc()
+        .normalize(text)
+        .to_lowercase()
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Query {
@@ -50,7 +58,7 @@ impl Query {
             return Err("Minimum size must not exceed maximum size".into());
         }
         Ok(Self {
-            text: query.to_lowercase(),
+            text: folded(&query),
             category,
             min: min_bytes,
             max: max_bytes,
@@ -76,8 +84,7 @@ impl Query {
     }
     fn matches(&self, node: &NodeRef<'_>) -> bool {
         if self.search {
-            return !self.text.is_empty()
-                && node.display_name().to_lowercase().contains(&self.text);
+            return !self.text.is_empty() && folded(&node.display_name()).contains(&self.text);
         }
         if node.parent.is_none() || node.excluded {
             return false;
@@ -90,7 +97,7 @@ impl Query {
             return false;
         }
         let size = node.allocated_size;
-        (self.text.is_empty() || node.display_name().to_lowercase().contains(&self.text))
+        (self.text.is_empty() || folded(&node.display_name()).contains(&self.text))
             && self.min.is_none_or(|min| size >= min)
             && self.max.is_none_or(|max| size <= max)
             && (self.category == "all" || category(node) == Some(self.category.as_str()))
@@ -260,6 +267,19 @@ mod tests {
     }
     fn query(category: &str, min: Option<u64>, max: Option<u64>) -> Query {
         Query::new(String::new(), category.into(), min, max).unwrap()
+    }
+    #[test]
+    fn composed_and_decomposed_spellings_match_each_other() {
+        let (nfc, nfd) = ("Caf\u{e9}.txt", "Cafe\u{301}.txt");
+        for (name, text) in [(nfd, "café"), (nfc, "cafe\u{301}")] {
+            let n = node(1, name, NodeKind::File, 0, 0);
+            assert!(Query::search(text.into(), Order::default())
+                .unwrap()
+                .matches_legacy(&n));
+            assert!(Query::new(text.into(), "all".into(), None, None)
+                .unwrap()
+                .matches_legacy(&n));
+        }
     }
     #[test]
     fn extension_and_scope_are_exact_and_distinct_cache_keys() {

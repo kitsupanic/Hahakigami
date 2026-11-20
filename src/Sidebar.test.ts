@@ -192,6 +192,22 @@ const twoDisks = [
   },
 ];
 
+it("tags a failed or cancelled scan with its own words, not Scanned", async () => {
+  await render({
+    targets: twoDisks,
+    scanSlots: {
+      "/": slot("failed"),
+      "/Volumes/B": slot("cancelled", "b-scan", twoDisks[1]),
+    },
+  });
+  expect(disk("Test volume").getAttribute("aria-label")).toBe(
+    "Test volume, 6 KiB free of 10 KiB, Scan failed",
+  );
+  expect(disk("Backup").getAttribute("aria-label")).toBe(
+    "Backup, 20 B free of 100 B, Cancelled",
+  );
+});
+
 it("tags each disk Scanning or Scanned from its own scan and leaves the others untagged", async () => {
   const openDisk = vi.fn();
   await render({

@@ -149,7 +149,6 @@ fn configure(state: &AppState, config: &Config) -> Result<platform::Target, Stri
         explorer_preferences::Preferences::load(&preferences);
     *state.cleanup_queue.lock().unwrap() =
         cleanup_queue::Queue::load(config.state_dir.join("cleanup-queue"));
-    *state.scan_settings.lock().unwrap() = settings::ScanSettings::default();
     state
         .baselines
         .configure(config.state_dir.join(if config.mode == "full" {
