@@ -356,11 +356,6 @@ main > .window-toolbar {
   width: 20px;
   height: 20px;
 }
-.file-list .file-share {
-  height: 5px;
-  border-radius: var(--radius-xs);
-  background: transparent;
-}
 .file-list .file-parent-path {
   font-size: var(--font-caption);
 }

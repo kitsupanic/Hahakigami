@@ -417,8 +417,11 @@
   );
   function toggleQuickLook() {
     if (previewVisible) quickLook.dismiss();
-    else if (summary && previewNode && previewEligible(previewNode))
-      void quickLook.open({ scanId: summary.scanId, nodeId: previewNode.id });
+    else if (app.summary && previewNode && previewEligible(previewNode))
+      void quickLook.open({
+        scanId: app.summary.scanId,
+        nodeId: previewNode.id,
+      });
   }
   // Review always goes through the confirmation dialog, whether from the button or the menu.
   function reviewTrash() {
@@ -615,15 +618,11 @@
             <small
               class="results-scope"
               id="results-scope"
-              title={filtered &&
-              filters.scopeId != null &&
-              filters.scopeId !== summary.rootId
+              title={folderSearch
                 ? `Current folder: ${filterLocation?.path ?? ""}`
                 : `Entire scan: ${crumbs[0]?.path ?? ""}`}
             >
-              {filtered &&
-              filters.scopeId != null &&
-              filters.scopeId !== summary.rootId
+              {folderSearch
                 ? `Current folder · ${locationName(filterLocation?.name, filterLocation?.path)}`
                 : `Entire scan · ${locationName(crumbs[0]?.name, crumbs[0]?.path)}`}
             </small>
@@ -708,7 +707,7 @@
       </div>
       {#key `${summary.scanId}:${focus?.id}:${offset}:${debouncedQuery}:${filterKey}:${sort}`}
         <FileRows
-          revision={`${summary.state}:${Math.floor(summary.elapsedMs / 1000)}`}
+          revision={app.revision}
           onLoadChildren={filtered || query.trim()
             ? undefined
             : (nodeId) =>

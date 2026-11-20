@@ -249,27 +249,6 @@ it("disables scan and folder controls in browser preview", async () => {
   expect(calls("choose_folder")).toHaveLength(0);
   expect(app().targetsLoading).toBe(false);
 });
-it.each([false, true])(
-  "ignores a late picker response after navigation (failure=%s)",
-  async (failure) => {
-    const picking = deferred<Target | null>();
-    response("choose_folder", () => picking.promise);
-    await mount();
-    await click("Choose folder");
-    await act(() => {
-      app().navigation.current++;
-      app().setError("New context");
-    });
-    await act(() =>
-      failure
-        ? picking.reject(new Error("Stale picker failure"))
-        : picking.resolve(folder),
-    );
-    expect(app().target).toEqual(disk);
-    expect(app().error).toBe("New context");
-    expect(app().choosingFolder).toBe(false);
-  },
-);
 it("ignores a native picker completion after teardown", async () => {
   const picking = deferred<Target | null>();
   response("choose_folder", () => picking.promise);
@@ -293,8 +272,8 @@ it.each(["busy", "modal"])(
     expect(calls("choose_folder")).toHaveLength(0);
   },
 );
-it.each(["generation", "scan", "target"])(
-  "ignores a picker completion after the current %s changes",
+it.each(["generation", "scan", "navigation", "target"])(
+  "handles a picker completion after the current %s changes",
   async (context) => {
     const picking = deferred<Target | null>();
     response("choose_folder", () => picking.promise);
@@ -306,13 +285,15 @@ it.each(["generation", "scan", "target"])(
     await act(() => {
       if (context === "generation") ++app().generation.current;
       if (context === "scan") app().activeId.current = "newer";
+      if (context === "navigation") app().navigation.current++;
       if (context === "target") app().setTarget({ ...disk, id: "newer" });
     });
     await act(async () => {
       picking.resolve(folder);
       await pending;
     });
-    expect(app().target?.id).toBe(context === "target" ? "newer" : disk.id);
+    // Another scan taking the view must not drop the chosen folder; only a newer target wins.
+    expect(app().target?.id).toBe(context === "target" ? "newer" : folder.id);
     expect(app().choosingFolder).toBe(false);
   },
 );

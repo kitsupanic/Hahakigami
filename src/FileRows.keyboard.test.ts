@@ -24,6 +24,7 @@ async function fixture(extra: Record<string, unknown> = {}) {
     root.render(FileRows, {
       items,
       selection: [],
+      scanBytes: 100,
       running: false,
       onSelect: (node: NodeView, multi: boolean) => {
         selected = multi

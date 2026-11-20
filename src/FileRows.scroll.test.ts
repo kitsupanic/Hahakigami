@@ -20,6 +20,7 @@ const onScrollChange = vi.fn(),
 const props = {
   items,
   selection: [],
+  scanBytes: 100,
   running: false,
   onSelect: vi.fn(),
   onOpen: vi.fn(),

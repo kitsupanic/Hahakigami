@@ -509,6 +509,63 @@ it("refreshes statistics of a live scan every ten seconds, not every revision", 
   expect(queries()).toBe(before + 2);
 });
 
+// The channel a live scan reports through; each report is a summary update.
+function liveReports() {
+  const channel = mock.invoke.mock.calls
+    .filter(([name]) => name === "start_scan")
+    .at(-1)![1].onEvent as { onmessage: (event: ScanSummary) => void };
+  return async (state: ScanSummary["state"], elapsedMs: number) => {
+    await act(async () => channel.onmessage({ ...summary(), state, elapsedMs }));
+    await flush();
+  };
+}
+const count = (command: string) =>
+  mock.invoke.mock.calls.filter(([name]) => name === command).length;
+
+it("keeps the statistics list on screen while a newer revision loads, even a slow one", async () => {
+  const report = liveReports();
+  await openTypes();
+  await report("running", 1000);
+  const row = panel().querySelector(".file-type-row")!;
+  expect(row).toBeTruthy();
+  const slow = deferred<FileTypeStats>();
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((name, args) =>
+    name === "get_file_types" ? slow.promise : original(name, args),
+  );
+  await report("running", 10000);
+  expect(panel().textContent).not.toContain("Loading file types");
+  expect(panel().querySelector(".file-type-row")).toBe(row);
+  // The reply is used although another revision began while it was in flight.
+  await report("running", 20000);
+  await act(() => slow.resolve(stats()));
+  await flush();
+  expect(panel().textContent).not.toContain("Loading file types");
+  expect(panel().querySelectorAll(".file-type-row")).toHaveLength(2);
+});
+
+it("re-queries file-type highlights once per revision of a live scan, not on every map refresh", async () => {
+  const report = liveReports();
+  await openTypes();
+  await selectType(".jpg");
+  await report("running", 1000);
+  const before = count("get_file_type_highlights");
+  expect(map().dataset.ids).toBe("0,1");
+  // Each second the map reloads into a new nodes array; the highlight stays without a query.
+  for (const elapsedMs of [2000, 3000, 4000]) {
+    await report("running", elapsedMs);
+    expect(map().dataset.pending).toBe("false");
+    expect(map().dataset.ids).toBe("0,1");
+  }
+  expect(count("get_file_type_highlights")).toBe(before);
+  await report("running", 10000);
+  expect(count("get_file_type_highlights")).toBe(before + 1);
+  expect(map().dataset.pending).toBe("false");
+  // Another extension never shows the previous one's ids.
+  await selectType(".zip");
+  expect(map().dataset.ids).toBe("0,3");
+});
+
 it("retains scan-wide totals while visiting the current-folder scope", async () => {
   await openTypes();
   await act(() => app().setFocus(folder));

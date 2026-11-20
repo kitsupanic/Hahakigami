@@ -23,7 +23,7 @@
     items,
     selection,
     selectionPath = null,
-    scanBytes = null,
+    scanBytes,
     running,
     revision,
     onLoadChildren,
@@ -47,7 +47,7 @@
     selection: number[];
     /** Path of a single selection, so a row inside collapsed folders can be revealed. */
     selectionPath?: string | null;
-    scanBytes?: number | null;
+    scanBytes: number;
     running: boolean;
     revision?: string;
     onLoadChildren?: (nodeId: number) => Promise<Page>;
@@ -276,7 +276,6 @@
       });
     }
   });
-  let maxSize = $derived(Math.max(1, ...items.map((n) => n.allocatedBytes)));
   let start = $derived(Math.max(0, Math.floor(scroll / rowHeight) - OVERSCAN));
   let end = $derived(
     Math.min(
@@ -533,16 +532,10 @@
               >{/if}<em>{n.incomplete && !n.excluded ? "Scan issues" : ""}</em
             ></span
           ><span class="file-relative"
-            >{#if !n.excluded && scanBytes !== null}
+            >{#if !n.excluded}
               {scanBytes > 0
                 ? `${((n.allocatedBytes / scanBytes) * 100).toFixed(1)}%`
-                : "—"}
-            {:else if !n.excluded}<span class="file-share" aria-hidden="true"
-                ><span
-                  style:width={`${Math.min(100, Math.max(0, (n.allocatedBytes / maxSize) * 100))}%`}
-                  style:background={colorForNode(n)}
-                ></span></span
-              >{/if}</span
+                : "—"}{/if}</span
           ><span
             class="file-size"
             title={n.excluded ? undefined : bytes(n.allocatedBytes)}

@@ -21,6 +21,7 @@ it("renders only a visible window while allowing access to the final paginated r
     root.render(FileRows, {
       items: items,
       selection: [],
+      scanBytes: 100,
       running: false,
       onSelect: () => {},
       onOpen: () => {},
@@ -67,6 +68,7 @@ it("expands a directory lazily, preserves selection, and exposes omitted childre
     root.render(FileRows, {
       items: [folder],
       selection: [],
+      scanBytes: 100,
       running: false,
       onLoadChildren: async () => ({ items: [child], total: 300 }),
       onSelect: (n: NodeView) => selected.push(n.id),
@@ -137,6 +139,7 @@ it("refreshes expanded folders with the latest loader and ignores older failures
     root.render(FileRows, {
       items: items,
       selection: [1],
+      scanBytes: 100,
       running: false,
       revision: revision,
       onLoadChildren: load,
@@ -189,6 +192,7 @@ it("keeps excluded directories selectable without presenting empty sizes or expa
     root.render(FileRows, {
       items: [folder],
       selection: [],
+      scanBytes: 100,
       running: false,
       onLoadChildren: async () => {
         loads++;
@@ -206,7 +210,6 @@ it("keeps excluded directories selectable without presenting empty sizes or expa
   expect(excludedRow.children).toHaveLength(4);
   expect(excludedRow.children[1].className).toBe("file-relative");
   expect(excludedRow.children[1].textContent).toBe("");
-  expect(excludedRow.querySelector(".file-share")).toBeNull();
   expect(excludedRow.children[2].textContent).toBe("Excluded");
   expect(element.textContent).toContain("Excluded");
   expect(element.textContent).toContain("Not scanned");
@@ -261,6 +264,7 @@ it("only previews plain Space on regular file rows and leaves folders/interactiv
     root.render(FileRows, {
       items: [file, folder],
       selection: [],
+      scanBytes: 100,
       running: false,
       onSelect: () => selections++,
       onOpen: () => opens++,
@@ -338,6 +342,7 @@ it("R4 preserves focused row identity when siblings reorder", async () => {
   const opened: number[] = [];
   const props = {
     selection: [],
+    scanBytes: 100,
     running: false,
     onSelect: () => {},
     onOpen: (node: NodeView) => {
@@ -400,6 +405,7 @@ it("keeps row sizes compact with full details and updates proportional bars", as
       root.render(FileRows, {
         items,
         selection: [],
+        scanBytes: 100,
         running: false,
         onSelect: () => {},
         onOpen: () => {},
@@ -415,7 +421,6 @@ it("keeps row sizes compact with full details and updates proportional bars", as
       "file-size",
       "file-contents",
     ]);
-    expect(rows[0].querySelector(".file-size .file-share")).toBeNull();
     expect(rows[0].dataset.kind).toBe("directory");
     expect(rows[0].querySelector("svg.icon-folder")).not.toBeNull();
     expect(rows[1].querySelector("svg.icon-file")).not.toBeNull();
@@ -423,9 +428,6 @@ it("keeps row sizes compact with full details and updates proportional bars", as
     expect(rows[0].querySelector(".file-size")?.getAttribute("title")).toBe(
       "2 KiB (2.05 KB)",
     );
-    expect(
-      rows[1].querySelector<HTMLElement>(".file-share > span")?.style.width,
-    ).toBe("50%");
   } finally {
     await act(async () => root.unmount());
     element.remove();
@@ -474,6 +476,7 @@ it("fills a tall viewport after resize while keeping distant rows virtualized", 
       root.render(FileRows, {
         items,
         selection: [],
+        scanBytes: 100,
         running: false,
         onSelect: () => {},
         onOpen: () => {},
@@ -548,6 +551,7 @@ it("shows persistent queue badges across selection and queue updates", async () 
       items,
       selection,
       queuedPaths: queuedPaths.map((path) => ({ path })),
+      scanBytes: 100,
       running: false,
       onSelect: () => {},
       onOpen: () => {},
@@ -592,7 +596,7 @@ it("shows each item's share of the scan, and handles an empty scan", async () =>
   const element = document.createElement("div");
   document.body.append(element);
   const root = createRoot(element);
-  const render = (scanBytes: number | null) =>
+  const render = (scanBytes: number) =>
     root.render(FileRows, {
       items: [item],
       scanBytes,
@@ -614,8 +618,6 @@ it("shows each item's share of the scan, and handles an empty scan", async () =>
     expect(element.querySelector(".file-relative")?.textContent?.trim()).toBe(
       "—",
     );
-    await act(() => render(null));
-    expect(element.querySelector(".file-share")).not.toBeNull();
   } finally {
     await act(() => root.unmount());
     element.remove();
@@ -639,6 +641,7 @@ it("keeps the scroll position when a refresh changes the first row", async () =>
   const root = createRoot(element);
   const props = {
     selection: [],
+    scanBytes: 100,
     running: true,
     onSelect: () => {},
     onOpen: () => {},
