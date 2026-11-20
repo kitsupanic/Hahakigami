@@ -1,8 +1,7 @@
 //! Versioned wire format of the private rescan cache.
-use crate::cache_store::{err, ScanMetadata};
+use crate::cache_store::{err, verified_nonshared, ScanMetadata};
 use disk_scan::{
     AccountingInfo, Identity, LegacyTreeBuilder, Node, NodeKind, ScanState, ScanStats, Snapshot,
-    WorkerStats,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,7 +9,7 @@ use std::{
     io::{Read, Write},
     os::unix::ffi::{OsStrExt, OsStringExt},
 };
-const MAGIC: &[u8; 8] = b"HAHCAC04";
+const MAGIC: &[u8; 8] = b"HAHCAC05";
 const FIELD_LIMIT: usize = 64 * 1024;
 // A crafted archive could otherwise keep ~4 GB of path/label overrides inside the decode budget.
 const OVERRIDE_BYTES_LIMIT: usize = 64 * 1024 * 1024;
@@ -22,10 +21,6 @@ struct Header {
     metadata: ScanMetadata,
     accounting: AccountingInfo,
     stats: ScanStats,
-    worker_stats: Vec<WorkerStats>,
-    finalization_us: u64,
-    descriptor_limit: Option<usize>,
-    descriptor_peak: Option<usize>,
 }
 fn kind(k: &NodeKind) -> u8 {
     match k {
@@ -36,10 +31,7 @@ fn kind(k: &NodeKind) -> u8 {
     }
 }
 pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Result<(), String> {
-    if !s.incremental_accounting_eligible()
-        || !s.accounting.warnings.is_empty()
-        || s.accounting.deduction_bytes != 0
-        || s.iter_nodes().any(|n| n.clone_metadata().is_some())
+    if !s.incremental_accounting_eligible() || s.iter_nodes().any(|n| n.clone_metadata().is_some())
     {
         return Err("Cache requires verified nonshared clone accounting".into());
     }
@@ -50,10 +42,6 @@ pub(crate) fn encode(w: &mut impl Write, s: &Snapshot, m: &ScanMetadata) -> Resu
         metadata: m.clone(),
         accounting: s.accounting.clone(),
         stats: s.stats.clone(),
-        worker_stats: s.worker_stats.clone(),
-        finalization_us: s.finalization_us,
-        descriptor_limit: s.descriptor_limit,
-        descriptor_peak: s.descriptor_peak,
     })
     .map_err(err)?;
     if header.len() > HEADER_LIMIT {
@@ -156,22 +144,13 @@ pub(crate) fn decode(
     }
     let header_len = read_u32(r)? as usize;
     let h: Header = serde_json::from_slice(&bytes(r, header_len, HEADER_LIMIT)?).map_err(err)?;
-    if h.accounting.model != disk_scan::AccountingModel::FullClonesV1
-        || !h.accounting.checks_complete
-        || h.accounting.shared
-        || !h.accounting.warnings.is_empty()
-        || h.accounting.deduction_bytes != 0
-    {
+    if !verified_nonshared(&h.accounting) {
         return Err("Cache requires verified nonshared clone accounting".into());
     }
     let mut snapshot = read_nodes(r, node_limit)?;
     snapshot.stats = h.stats;
     snapshot.accounting = h.accounting;
     snapshot.state = ScanState::Completed;
-    snapshot.worker_stats = h.worker_stats;
-    snapshot.finalization_us = h.finalization_us;
-    snapshot.descriptor_limit = h.descriptor_limit;
-    snapshot.descriptor_peak = h.descriptor_peak;
     Ok((snapshot, h.metadata))
 }
 /// Reads the node count, every record and the end of stream.
@@ -298,11 +277,7 @@ mod tests {
         s.replace_node(id, n).unwrap();
         let m = ScanMetadata {
             started_at_ms: 1,
-            completed_at_ms: 2,
             workers: 1,
-            worker_mode: "auto".into(),
-            worker_source: "hardware".into(),
-            qos: disk_scan::ScanQos::Automatic,
         };
         (d, s, m)
     }
@@ -311,7 +286,7 @@ mod tests {
         let (_directory, snapshot, metadata) = fixture();
         let mut encoded = Vec::new();
         encode(&mut encoded, &snapshot, &metadata).unwrap();
-        for magic in [b"HAHCAC02", b"HAHCAC03"] {
+        for magic in [b"HAHCAC02", b"HAHCAC03", b"HAHCAC04"] {
             let mut old = encoded.clone();
             old[..8].copy_from_slice(magic);
             assert_eq!(
@@ -364,7 +339,7 @@ mod tests {
         let (decoded, metadata) = decode(&mut b.as_slice(), 8_000_000).unwrap();
         let mut roundtrip = Vec::new();
         encode(&mut roundtrip, &decoded, &metadata).unwrap();
-        assert_eq!(roundtrip, b); // Existing HAHCAC04 bytes and field ordering.
+        assert_eq!(roundtrip, b); // Existing HAHCAC05 bytes and field ordering.
                                   // Snapshot's generic JSON cannot represent invalid UTF-8 paths; compare
                                   // native bytes independently, then compare every other serialized field.
         let normalized = |s: Snapshot| {
@@ -380,10 +355,6 @@ mod tests {
                 paths,
                 serde_json::to_value(nodes).unwrap(),
                 serde_json::to_value(&s.stats).unwrap(),
-                serde_json::to_value(&s.worker_stats).unwrap(),
-                s.finalization_us,
-                s.descriptor_limit,
-                s.descriptor_peak,
                 s.state,
             )
         };
@@ -457,7 +428,7 @@ mod tests {
         }
     }
 
-    // Frozen HAHCAC04 writer oracle uses owned legacy DTOs, never the compact
+    // Frozen HAHCAC05 writer oracle uses owned legacy DTOs, never the compact
     // encoder or its fixed-record offsets, so decoder/encoder changes cannot
     // manufacture matching expectations from each other.
     fn legacy_cache_bytes(snapshot: &Snapshot, metadata: &ScanMetadata, nodes: &[Node]) -> Vec<u8> {
@@ -466,22 +437,14 @@ mod tests {
             metadata: &'a ScanMetadata,
             accounting: &'a AccountingInfo,
             stats: &'a ScanStats,
-            worker_stats: &'a [WorkerStats],
-            finalization_us: u64,
-            descriptor_limit: Option<usize>,
-            descriptor_peak: Option<usize>,
         }
         let header = serde_json::to_vec(&LegacyHeader {
             metadata,
             accounting: &snapshot.accounting,
             stats: &snapshot.stats,
-            worker_stats: &snapshot.worker_stats,
-            finalization_us: snapshot.finalization_us,
-            descriptor_limit: snapshot.descriptor_limit,
-            descriptor_peak: snapshot.descriptor_peak,
         })
         .unwrap();
-        let mut bytes = b"HAHCAC04".to_vec();
+        let mut bytes = b"HAHCAC05".to_vec();
         bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header);
         bytes.extend_from_slice(&(nodes.len() as u32).to_le_bytes());

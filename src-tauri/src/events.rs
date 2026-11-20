@@ -302,7 +302,6 @@ mod native {
     const HISTORY_DONE: u32 = 0x10;
     const UNSAFE: u32 = 0xef; // dropped/coalesced history, wrapped IDs, root/mount changes
     const KNOWN: u32 = 0x7f_ffff;
-    const MAX_PATHS: usize = 10_000;
     // A detailed directory creation/metadata event changes its own listing and
     // metadata, not every descendant. Rename/removal/unknown events stay broad.
     fn listing_only(flags: u32) -> bool {
@@ -396,8 +395,26 @@ mod native {
     fn replay_drained(collected: &Collected, marker: Option<u64>) -> bool {
         collected.done && marker.is_some_and(|id| id == 0 || collected.max_id >= id)
     }
+    /// The scan root with its event namespace (and a lowercase copy) built once, not per event.
+    struct Root {
+        path: PathBuf,
+        base: PathBuf,
+        lower_base: String,
+    }
+    impl Root {
+        fn new(path: impl Into<PathBuf>) -> Self {
+            let path = path.into();
+            let base = namespace(&path);
+            let lower_base = base.to_string_lossy().to_lowercase();
+            Root {
+                path,
+                base,
+                lower_base,
+            }
+        }
+    }
     struct State {
-        root: PathBuf,
+        root: Root,
         since: u64,
         collected: Mutex<Collected>,
         ready: Condvar,
@@ -462,32 +479,29 @@ mod native {
             path
         }
     }
-    fn mapped(root: &Path, path: &Path) -> Option<PathBuf> {
-        let base = namespace(root);
-        let normalized = namespace(path);
-        normalized
-            .strip_prefix(base)
+    fn mapped(root: &Root, path: &Path) -> Option<PathBuf> {
+        namespace(path)
+            .strip_prefix(&root.base)
             .ok()
-            .map(|relative| root.join(relative))
+            .map(|relative| root.path.join(relative))
     }
-    fn old_unrelated_mount(root: &Path, path: &Path, flags: u32, id: u64, since: u64) -> bool {
-        if !root.is_absolute()
+    fn old_unrelated_mount(root: &Root, path: &Path, flags: u32, id: u64, since: u64) -> bool {
+        if id == 0
+            || id > since
+            || flags == 0
+            || flags & !0xc0 != 0
+            || !root.path.is_absolute()
             || !path.is_absolute()
-            || !root.as_os_str().as_encoded_bytes().is_ascii()
+            || !root.path.as_os_str().as_encoded_bytes().is_ascii()
             || !path.as_os_str().as_encoded_bytes().is_ascii()
         {
             return false;
         }
-        let root = PathBuf::from(namespace(root).to_string_lossy().to_lowercase());
+        let root = Path::new(&root.lower_base);
         let path = PathBuf::from(namespace(path).to_string_lossy().to_lowercase());
-        id != 0
-            && id <= since
-            && flags != 0
-            && flags & !0xc0 == 0
-            && !path.starts_with(&root)
-            && !root.starts_with(path)
+        !path.starts_with(root) && !root.starts_with(path)
     }
-    fn classify(root: &Path, path: &Path, flags: u32) -> Result<bool, String> {
+    fn classify(root: &Root, path: &Path, flags: u32) -> Result<bool, String> {
         if flags & UNSAFE != 0 || flags & !KNOWN != 0 {
             return Err(format!(
                 "Filesystem event history requires a full scan (flags {flags:#x})"
@@ -496,9 +510,9 @@ mod native {
         if flags & HISTORY_DONE != 0 {
             return Ok(false);
         }
-        let base = namespace(root);
+        let base = &root.base;
         let normalized = namespace(path);
-        if path.is_absolute() && base.starts_with(&normalized) && normalized != base {
+        if path.is_absolute() && base.starts_with(&normalized) && normalized != *base {
             if listing_only(flags) {
                 return Ok(false);
             }
@@ -510,13 +524,12 @@ mod native {
         if !path.is_absolute() {
             return Err("Filesystem event path is not absolute".into());
         }
-        if !normalized.starts_with(&base) {
+        if !normalized.starts_with(base) {
             // A differently cased spelling can name the same object on macOS.
             // Treat possible aliases as uncertain rather than silently dropping them.
-            let lower_base = base.to_string_lossy().to_lowercase();
+            let lower_base = Path::new(&root.lower_base);
             let lower_path = normalized.to_string_lossy().to_lowercase();
-            if Path::new(&lower_path).starts_with(&lower_base)
-                || Path::new(&lower_base).starts_with(&lower_path)
+            if Path::new(&lower_path).starts_with(lower_base) || lower_base.starts_with(&lower_path)
             {
                 return Err(
                     "Filesystem event namespace is ambiguous; a full scan is required".into(),
@@ -575,9 +588,7 @@ mod native {
             }
         }
         if in_scope {
-            if collected.changes.paths.len() + collected.changes.directories.len() >= MAX_PATHS {
-                collected.error = Some("Filesystem event history exceeds the path limit".into());
-            } else if let Some(path) = mapped(&state.root, path) {
+            if let Some(path) = mapped(&state.root, path) {
                 if listing_only(flag) {
                     collected.changes.directories.push(path);
                 } else {
@@ -838,7 +849,7 @@ mod native {
             return Err("Filesystem event replay cancelled".into());
         }
         let state = Box::new(State {
-            root: root.into(),
+            root: Root::new(root),
             since,
             collected: Mutex::new(Collected::default()),
             ready: Condvar::new(),
@@ -941,7 +952,7 @@ mod native {
             replay_result?;
             loaded.expect("loader always joined")
         })?;
-        let mut collected = state
+        let collected = state
             .collected
             .into_inner()
             .map_err(|_| "Filesystem event callback failed")?;
@@ -952,8 +963,6 @@ mod native {
         if journal_identity(root).as_ref() != Some(&journal) {
             return Err("Filesystem event journal changed during replay".into());
         }
-        collected.changes.paths.sort();
-        collected.changes.paths.dedup();
         Ok((loaded, collected.changes))
     }
     #[cfg(test)]
@@ -1085,7 +1094,7 @@ mod native {
         fn an_error_from_the_stream_tells_the_loader_to_stop() {
             // History is done, so the flush waits on the loader; the stream then fails.
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
@@ -1162,7 +1171,7 @@ mod native {
         #[test]
         fn replay_wait_observes_cancel_error_and_deadline() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1187,7 +1196,7 @@ mod native {
         #[test]
         fn replay_wait_wakes_for_marker_delivery() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
@@ -1221,7 +1230,7 @@ mod native {
         #[test]
         fn replay_wait_gives_the_marker_a_fresh_timeout_after_a_slow_flush() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
@@ -1288,29 +1297,29 @@ mod native {
         #[test]
         fn unsafe_flags_force_fallback() {
             for flag in [1, 2, 4, 8, 32, 64, 128, 0x800000] {
-                assert!(classify(Path::new("/tmp/root"), Path::new("/tmp/root/a"), flag).is_err());
+                assert!(classify(&Root::new("/tmp/root"), Path::new("/tmp/root/a"), flag).is_err());
             }
         }
         #[test]
         fn paths_and_sentinel() {
-            assert!(classify(Path::new("/parent/scanned"), Path::new("/parent"), 0x800).is_err());
+            assert!(classify(&Root::new("/parent/scanned"), Path::new("/parent"), 0x800).is_err());
 
             assert!(old_unrelated_mount(
-                Path::new("/Users/demo"),
+                &Root::new("/Users/demo"),
                 Path::new("/Volumes/other"),
                 0xc0,
                 1,
                 2
             ));
             assert!(!old_unrelated_mount(
-                Path::new("/Users/demo"),
+                &Root::new("/Users/demo"),
                 Path::new("/Users/demo/mount"),
                 0xc0,
                 1,
                 2
             ));
             assert!(!old_unrelated_mount(
-                Path::new("/Users/demo"),
+                &Root::new("/Users/demo"),
                 Path::new("/Volumes/other"),
                 4,
                 1,
@@ -1318,39 +1327,42 @@ mod native {
             ));
             assert_eq!(
                 mapped(
-                    Path::new("/Users/demo"),
+                    &Root::new("/Users/demo"),
                     Path::new("/System/Volumes/Data/Users/demo/a")
                 ),
                 Some(PathBuf::from("/Users/demo/a"))
             );
             assert_eq!(
                 mapped(
-                    Path::new("/private/var/example"),
+                    &Root::new("/private/var/example"),
                     Path::new("/var/example/a")
                 ),
                 Some(PathBuf::from("/private/var/example/a"))
             );
             assert!(classify(
-                Path::new("/Users/Demo"),
+                &Root::new("/Users/Demo"),
                 Path::new("/users/demo/file"),
                 0x100
             )
             .is_err());
-            let root = Path::new("/private/tmp/root");
-            assert_eq!(classify(root, &root.join("a"), 0x10100), Ok(true));
-            assert_eq!(classify(root, Path::new(""), HISTORY_DONE), Ok(false));
-            assert_eq!(classify(root, Path::new("/tmp/root/a"), 0), Ok(true));
+            let root = Root::new("/private/tmp/root");
+            assert_eq!(classify(&root, &root.path.join("a"), 0x10100), Ok(true));
+            assert_eq!(classify(&root, Path::new(""), HISTORY_DONE), Ok(false));
+            assert_eq!(classify(&root, Path::new("/tmp/root/a"), 0), Ok(true));
             assert_eq!(
-                classify(root, Path::new("/outside/clone"), 0x410900),
+                classify(&root, Path::new("/outside/clone"), 0x410900),
                 Ok(false)
             );
-            assert_eq!(classify(root, &root.join("clone"), 0x410900), Ok(true));
-            assert!(classify(root, Path::new("relative"), 0).is_err());
+            assert_eq!(
+                classify(&root, &root.path.join("clone"), 0x410900),
+                Ok(true)
+            );
+            assert!(classify(&root, Path::new("relative"), 0).is_err());
         }
         #[test]
         fn overlap_and_old_dropped_notices_are_preserved() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1379,7 +1391,7 @@ mod native {
         #[test]
         fn events_elsewhere_on_the_volume_do_not_use_up_the_event_limit() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1424,7 +1436,7 @@ mod native {
                 .find(|node| !node.is_directory)
                 .unwrap();
             let state = State {
-                root: snapshot.root.clone(),
+                root: Root::new(snapshot.root.clone()),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1481,7 +1493,7 @@ mod native {
                 .identity
                 .inode;
             let state = State {
-                root: snapshot.root.clone(),
+                root: Root::new(snapshot.root.clone()),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1523,7 +1535,7 @@ mod native {
         #[test]
         fn directory_metadata_invalidates_listings_but_namespace_changes_stay_broad() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
@@ -1568,7 +1580,7 @@ mod native {
         #[test]
         fn shared_event_identity_and_history_guards() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),

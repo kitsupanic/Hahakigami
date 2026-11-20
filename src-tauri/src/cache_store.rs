@@ -1,6 +1,6 @@
 //! Files of the private rescan cache: per entry a compact scan archive (`.zst`) and a row (`.json`).
 //! Callers serialize operations and own what a cached scan may be used for.
-use disk_scan::{ScanQos, ScanState, Snapshot};
+use disk_scan::{AccountingInfo, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::os::unix::{
     ffi::OsStrExt,
@@ -33,11 +33,7 @@ pub(crate) struct Row {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ScanMetadata {
     pub started_at_ms: u64,
-    pub completed_at_ms: u64,
     pub workers: usize,
-    pub worker_mode: String,
-    pub worker_source: String,
-    pub qos: ScanQos,
 }
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -360,8 +356,16 @@ fn sequential_validated_encoding(
     encoding()
 }
 
+/// A full-clone accounting whose checks completed and found nothing shared or deducted.
+pub(crate) fn verified_nonshared(a: &AccountingInfo) -> bool {
+    a.model == disk_scan::AccountingModel::FullClonesV1
+        && a.checks_complete
+        && !a.shared
+        && a.warnings.is_empty()
+        && a.deduction_bytes == 0
+}
 fn validate_metadata(m: &ScanMetadata) -> Result<(), String> {
-    if m.completed_at_ms < m.started_at_ms || !(1..=disk_scan::MAX_WORKERS).contains(&m.workers) {
+    if !(1..=disk_scan::MAX_WORKERS).contains(&m.workers) {
         Err("Invalid cache metadata".into())
     } else {
         Ok(())
@@ -498,11 +502,7 @@ mod tests {
         .unwrap();
         let m = ScanMetadata {
             started_at_ms: 1,
-            completed_at_ms: 2,
             workers: 1,
-            worker_mode: "auto".into(),
-            worker_source: "hardware".into(),
-            qos: ScanQos::Automatic,
         };
         let l = Store::new(d.path().join("cache"));
         (d, l, s, m)

@@ -75,12 +75,16 @@ fn path_key(path: &Path) -> String {
     }
     key
 }
+/// Whether a recorded issue lies at or under `path`. `issues` is sorted.
+fn is_incomplete(issues: &[PathBuf], path: &Path) -> bool {
+    issues
+        .get(issues.partition_point(|p| p < path))
+        .is_some_and(|p| p.starts_with(path))
+}
 fn view(node: &NodeRef<'_>, issues: &[PathBuf]) -> Result<NodeView, String> {
     let path = node.path()?;
     let path_key = path_key(&path);
-    let incomplete = issues
-        .get(issues.partition_point(|p| p < &path))
-        .is_some_and(|p| p.starts_with(&path));
+    let incomplete = is_incomplete(issues, &path);
     let path = path
         .into_os_string()
         .into_string()
@@ -403,6 +407,12 @@ async fn mounted_volumes() -> Vec<String> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
 }
+/// Registers a picked folder. A disk root is flagged like the Disks list does, so it shares the disk's slot and id.
+fn register_picked(state: &AppState, path: PathBuf) -> Result<platform::Target, String> {
+    let mut target = platform::target(&path, platform::folder_name(&path));
+    target.volume = platform::is_disk_path(&path);
+    register(state, target, path)
+}
 #[tauri::command]
 async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>, String> {
     // canonicalize, statvfs and register's lstat/statfs can hang on an unresponsive mount, like the picker itself.
@@ -412,13 +422,7 @@ async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>
         };
         let path = file.into_path().map_err(|e| e.to_string())?;
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-        let name = platform::folder_name(&path);
-        let target = register(
-            &app.state::<AppState>(),
-            platform::target(&path, name),
-            path,
-        )?;
-        Ok(Some(target))
+        register_picked(&app.state::<AppState>(), path).map(Some)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -736,15 +740,10 @@ fn run_scan(
                     return None;
                 }
                 channel.report(s.summary());
-                let completed_at_ms = now_ms();
-                s.completed_at_ms.store(completed_at_ms, Ordering::Release);
+                s.completed_at_ms.store(now_ms(), Ordering::Release);
                 Some(cache_store::ScanMetadata {
                     started_at_ms: s.started_at_ms,
-                    completed_at_ms,
                     workers: s.actual_workers(),
-                    worker_mode: "auto".into(),
-                    worker_source: s.worker_source.clone(),
-                    qos: s.qos,
                 })
             },
             #[cfg(feature = "performance-benchmark")]
@@ -1435,10 +1434,7 @@ async fn get_file_types(
         let mut result = file_types::summarize(&snapshot, node_id)?;
         let path = snapshot.node(node_id).ok_or("Unknown scope node")?.path()?;
         let issues = issue_index(&s, &snapshot);
-        result.incomplete = issues
-            .1
-            .get(issues.1.partition_point(|p| p < &path))
-            .is_some_and(|p| p.starts_with(&path));
+        result.incomplete = is_incomplete(&issues.1, &path);
         s.check_valid()?;
         Ok(result)
     })
