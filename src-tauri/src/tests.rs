@@ -2666,6 +2666,7 @@ fn native_validation_worker_sweep() {
                 snapshot: first_full.clone(),
                 dirty_paths: changes.paths.clone(),
                 dirty_directories: changes.directories.clone(),
+                aliases_resolved: false,
             };
             let reopened = authority.reopen().unwrap();
             let store = Arc::new(RwLock::new(Snapshot::empty(root.clone())));

@@ -442,28 +442,16 @@ struct ScannedNode {
 #[cfg(not(unix))]
 fn entry(path: PathBuf) -> std::io::Result<Entry> {
     let m = fs::symlink_metadata(&path)?;
-    #[cfg(unix)]
-    let allocated = m.blocks().saturating_mul(512);
-    #[cfg(not(unix))]
-    let allocated = m.len();
+    let id = identity(&m);
     Ok(Entry {
         clone_checked: false,
         path: path.into(),
-        device: identity(&m).device,
-        inode: identity(&m).inode,
-        kind: identity(&m).kind,
-        hard_link: {
-            #[cfg(unix)]
-            {
-                m.nlink() > 1 && m.is_file()
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        },
+        device: id.device,
+        inode: id.inode,
+        kind: id.kind,
+        hard_link: false,
         length: if m.is_dir() { 0 } else { m.len() },
-        allocated: if m.is_dir() { 0 } else { allocated },
+        allocated: if m.is_dir() { 0 } else { m.len() },
     })
 }
 // Listing errors need their known child path: an io::Result<Entry> alone loses
@@ -614,7 +602,7 @@ fn enumerate_once(
             ) {
                 Ok(v) => return Ok(v),
                 Err(e) if backend == Backend::Bulk => return Err(e),
-                Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::ENOSYS)) => {}
+                Err(e) if falls_back_to_readdir(&e) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -622,6 +610,11 @@ fn enumerate_once(
     #[cfg(not(target_os = "macos"))]
     let _ = (accounting_warnings, clone_observations, bulk_buffer);
     descriptor::enumerate(fd, path, cancel)
+}
+/// The volume cannot do bulk listing, so the portable listing takes over.
+#[cfg(target_os = "macos")]
+fn falls_back_to_readdir(error: &std::io::Error) -> bool {
+    bulk::is_unsupported(error) || error.raw_os_error() == Some(libc::ENOSYS)
 }
 /// Reopens a directory by walking recorded child names down from the held root. A renamed root
 /// or ancestor cannot hide the subtree, which an absolute-path walk from `/` would.
@@ -1528,6 +1521,17 @@ pub fn aggregate(s: &mut Snapshot) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bulk_listing_falls_back_for_every_unsupported_error_only() {
+        let falls = |code| super::falls_back_to_readdir(&std::io::Error::from_raw_os_error(code));
+        for code in [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL, libc::ENOSYS] {
+            assert!(falls(code), "errno {code}");
+        }
+        for code in [libc::EIO, libc::EACCES] {
+            assert!(!falls(code), "errno {code}");
+        }
+    }
     #[test]
     fn listing_entries_keep_clone_observations_sparse() {
         assert!(std::mem::size_of::<super::Entry>() <= 64);
@@ -2182,6 +2186,7 @@ mod tests {
                     snapshot: Arc::new(seed),
                     dirty_paths,
                     dirty_directories: vec![],
+                    aliases_resolved: false,
                 },
             )
             .unwrap();
