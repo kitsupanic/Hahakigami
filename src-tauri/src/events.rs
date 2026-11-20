@@ -1391,7 +1391,7 @@ mod native {
         #[test]
         fn a_file_event_without_an_inode_cannot_be_resolved_by_inode() {
             let state = State {
-                root: PathBuf::from("/private/tmp/root"),
+                root: Root::new("/private/tmp/root"),
                 since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
