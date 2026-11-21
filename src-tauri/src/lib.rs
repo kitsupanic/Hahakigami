@@ -183,6 +183,15 @@ impl Default for ScanDetails {
         }
     }
 }
+/// The scan state as the UI, the CLI and MCP name it.
+pub(crate) fn state_name(state: ScanState) -> &'static str {
+    match state {
+        ScanState::Running => "running",
+        ScanState::Completed => "completed",
+        ScanState::Cancelled => "cancelled",
+        ScanState::Failed => "failed",
+    }
+}
 fn session_running(s: &Session) -> bool {
     s.finishing.load(Ordering::Acquire) || s.store.read().unwrap().state == ScanState::Running
 }
@@ -255,12 +264,7 @@ impl Session {
             state: if self.finishing.load(Ordering::Acquire) {
                 "running"
             } else {
-                match s.state {
-                    ScanState::Running => "running",
-                    ScanState::Completed => "completed",
-                    ScanState::Cancelled => "cancelled",
-                    ScanState::Failed => "failed",
-                }
+                state_name(s.state)
             }
             .into(),
             entries: s.stats.entries,

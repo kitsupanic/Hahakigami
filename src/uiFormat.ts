@@ -9,6 +9,13 @@ export function compactBytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
   return bytes(n, minimumFractionDigits).split(" (")[0];
 }
 
+/** `n` with exactly `digits` decimals, in the user's locale. */
+export const fixed = (n: number, digits: number) =>
+  n.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+
 /** A share of the whole as a localized percentage with one decimal. */
 export const percent = (part: number, whole: number) =>
   (part / whole).toLocaleString(undefined, {
@@ -21,7 +28,7 @@ export const percent = (part: number, whole: number) =>
 export function scanTime(ms: number) {
   // Round to tenths first so 59.96 s reads "1m 0s", not "60.0 seconds".
   const seconds = Math.round(Math.max(0, ms) / 100) / 10;
-  if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
+  if (seconds < 60) return `${fixed(seconds, 1)} seconds`;
   const whole = Math.floor(seconds);
   if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
   return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m ${whole % 60}s`;

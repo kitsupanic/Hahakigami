@@ -627,12 +627,12 @@ mod native {
         warnings: &mut Vec<String>,
     ) {
         let mut wanted = HashMap::new();
-        // Every saved name, not just the files to probe: a record outside it is new to the listing.
-        let mut saved = std::collections::HashSet::new();
+        // Every saved name and kind, not just the files to probe: a record outside it is new to the listing.
+        let mut saved = HashMap::new();
         let mut device = None;
         for (i, entry) in entries.iter().enumerate() {
             let Ok(e) = entry else { continue };
-            saved.extend(e.path.file_name().map(|name| name.as_bytes()));
+            saved.extend(e.path.file_name().map(|name| (name.as_bytes(), e.kind)));
             if e.kind == NodeKind::File && !e.clone_checked {
                 let Some(name) = e.path.file_name() else {
                     return;
@@ -653,10 +653,12 @@ mod native {
         // Saved names the disk still lists: fewer than saved means one was deleted.
         let mut still = 0usize;
         let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, rich, |r| {
-            let known = saved.contains(r.name);
-            still += usize::from(known);
+            let known = saved.get(r.name);
+            still += usize::from(known.is_some());
             let Some(&i) = wanted.get(r.name) else {
-                changed |= !known;
+                // Kind only: a folder or symlink's bulk inode can describe a firmlink or mount, and a replaced
+                // folder fails its identity check when it is opened.
+                changed |= known != Some(&crate::bulk::node_kind(r.kind));
                 return Ok(());
             };
             let e = entries[i].as_ref().unwrap();
@@ -676,6 +678,9 @@ mod native {
         drop((wanted, saved));
         if changed {
             warnings.push("a reused folder differs from its saved listing".into());
+        } else if result.is_err() && !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            // Unread, the folder may hold a grown or new file: the per-file probe skips an unsupported volume.
+            warnings.push("a reused folder could not be compared with its saved listing".into());
         }
         *buffer = stats.into_buffer();
         // A failed read vouches for nothing: every file keeps its per-file probe.
@@ -2579,6 +2584,41 @@ mod native {
                 &mut warnings,
             );
             assert_eq!(warnings.len(), 4);
+            // A saved symlink now a regular file of the same name is a missed event.
+            let link = s.root.join("link");
+            std::os::unix::fs::symlink("a", &link).unwrap();
+            let mut linked = vec![
+                Ok(entry("a")),
+                Ok(entry("b")),
+                Ok(entry("c")),
+                Ok(entry("d")),
+                Ok(entry("link")),
+            ];
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, b"now a file").unwrap();
+            vouch_reused(
+                &mut linked,
+                &reopen(),
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+                &mut Vec::new(),
+                &mut warnings,
+            );
+            assert_eq!(warnings.len(), 5);
+            std::fs::remove_file(&link).unwrap();
+            // A read that fails without a cancel compares nothing, so it is flagged too.
+            let not_a_folder: OwnedFd = std::fs::File::open(s.root.join("a")).unwrap().into();
+            vouch_reused(
+                &mut same,
+                &not_a_folder,
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+                &mut Vec::new(),
+                &mut warnings,
+            );
+            assert_eq!(warnings.len(), 6);
             std::fs::remove_dir_all(p).unwrap();
         }
         #[test]

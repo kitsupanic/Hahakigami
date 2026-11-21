@@ -364,12 +364,7 @@ fn validate_page(limit: usize) -> Result<(), String> {
 }
 
 fn state(snapshot: &Snapshot) -> &'static str {
-    match snapshot.state {
-        ScanState::Running => "running",
-        ScanState::Completed => "completed",
-        ScanState::Cancelled => "cancelled",
-        ScanState::Failed => "failed",
-    }
+    crate::state_name(snapshot.state)
 }
 
 fn coverage(snapshot: &Snapshot) -> Value {

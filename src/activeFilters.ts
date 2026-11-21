@@ -29,7 +29,8 @@ function exactValue(bytes: number, scale: bigint): string | null {
     .toString()
     .padStart(3, "0")
     .replace(/0+$/, "");
-  return `${value / scale}${fraction ? `.${fraction}` : ""}`;
+  const mark = new Intl.NumberFormat().formatToParts(1.1).find((p) => p.type === "decimal")?.value ?? ".";
+  return `${Number(value / scale).toLocaleString()}${fraction ? `${mark}${fraction}` : ""}`;
 }
 
 function exactSize(bytes: number): string {
@@ -42,7 +43,9 @@ function exactSize(bytes: number): string {
   // A typed decimal (1.1 GiB) is never exact in bytes; round it. A whole rounded value would pose as exact.
   const fit = units.find((unit) => bytes >= Number(unit.scale))!;
   const rounded = +(bytes / Number(fit.scale)).toFixed(2);
-  return Number.isInteger(rounded) ? `${bytes.toLocaleString()} B` : `≈${rounded} ${fit.name}`;
+  return Number.isInteger(rounded)
+    ? `${bytes.toLocaleString()} B`
+    : `≈${rounded.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${fit.name}`;
 }
 
 export function sizeFilterLabel(

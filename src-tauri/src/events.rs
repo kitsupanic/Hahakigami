@@ -769,13 +769,8 @@ mod native {
         (!value.is_empty()).then(|| value.to_owned())
     }
     fn volume_mount(root: &Path) -> Result<PathBuf, String> {
-        use std::os::unix::ffi::OsStrExt;
-        let name = std::ffi::CString::new(root.as_os_str().as_bytes())
-            .map_err(|_| "Invalid filesystem event root")?;
-        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-        let mounted = (unsafe { libc::statfs(name.as_ptr(), &mut stat) } == 0)
-            .then(|| crate::platform::mount_of(&stat));
-        let Some((mount, true)) = mounted else {
+        let mounted = crate::platform::statfs_of(root).map(|stat| crate::platform::mount_of(&stat));
+        let Ok((mount, true)) = mounted else {
             return Err("Filesystem event volume is unavailable or not local".into());
         };
         if !mount.is_absolute() {

@@ -1,8 +1,9 @@
 <script module lang="ts">
+  import { fixed, percent } from "./uiFormat";
   export function duration(us: number) {
     return us >= 999_950
-      ? `${(us / 1_000_000).toFixed(2)} s`
-      : `${(us / 1000).toFixed(1)} ms`;
+      ? `${fixed(us / 1_000_000, 2)} s`
+      : `${fixed(us / 1000, 1)} ms`;
   }
   export function entryShare(entries: number, totalEntries: number) {
     const total = Math.max(0, totalEntries - 1);
@@ -138,13 +139,13 @@
                 ></b></span
               ></td
             ><td>{row.entries.toLocaleString()}</td><td
-              >{shares[index].toFixed(1)}%</td
+              >{percent(shares[index], 100)}</td
             ></tr
           >
         {/each}
       </tbody>
     </table>
-    <p class="share-key">The notch marks an even share, {even.toFixed(1)}%.</p>
+    <p class="share-key">The notch marks an even share, {percent(even, 100)}.</p>
     <div class="diagnostics-table-wrap">
       <table class="measures">
         <thead
