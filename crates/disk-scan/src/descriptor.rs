@@ -422,8 +422,7 @@ pub(crate) fn open_names(
     let mut fd = reopen(root, root_identity)?;
     for (i, (name, identity)) in names.iter().enumerate().rev() {
         fd = open_at(&fd, &name.0, identity, gate).map_err(|e| {
-            let gone = matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR));
-            if i > 0 && (gone || is_replaced(&e)) {
+            if i > 0 && (crate::vanished(&e) || is_replaced(&e)) {
                 io::Error::other("an ancestor directory changed during the scan")
             } else {
                 e

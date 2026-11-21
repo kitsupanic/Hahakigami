@@ -743,3 +743,34 @@ it("keeps search copy and execution in the matching-file folder scope", async ()
   await flush();
   expect(search.placeholder).toBe("Search entire scan…");
 });
+
+it("writes the count of grouped small items in the user's locale and keeps the file-type leftover's name", async () => {
+  const original = mock.invoke.getMockImplementation()!;
+  const tile = (name: string, childrenCount: number) => ({
+    ...folder,
+    id: 0x80000000,
+    kind: "aggregate" as const,
+    path: "",
+    name,
+    childrenCount,
+  });
+  mock.invoke.mockImplementation((command, args) =>
+    command === "get_map"
+      ? Promise.resolve({
+          nodes: [
+            scanRoot,
+            args.colorMode === "fileType"
+              ? tile("Folder metadata & other items", 0)
+              : tile("7502 smaller items", 7502),
+          ],
+        })
+      : original(command, args),
+  );
+  const aggregate = () => app().map.find((node) => node.kind === "aggregate")?.name;
+  await act(() => app().changeMapColorMode("fileType"));
+  await flush();
+  expect(aggregate()).toBe("Folder metadata & other items");
+  await act(() => app().changeMapColorMode("folder"));
+  await flush();
+  expect(aggregate()).toBe(`${(7502).toLocaleString()} smaller items`);
+});

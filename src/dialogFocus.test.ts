@@ -34,3 +34,21 @@ it("cycles Tab over a closed details' summary and skips its hidden content", asy
   tab();
   expect(document.activeElement?.id).toBe("first");
 });
+
+it("returns focus to the opener, or to the fallback control once the opener is gone", async () => {
+  document.body.innerHTML = `<button id="fallback" data-dialog-fallback>Rescan</button>
+    <button id="opener">Row</button><div id="dialog" tabindex="-1"><button>Done</button></div>`;
+  const dialog = document.getElementById("dialog")!;
+  const opener = document.getElementById("opener")!;
+  const close = async (removeOpener: boolean) => {
+    const action = dialogFocus(dialog, { onClose() {}, opener });
+    await Promise.resolve();
+    if (removeOpener) opener.remove();
+    (document.activeElement as HTMLElement).blur();
+    action.destroy();
+    await Promise.resolve();
+    return document.activeElement?.id;
+  };
+  expect(await close(false)).toBe("opener");
+  expect(await close(true)).toBe("fallback");
+});

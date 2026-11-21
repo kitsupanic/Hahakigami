@@ -1365,7 +1365,8 @@ async fn get_map(
                     verified_clone: false,
                     clone_deduction_bytes: 0,
                     clone_owner: None,
-                    children_count: 0,
+                    // The items it groups; the map writes the count in the user's locale.
+                    children_count: positive.len() - take,
                     incomplete: false,
                     excluded: false,
                     file_type: None,

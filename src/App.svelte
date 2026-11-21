@@ -1294,6 +1294,7 @@
             <!-- Rescan and Stop share one button so focus stays put when a scan starts or ends. -->
             <button
               class="rescan-action"
+              data-dialog-fallback
               class:primary={running}
               aria-label={running ? undefined : scanActionLabel}
               title={running ? "Stop scan" : scanActionLabel}

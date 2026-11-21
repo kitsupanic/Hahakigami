@@ -504,8 +504,11 @@ it("rescans a queue entry's disk in that disk's own slot without adding a second
   await settle();
   expect(calls("start_scan").at(-1)?.[1].targetId).toBe("disk-queue");
   expect(diskNames()).toEqual(["Macintosh HD", "Backup"]);
-  expect(app().targets).toBe(listed);
-  expect(app().target).toBe(disk);
+  // The backend dropped the old id: the listed row takes the new one and keeps its name.
+  expect(app().targets.map((t) => t.id)).toEqual(
+    listed.map((t) => (t.id === disk.id ? "disk-queue" : t.id)),
+  );
+  expect(app().target).toEqual({ ...disk, id: "disk-queue" });
   expect(Object.keys(app().scanSlots).sort()).toEqual(["/", "/Volumes/Backup"]);
   expect(app().scanSlots["/"].scanId).toBe("scan-disk-queue-3");
   expect(app().scanSlots["/Volumes/Backup"]).toBe(other);
@@ -527,7 +530,7 @@ it("opens a disk's completed scan from the queue instead of rescanning it while 
   expect(calls("start_scan")).toHaveLength(before);
   expect(app().scanSlots["/"].scanId).toBe("scan-disk-1");
   expect(app().summary?.scanId).toBe("scan-disk-1");
-  expect(app().target).toBe(disk);
+  expect(app().target).toEqual({ ...disk, id: "disk-queue" });
   expect(app().queueOpen).toBe(false);
   // An entry that needs a scan still rescans the disk.
   queueEntries = [queueEntry("hd-item", "/", "needsScan")];
