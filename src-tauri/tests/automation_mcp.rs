@@ -1,8 +1,8 @@
 use rmcp::{
-    model::{CallToolRequestParams, CallToolResult},
-    service::RunningService,
+    model::{CallToolRequestParams, CallToolResult, ProgressNotificationParam},
+    service::{NotificationContext, RunningService},
     transport::TokioChildProcess,
-    Peer, RoleClient, ServiceExt,
+    ClientHandler, Peer, RoleClient, ServiceExt,
 };
 use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
@@ -294,6 +294,41 @@ async fn stdio_cancel_keeps_partial_results_and_disconnect_exits() {
     })
     .await
     .expect("MCP cancellation and disconnect must finish within 45 seconds");
+}
+
+// The SDK puts a progress token on every request, so a client sees progress without asking for it.
+#[derive(Clone)]
+struct CountsProgress(tokio::sync::mpsc::UnboundedSender<ProgressNotificationParam>);
+
+impl ClientHandler for CountsProgress {
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let _ = self.0.send(params);
+    }
+}
+
+#[tokio::test]
+async fn stdio_scan_reports_progress_to_a_client_that_sent_a_token() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("file"), b"1").unwrap();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let client = CountsProgress(sender)
+            .serve(TokioChildProcess::new(command()).unwrap())
+            .await
+            .unwrap();
+        let scanned = value(&client, "scan", json!({"path": fixture.path()})).await;
+        assert_eq!(scanned["state"], "completed");
+        let first = received.recv().await.unwrap();
+        assert_eq!(first.progress, 1.0);
+        assert!(first.message.unwrap().ends_with("entries scanned"));
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP progress must finish within 30 seconds");
 }
 
 async fn wait_until_running(client: &Peer<RoleClient>) {

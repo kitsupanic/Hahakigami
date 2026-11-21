@@ -11,6 +11,7 @@
     type Page,
     type Target,
   } from "./types";
+  import { queuePathKey } from "./queueMarkers";
   import { SvelteSet } from "svelte/reactivity";
   import { compactBytes, countLabel } from "./uiFormat";
   import type { FolderRow } from "./queueFolders";
@@ -244,7 +245,7 @@
       fileTypesMounted = false;
     });
   });
-  const queuedPaths = $derived(queue.entries);
+  const queuedPaths = $derived(app.cleanupQueue.onShownScan);
   const readyHereEntries = $derived(app.readyHereEntries);
   const sq = app.queueSelection;
   const cleanupGroups = $derived(app.cleanupQueue.groups);
@@ -745,14 +746,7 @@
           revision={app.revision}
           onLoadChildren={filtered || query.trim()
             ? undefined
-            : (nodeId) =>
-                invoke<Page>("get_children", {
-                  scanId: summary.scanId,
-                  nodeId,
-                  offset: 0,
-                  limit: PAGE_SIZE,
-                  sort,
-                })}
+            : app.loadBranch}
           items={page.items}
           showParentPaths={filtered || !!query.trim()}
           {colorForNode}
@@ -760,7 +754,7 @@
           hovered={hover?.target ?? null}
           onHover={(target) => updateHover("list", target)}
           selection={selection.map((n) => n.id)}
-          selectionPath={selection.length === 1 ? selection[0].path : null}
+          selectionPath={selection.length === 1 ? queuePathKey(selection[0]) : null}
           scanBytes={summary.allocatedBytes}
           running={!!running || listLoading || !sortReady}
           onSelect={select}
@@ -1137,7 +1131,7 @@
                       blocked ||
                       app.queueRootBusy(group.root) ||
                       queue.blocked}
-                    onclick={() => void app.scanQueue(group.entries[0].id)}
+                    onclick={() => void app.scanQueue(group.scanEntryId)}
                     >Scan {locationName(group.name, group.root)}</button
                   >{/if}
               </div>

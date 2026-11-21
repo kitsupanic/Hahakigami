@@ -290,7 +290,7 @@ it("ignores stale statistics and highlight replies when scope or selected extens
         : original(command, args),
   );
   await openTypes();
-  await act(() => app().setFocus(folder));
+  await act(() => app().open(folder));
   await flush();
   const scopeButtons = panel().querySelectorAll<HTMLButtonElement>(
     ".file-type-scope button",
@@ -452,11 +452,11 @@ it("coalesces slow composition-map queries to the latest folder", async () => {
   });
   await act(() => app().changeMapColorMode("fileType"));
   await flush();
-  await act(() => app().setFocus(folder));
+  await act(() => app().open(folder));
   await flush();
-  await act(() => app().setFocus(scanRoot));
+  await act(() => app().open(scanRoot));
   await flush();
-  await act(() => app().setFocus(folder));
+  await act(() => app().open(folder));
   await flush();
   const typeCalls = () =>
     mock.invoke.mock.calls.filter(
@@ -600,7 +600,7 @@ it("re-queries file-type highlights of a live scan when the map shows mostly oth
 
 it("retains scan-wide totals while visiting the current-folder scope", async () => {
   await openTypes();
-  await act(() => app().setFocus(folder));
+  await act(() => app().open(folder));
   await flush();
   const buttons = panel().querySelectorAll<HTMLButtonElement>(
     ".file-type-scope button",
@@ -675,7 +675,7 @@ it("does not repeat an in-flight query when reopening before it completes", asyn
   expect(
     mock.invoke.mock.calls.filter(([name]) => name === "get_file_types"),
   ).toHaveLength(1);
-  await act(() => app().setFocus(folder));
+  await act(() => app().open(folder));
   await flush();
   await act(() =>
     panel()

@@ -544,6 +544,7 @@ fn enumerate_opened(
         cancel,
         fd,
         &descriptor::identity_fd(fd)?,
+        &Mutex::new(HashSet::new()),
         &mut Vec::new(),
         &mut std::collections::VecDeque::new(),
         &mut Vec::new(),
@@ -557,6 +558,7 @@ fn enumerate_opened_with_accounting(
     cancel: &AtomicBool,
     fd: &std::os::fd::OwnedFd,
     expected: &Identity,
+    rich_refused: &Mutex<HashSet<u64>>,
     accounting_warnings: &mut Vec<String>,
     clone_observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
     bulk_buffer: &mut Vec<u8>,
@@ -576,6 +578,8 @@ fn enumerate_opened_with_accounting(
             backend,
             cancel,
             fresh.as_ref().unwrap_or(fd),
+            expected.device,
+            rich_refused,
             accounting_warnings,
             clone_observations,
             bulk_buffer,
@@ -590,6 +594,8 @@ fn enumerate_once(
     backend: Backend,
     cancel: &AtomicBool,
     fd: &std::os::fd::OwnedFd,
+    device: u64,
+    rich_refused: &Mutex<HashSet<u64>>,
     accounting_warnings: &mut Vec<String>,
     clone_observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
     bulk_buffer: &mut Vec<u8>,
@@ -601,6 +607,8 @@ fn enumerate_once(
                 path,
                 cancel,
                 fd,
+                device,
+                rich_refused,
                 accounting_warnings,
                 clone_observations,
                 bulk_buffer,
@@ -613,7 +621,13 @@ fn enumerate_once(
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (accounting_warnings, clone_observations, bulk_buffer);
+    let _ = (
+        device,
+        rich_refused,
+        accounting_warnings,
+        clone_observations,
+        bulk_buffer,
+    );
     descriptor::enumerate(fd, path, cancel)
 }
 /// The volume cannot do bulk listing, or returned a record without an attribute we asked for (some third-party
@@ -956,6 +970,9 @@ fn scan_live_internal_reuse(
     let firmlinks = firmlinks::Policy::load(&root);
     #[cfg(unix)]
     let clone_capabilities = Mutex::new(HashMap::new());
+    // Devices whose rich listing was refused; separate from `clone_capabilities`, which a single file's reply can also set false.
+    #[cfg(unix)]
+    let rich_refused = Mutex::new(HashSet::new());
     let allocated_seen = Mutex::new(HashSet::new());
     let visited = Mutex::new(HashSet::from([(initial.device, initial.inode)]));
     {
@@ -1022,6 +1039,8 @@ fn scan_live_internal_reuse(
             let allocated_seen = &allocated_seen;
             #[cfg(unix)]
             let clone_capabilities = &clone_capabilities;
+            #[cfg(unix)]
+            let rich_refused = &rich_refused;
             let firmlinks = &firmlinks;
             let priorities = priorities.as_deref();
             #[cfg(unix)]
@@ -1143,6 +1162,7 @@ fn scan_live_internal_reuse(
                                 &cancel,
                                 opened.fd(),
                                 &expected,
+                                rich_refused,
                                 &mut clone_listing_warnings,
                                 &mut clone_observations,
                                 &mut bulk_buffer,

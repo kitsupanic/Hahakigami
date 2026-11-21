@@ -52,6 +52,7 @@ beforeEach(async () => {
       allocatedBytes: 100,
       status: "needsScan",
       reason: null,
+      onScanVolume: true,
     })),
     revision: 1,
     blocked: false,
@@ -105,9 +106,17 @@ it("removes stale saved entries without access or a fresh scan and preserves sin
 
 it("guards empty batches, other operations and blocked storage", async () => {
   expect(await app.removeQueues([])).toBe(0);
-  app.setBusy(true);
+  // An open folder picker is another operation in flight.
+  const picker = deferred<null>();
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "choose_folder" ? picker.promise : standard(command, args),
+  );
+  const picking = app.chooseFolder();
+  await flush();
   expect(await app.removeQueues(["q1"])).toBe(0);
-  app.setBusy(false);
+  picker.resolve(null);
+  await picking;
   queue = { ...queue, blocked: true };
   await app.refreshQueue();
   expect(await app.removeQueues(["q1"])).toBe(0);

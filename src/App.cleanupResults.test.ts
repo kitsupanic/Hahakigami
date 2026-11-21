@@ -77,7 +77,6 @@ async function flush() {
   });
 }
 function review(queued = false) {
-  app.setSummary(summary);
   app.setTrash({ scanId: "live", token: "ticket", items, queued });
 }
 beforeEach(async () => {
@@ -90,6 +89,7 @@ beforeEach(async () => {
       allocatedBytes: 100,
       status: "ready",
       reason: null,
+      onScanVolume: true,
     })),
     revision: 1,
     blocked: false,
@@ -113,7 +113,7 @@ beforeEach(async () => {
       case "start_scan":
         return "live";
       case "scan_summary":
-        return summary;
+        return { ...summary, scanId: args.scanId };
       case "get_node":
         return rootNode;
       case "get_map":
@@ -217,12 +217,11 @@ it.each([0, 2])(
   },
 );
 it("disables Move to Trash past the 1,000 item review limit", async () => {
-  app.setSummary(summary);
   const many = (count: number) =>
     Array.from({ length: count }, (_, id) => ({ ...items[0], id: id + 1 }));
-  app.setSelection(many(1000));
+  app.selectRange(many(1000));
   expect(app.can.trash).toBe(true);
-  app.setSelection(many(1001));
+  app.selectRange(many(1001));
   expect(app.can.trash).toBe(false);
 });
 it("freezes reviewed item metadata and prevents duplicate commits while pending", async () => {
@@ -258,7 +257,9 @@ it("keeps the receipt through a rescan failure, browsing and the next cancelled 
   expect(app.error).toContain("Rescan unavailable");
   app.showQueue(true);
   app.showQueue(false);
-  app.setSummary(summary);
+  mock.invoke.mockImplementation(standard);
+  await act(() => app.start(target));
+  await flush();
   app.select(items[0]);
   await act(() => app.prepareTrash());
   app.setTrash(null);
@@ -513,23 +514,19 @@ it("drops a Trash review that resolves after the scan on screen changed", async 
   const prepared = deferred<{ token: string; items: NodeView[] }>();
   const standard = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command, args) =>
-    command === "prepare_trash" ? prepared.promise : standard(command, args),
+    command === "prepare_trash"
+      ? prepared.promise
+      : command === "start_scan"
+        ? Promise.resolve("newer")
+        : standard(command, args),
   );
-  app.setSummary(summary);
   app.select(items[0]);
   const pending = app.prepareTrash();
-  app.setSummary({ ...summary, scanId: "newer" });
+  await act(() => app.start(target));
+  await flush();
+  expect(app.summary?.scanId).toBe("newer");
   prepared.resolve({ token: "ticket", items });
   await act(() => pending);
   expect(app.trash).toBeNull();
   expect(app.busy).toBe(false);
-});
-it("commits a review against the scan it was made for", async () => {
-  review();
-  app.setSummary({ ...summary, scanId: "newer" });
-  await act(() => app.commitTrash());
-  expect(mock.invoke).toHaveBeenCalledWith("commit_trash", {
-    scanId: "live",
-    token: "ticket",
-  });
 });

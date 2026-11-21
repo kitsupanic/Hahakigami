@@ -75,9 +75,7 @@ impl Host {
     pub(crate) fn read() -> Result<Self, String> {
         Ok(Self {
             // Canonical like scan paths, so a symlinked or off-/Users home is still matched.
-            home: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|h| std::fs::canonicalize(&h).unwrap_or(h)),
+            home: platform::home_dir().map(|h| std::fs::canonicalize(&h).unwrap_or(h)),
             data: APP_DATA.get().cloned(),
             mounts: platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?,
         })
@@ -315,10 +313,13 @@ fn spend(
         result.stale_scan_ids = invalidate_overlapping(s, others, &ticket.items, moved_unconfirmed);
     }
     let mut queue = queue.lock().unwrap();
-    result.persistence_warning = queue
-        .outcomes(&successful, &failures)
-        .err()
-        .or_else(|| queue.warning.clone());
+    let revision = queue.revision;
+    result.persistence_warning = queue.outcomes(&successful, &failures).err().or_else(|| {
+        // The queue's warning is this save's only when the save happened (an unchanged queue keeps an old one).
+        (queue.revision != revision)
+            .then(|| queue.warning.clone())
+            .flatten()
+    });
     Ok(result)
 }
 /// Invalidates the completed, valid scans among `others` that a reviewed item overlaps (the scan holds the item, or
@@ -764,6 +765,20 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.trashed, 1);
         assert!(result.invalidated);
+    }
+
+    #[test]
+    fn an_old_queue_warning_is_not_reported_after_a_trash_that_left_the_queue_alone() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let queue = Mutex::new(Queue::default());
+        queue.lock().unwrap().warning =
+            Some("Queue saved, but durability could not be confirmed".into());
+        let result = commit(&s, &queue, &token, false, &[], |_| Ok(())).unwrap();
+        assert_eq!(result.trashed, 1);
+        assert!(result.persistence_warning.is_none());
     }
 
     #[test]

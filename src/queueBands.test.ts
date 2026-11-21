@@ -14,6 +14,7 @@ const entry = (
   allocatedBytes,
   status,
   reason: null,
+  onScanVolume: true,
 });
 const fmt = (n: number) => `${n}B`;
 

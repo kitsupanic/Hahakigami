@@ -34,6 +34,7 @@ export function fakeQueuePort(
               status: "ready" as const,
               reason: null,
               matchedScanId: scanId,
+              onScanVolume: true,
             })),
         ],
       }),

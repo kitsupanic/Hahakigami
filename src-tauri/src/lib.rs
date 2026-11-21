@@ -75,16 +75,18 @@ fn path_key(path: &Path) -> String {
     }
     key
 }
-/// Whether a recorded issue lies at or under `path`. `issues` is sorted.
-fn is_incomplete(issues: &[PathBuf], path: &Path) -> bool {
-    issues
-        .get(issues.partition_point(|p| p < path))
-        .is_some_and(|p| p.starts_with(path))
+/// Whether a recorded issue lies at or under `path`. `issues` is sorted; an empty first path (see
+/// `refresh_issue_index`) stands for errors the scan did not record, so every folder is incomplete.
+fn is_incomplete(issues: &[PathBuf], path: &Path, directory: bool) -> bool {
+    (directory && issues.first().is_some_and(|p| p.as_os_str().is_empty()))
+        || issues
+            .get(issues.partition_point(|p| p < path))
+            .is_some_and(|p| p.starts_with(path))
 }
 fn view(node: &NodeRef<'_>, issues: &[PathBuf]) -> Result<NodeView, String> {
     let path = node.path()?;
     let path_key = path_key(&path);
-    let incomplete = is_incomplete(issues, &path);
+    let incomplete = is_incomplete(issues, &path, node.identity.kind == NodeKind::Directory);
     let path = path
         .into_os_string()
         .into_string()
@@ -294,9 +296,18 @@ impl Session {
 }
 /// Rebuilds `index` (the error count and the sorted error paths) when the snapshot's errors changed.
 fn refresh_issue_index(index: &mut (u64, Vec<PathBuf>), snapshot: &Snapshot) {
-    if index.0 != snapshot.stats.errors || index.1.len() != snapshot.errors.len() {
+    // The scanner stores only the first errors; the rest are unknown, so every folder fails closed.
+    let truncated = snapshot.stats.errors > snapshot.errors.len() as u64;
+    let indexed_truncated = index.1.first().is_some_and(|p| p.as_os_str().is_empty());
+    if index.0 != snapshot.stats.errors
+        || index.1.len() != snapshot.errors.len() + usize::from(truncated)
+        || indexed_truncated != truncated
+    {
         index.0 = snapshot.stats.errors;
         index.1 = snapshot.errors.iter().map(|e| e.path.clone()).collect();
+        if truncated {
+            index.1.push(PathBuf::new());
+        }
         index.1.sort_unstable();
     }
 }
@@ -1442,9 +1453,11 @@ async fn get_file_types(
         let snapshot = s.store.read().unwrap();
         s.check_valid()?;
         let mut result = file_types::summarize(&snapshot, node_id)?;
-        let path = snapshot.node(node_id).ok_or("Unknown scope node")?.path()?;
+        let scope = snapshot.node(node_id).ok_or("Unknown scope node")?;
+        let directory = scope.identity.kind == NodeKind::Directory;
+        let path = scope.path()?;
         let issues = issue_index(&s, &snapshot);
-        result.incomplete = is_incomplete(&issues.1, &path);
+        result.incomplete = is_incomplete(&issues.1, &path, directory);
         s.check_valid()?;
         Ok(result)
     })
@@ -1714,7 +1727,7 @@ async fn add_cleanup_queue(
     scan_id: String,
     node_ids: Vec<u32>,
 ) -> Result<cleanup_queue::View, String> {
-    let _activity = Activity::begin(&state.activity)?;
+    let activity = Activity::begin(&state.activity)?;
     if node_ids.len() > 100_000 {
         return Err("Add at most 100,000 selection references at a time.".into());
     }
@@ -1723,6 +1736,8 @@ async fn add_cleanup_queue(
     tauri::async_runtime::spawn_blocking(move || cleanup::add(&s, &queue, &node_ids))
         .await
         .map_err(|e| e.to_string())??;
+    // The view checks the disk, which can hang: it must not hold the gate.
+    drop(activity);
     queue_response(&state).await
 }
 #[tauri::command]
@@ -1730,20 +1745,22 @@ async fn remove_cleanup_queue(
     state: State<'_, AppState>,
     entry_ids: Vec<String>,
 ) -> Result<cleanup_queue::View, String> {
-    let _activity = Activity::begin(&state.activity)?;
+    let activity = Activity::begin(&state.activity)?;
     let queue = state.cleanup_queue.clone();
     tauri::async_runtime::spawn_blocking(move || queue.lock().unwrap().remove(&entry_ids))
         .await
         .map_err(|e| e.to_string())??;
+    drop(activity);
     queue_response(&state).await
 }
 #[tauri::command]
 async fn clear_cleanup_queue(state: State<'_, AppState>) -> Result<cleanup_queue::View, String> {
-    let _activity = Activity::begin(&state.activity)?;
+    let activity = Activity::begin(&state.activity)?;
     let queue = state.cleanup_queue.clone();
     tauri::async_runtime::spawn_blocking(move || queue.lock().unwrap().clear())
         .await
         .map_err(|e| e.to_string())??;
+    drop(activity);
     queue_response(&state).await
 }
 /// The recorded root of a queue entry, for a rescan of it.

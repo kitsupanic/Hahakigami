@@ -171,6 +171,14 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
   const readyHere = $derived(
     ready.filter((entry) => !!shownId && entry.matchedScanId === shownId),
   );
+  // What the explorer on screen may mark, select and remove: every entry except those the shown scan has checked
+  // and found on another volume (a card swapped at one mount path). Unchecked entries still mark by path.
+  const onShownScan = $derived(
+    view.entries.filter(
+      (entry) =>
+        !shownId || entry.matchedScanId !== shownId || entry.onScanVolume,
+    ),
+  );
   const bytes = $derived(
     view.entries.reduce((sum, entry) => sum + entry.allocatedBytes, 0),
   );
@@ -206,6 +214,8 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         root,
         titleId: `cleanup-group-${index}`,
         entries: rows,
+        /** The entry whose location the Scan button opens: one on the shown scan's volume, else the first. */
+        scanEntryId: (rows.find((entry) => entry.onScanVolume) ?? rows[0]).id,
         /** The disk's own name, else the root's last component; the view words it. */
         name:
           hooks.diskName(root) || root.split("/").filter(Boolean).at(-1),
@@ -238,12 +248,12 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
   let addingPaths = $state.raw<string[] | null>(null);
   let removingPaths = $state.raw<string[] | null>(null);
   let removal = $state.raw<{ paths: string[]; removed: number } | null>(null);
-  const marker = $derived(createQueueMarker(view.entries));
+  const marker = $derived(createQueueMarker(onShownScan));
   const selectedPaths = $derived(
     new Set(selection.map((node) => normalizeQueuePath(queuePathKey(node)))),
   );
   const selectedEntries = $derived.by(() =>
-    view.entries.filter((entry) => {
+    onShownScan.filter((entry) => {
       const path = normalizeQueuePath(queuePathKey(entry));
       return path !== null && selectedPaths.has(path);
     }),
@@ -313,6 +323,9 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
     },
     get readyHere() {
       return readyHere;
+    },
+    get onShownScan() {
+      return onShownScan;
     },
     get groups() {
       return groups;

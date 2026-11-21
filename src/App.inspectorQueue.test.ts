@@ -56,8 +56,10 @@ const entries = (...paths: string[]) =>
     path,
     rootPath: "/fixture",
     allocatedBytes: 100,
-    status: "needsScan" as const,
+    status: "ready" as const,
     reason: null,
+    matchedScanId: "live",
+    onScanVolume: true,
   }));
 async function flush() {
   await act(async () => {
@@ -338,4 +340,34 @@ it("does not match a path to a queue entry with a different native key", async (
   expect(row(2).classList.contains("queued")).toBe(false);
   expect(button("Added to cleanup queue. Remove from cleanup queue")).toBeUndefined();
   expect(removedIds()).toEqual([]);
+});
+
+it("ignores a same-path entry on another disk: only the entry on the scan's volume marks and is removed", async () => {
+  // A camera card swapped at one mount path: both entries are matched to this scan, only one is on its volume.
+  const [onVolume] = entries(items[0].path);
+  queue.entries = [
+    { ...onVolume, id: "card-1", onScanVolume: false },
+    { ...onVolume, id: "card-2" },
+  ];
+  await mount();
+  await select(1);
+  expect(row(1).classList.contains("queued")).toBe(true);
+  await click("Added to cleanup queue. Remove from cleanup queue");
+  expect(removedIds()).toEqual(["card-2"]);
+  // The other disk's entry no longer marks the row, though it is still in the queue.
+  expect(row(1).classList.contains("queued")).toBe(false);
+  expect(button("Add to cleanup queue")?.disabled).toBe(false);
+  expect(queue.entries.map((entry) => entry.id)).toEqual(["card-1"]);
+});
+
+it("does not mark or offer removal for an entry that is not on the scan's volume", async () => {
+  queue.entries = entries(items[0].path).map((entry) => ({
+    ...entry,
+    onScanVolume: false,
+  }));
+  await mount();
+  await select(1);
+  expect(row(1).classList.contains("queued")).toBe(false);
+  expect(button("Add to cleanup queue")?.disabled).toBe(false);
+  expect(button("Added to cleanup queue. Remove from cleanup queue")).toBeUndefined();
 });

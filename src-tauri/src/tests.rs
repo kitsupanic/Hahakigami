@@ -1831,6 +1831,31 @@ fn restrictions_only_keep_incomplete_results_without_prominent_native_message() 
 }
 
 #[test]
+fn a_folder_is_incomplete_when_the_scan_dropped_some_of_its_errors() {
+    let state = AppState::default();
+    let mut snapshot = synthetic(1);
+    snapshot.stats.errors = 2;
+    snapshot.stats.incomplete = true;
+    snapshot.errors.push(disk_scan::ScanIssue {
+        path: "/elsewhere/blocked".into(),
+        message: "Permission denied".into(),
+        error_kind: None,
+        raw_os_error: None,
+    });
+    let s = install(&state, snapshot);
+    let incomplete = |path: &str, directory: bool| {
+        let snapshot = s.store.read().unwrap();
+        is_incomplete(&issue_index(&s, &snapshot).1, Path::new(path), directory)
+    };
+    // One error is stored and one was dropped: no folder can be vouched for, but a file is not marked.
+    assert!(incomplete("/fixture/quiet", true));
+    assert!(!incomplete("/fixture/quiet/file", false));
+    s.store.write().unwrap().stats.errors = 1;
+    assert!(!incomplete("/fixture/quiet", true));
+    assert!(incomplete("/elsewhere", true));
+}
+
+#[test]
 #[ignore = "native journal/cache parity and timing on disposable local fixture"]
 fn native_rescan_cache_parity() {
     tauri::async_runtime::block_on(async {
@@ -3051,6 +3076,46 @@ fn cleanup_queue_batch_removal_publishes_once_and_does_not_remove_covering_paren
         assert_eq!(removed.entries.len(), 1);
         assert_eq!(removed.entries[0].path, parent.to_string_lossy());
         assert_eq!(removed.entries[0].status, "ready");
+    });
+}
+
+#[test]
+fn a_queue_edit_checks_the_disk_off_the_activity_gate() {
+    let dir = fixture();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(root.join(name), []).unwrap();
+    }
+    let app = app(AppState::default());
+    let state = app.state::<AppState>();
+    let scan = snapshot(root.clone());
+    let ids: Vec<_> = scan
+        .iter_nodes()
+        .filter(|n| n.parent == Some(0))
+        .map(|n| n.id)
+        .collect();
+    let session = install(&state, scan);
+    let queued = tauri::async_runtime::block_on(add_cleanup_queue(
+        app.state(),
+        "fixture".into(),
+        ids.clone(),
+    ))
+    .unwrap();
+    let removed: Vec<_> = queued.entries[1..].iter().map(|e| e.id.clone()).collect();
+    let handle = app.handle().clone();
+    std::thread::scope(|scope| {
+        // Stalls the view where it reads the remaining entry's scan, as a hung disk stalls it. Dropped on a
+        // failure too.
+        let stall = session.store.write().unwrap();
+        let editing = scope.spawn(|| {
+            tauri::async_runtime::block_on(remove_cleanup_queue(handle.state(), removed))
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!editing.is_finished(), "the view did not stall");
+        drop(Activity::begin(&state.activity).expect("a stalled view holds the activity gate"));
+        drop(stall);
+        editing.join().unwrap().unwrap();
+        assert!(!state.activity.busy());
     });
 }
 
@@ -4977,7 +5042,8 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
         add_cleanup_queue(app.state(), "folder".into(), vec![id])
             .await
             .unwrap();
-        assert_eq!(first_entry(&app).await.status, "ready");
+        let entry = first_entry(&app).await;
+        assert!(entry.status == "ready" && entry.on_scan_volume);
         // Same paths, devices and inodes (FAT IDs come from layout), but a new volume UUID after a reformat.
         let other = || Some(safety::Volume::Uuid(uuid::Uuid::new_v4().to_string()));
         install_on(
@@ -4987,7 +5053,11 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
             snapshot(n.folder.clone()),
             other(),
         );
-        assert_eq!(first_entry(&app).await.status, "changed");
+        // Matched to the scan of the other disk by path, but not its item: the UI must not mark that disk's folder.
+        let entry = first_entry(&app).await;
+        assert_eq!(entry.status, "changed");
+        assert_eq!(entry.matched_scan_id.as_deref(), Some("own"));
+        assert!(!entry.on_scan_volume);
         // The covering-disk fallback does not vouch for it either.
         install_in(&state, Slot::Folder, "away", snapshot(n.other.clone()));
         install_on(

@@ -88,6 +88,7 @@ beforeEach(async () => {
         status: "ready",
         reason: null,
         matchedScanId: "live",
+        onScanVolume: true,
       },
     ],
     revision: 1,

@@ -10,6 +10,7 @@ const entry = (path: string, allocatedBytes: number): QueueEntry => ({
   allocatedBytes,
   status: "ready",
   reason: null,
+  onScanVolume: true,
 });
 
 it("finds the deepest folder every path shares", () => {

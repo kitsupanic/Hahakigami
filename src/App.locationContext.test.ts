@@ -142,7 +142,7 @@ it("keeps displayed live scan, selection and source when another location is sel
   await mount();
   await act(() => app().start());
   await settle();
-  await act(() => app().setSelection([node(alpha, true)]));
+  await act(() => app().select(node(alpha, true)));
   const displayed = app().summary;
   const rows = app().page;
   await chooseBeta();
@@ -177,7 +177,7 @@ it("preserves the displayed workspace when scan startup rejects", async () => {
   await mount();
   await act(() => app().start());
   await settle();
-  await act(() => app().setSelection([node(alpha, true)]));
+  await act(() => app().select(node(alpha, true)));
   await settle();
   const previous = {
     summary: app().summary,
@@ -222,7 +222,7 @@ it("replaces the workspace on the first scan event before the start response", a
   await mount();
   await act(() => app().start());
   await settle();
-  await act(() => app().setSelection([node(alpha, true)]));
+  await act(() => app().select(node(alpha, true)));
   const previous = app().summary;
   const pending = deferred<string>();
   const standard = mock.invoke.getMockImplementation()!;
@@ -254,7 +254,7 @@ it("selects a next target without replacing the displayed workspace", async () =
   await mount();
   await act(() => app().start());
   await settle();
-  await act(() => app().setSelection([node(alpha, true)]));
+  await act(() => app().select(node(alpha, true)));
   const before = {
     summary: app().summary,
     page: app().page,

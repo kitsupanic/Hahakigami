@@ -260,19 +260,13 @@ it("ignores a native picker completion after teardown", async () => {
   expect(old.target).toEqual(disk);
 });
 
-it.each(["busy", "modal"])(
-  "rejects picker requests during %s",
-  async (state) => {
-    await mount();
-    await act(() => {
-      if (state === "busy") app().setBusy(true);
-      if (state === "modal") app().setAccessOpen(true);
-    });
-    await act(() => app().chooseFolder());
-    expect(calls("choose_folder")).toHaveLength(0);
-  },
-);
-it.each(["generation", "scan", "navigation", "target"])(
+it("rejects picker requests while the access dialog is open", async () => {
+  await mount();
+  await act(() => app().openAccess());
+  await act(() => app().chooseFolder());
+  expect(calls("choose_folder")).toHaveLength(0);
+});
+it.each(["scan", "navigation", "target"])(
   "handles a picker completion after the current %s changes",
   async (context) => {
     const picking = deferred<Target | null>();
@@ -283,7 +277,6 @@ it.each(["generation", "scan", "navigation", "target"])(
       pending = app().chooseFolder();
     });
     await act(() => {
-      if (context === "generation") ++app().generation.current;
       if (context === "scan") app().activeId.current = "newer";
       if (context === "navigation") app().navigation.current++;
       if (context === "target") app().setTarget({ ...disk, id: "newer" });
