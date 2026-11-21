@@ -159,15 +159,17 @@ fn file_and_cleanup_commands_refuse_a_scan_that_is_not_usable_in_the_same_words(
         }
         s.store.write().unwrap().state = ScanState::Running;
         s.finishing.store(true, Ordering::Release);
-        let errors = [
-            commit_trash(app.state(), id(), "ticket".into(), app.handle().clone())
-                .await
-                .err(),
-            prepare_cleanup_queue(app.state(), id()).await.err(),
-        ];
+        let errors = [prepare_cleanup_queue(app.state(), id()).await.err()];
         for error in errors {
             assert_eq!(error.as_deref(), Some(slots::NOT_COMPLETED));
         }
+        // A commit says it moved nothing, then gives the same words.
+        assert_eq!(
+            commit_trash(app.state(), id(), "ticket".into(), app.handle().clone())
+                .await
+                .err(),
+            Some(format!("Nothing was moved: {}", slots::NOT_COMPLETED))
+        );
         // Showing a file in Finder needs a live scan, not a finished one: it gets as far as the lookup.
         assert_eq!(
             reveal_node(app.state(), id(), 9999).await.err().as_deref(),
@@ -179,9 +181,6 @@ fn file_and_cleanup_commands_refuse_a_scan_that_is_not_usable_in_the_same_words(
             prepare_trash(app.state(), id(), vec![1]).await.err(),
             add_cleanup_queue(app.state(), id(), vec![1]).await.err(),
             prepare_cleanup_queue(app.state(), id()).await.err(),
-            commit_trash(app.state(), id(), "ticket".into(), app.handle().clone())
-                .await
-                .err(),
             reveal_node(app.state(), id(), 1).await.err(),
             quick_look_node(app.state(), id(), 1, app.handle().clone())
                 .await
@@ -190,6 +189,12 @@ fn file_and_cleanup_commands_refuse_a_scan_that_is_not_usable_in_the_same_words(
         for error in errors {
             assert_eq!(error.as_deref(), Some(slots::RESULTS_CHANGED));
         }
+        assert_eq!(
+            commit_trash(app.state(), id(), "ticket".into(), app.handle().clone())
+                .await
+                .err(),
+            Some(format!("Nothing was moved: {}", slots::RESULTS_CHANGED))
+        );
         assert!(!state.activity.busy());
     });
 }
@@ -1324,7 +1329,7 @@ fn cleanup_reviews_collapse_selection_and_reject_stale_or_expired_tickets() {
                 &mut trash
             )
             .err(),
-            Some("Cleanup review expired. Review the selection again.".into())
+            Some("Nothing was moved: Cleanup review expired. Review the selection again.".into())
         );
         assert!(dir.join("file").exists());
         let review = prepare_trash(app.state(), "fixture".into(), vec![file_id])
@@ -1339,7 +1344,7 @@ fn cleanup_reviews_collapse_selection_and_reject_stale_or_expired_tickets() {
                 &mut trash
             )
             .err(),
-            Some("Cleanup review expired. Review the selection again.".into())
+            Some("Nothing was moved: Cleanup review expired. Review the selection again.".into())
         );
         assert!(trash.calls.is_empty());
         // The wrong token did not spend the ticket the right token still owns.
@@ -3094,7 +3099,7 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
         // The refused attempt spent the ticket.
         assert_eq!(
             commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
-            Some("Review the selection before cleanup.".into())
+            Some("Nothing was moved: Review the selection before cleanup.".into())
         );
         let review = prepare_cleanup_queue(app.state(), "fixture".into())
             .await
@@ -3111,7 +3116,7 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
             .created = std::time::SystemTime::now() - Duration::from_secs(121);
         assert_eq!(
             commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
-            Some("Cleanup review expired. Review the selection again.".into())
+            Some("Nothing was moved: Cleanup review expired. Review the selection again.".into())
         );
         let review = prepare_cleanup_queue(app.state(), "fixture".into())
             .await
@@ -3120,7 +3125,7 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
         // The new scan holds no ticket: one reviewed on the scan it replaced does not carry over.
         assert_eq!(
             commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
-            Some("Review the selection before cleanup.".into())
+            Some("Nothing was moved: Review the selection before cleanup.".into())
         );
         assert!(trash.calls.is_empty());
         assert!(root.join("a").exists() && root.join("b").exists());
@@ -3305,7 +3310,7 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
         cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| trash
             .trash(i))
         .err(),
-        Some("The selected item changed. Rescan before cleanup.".into())
+        Some("Nothing was moved: The selected item changed. Rescan before cleanup.".into())
     );
     assert!(trash.calls.is_empty());
 }
@@ -4983,11 +4988,209 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
         });
         assert_eq!(
             result.err().as_deref(),
-            Some("The volume at this location changed. Rescan before cleanup.")
+            Some("Nothing was moved: The volume at this location changed. Rescan before cleanup.")
         );
         assert!(trash.calls.is_empty());
         assert!(own.is_valid());
         assert!(n.item.exists());
+    });
+}
+
+/// The first queue entry as saved before its disk was plugged in again: another disk had taken its device number, so
+/// the disk now has a different one. Every guard on the entry's own device carries a number the scans no longer do.
+fn as_saved_before_a_replug(queue: &mut cleanup_queue::Queue) {
+    let entry = &mut queue.entries[0];
+    let was = entry.item.identity.device;
+    for guard in [&mut entry.item, &mut entry.root]
+        .into_iter()
+        .chain(entry.ancestors.iter_mut())
+        .chain(entry.root_ancestors.iter_mut())
+        .filter(|g| g.identity.device == was)
+    {
+        guard.identity.device += 1000;
+    }
+}
+fn same_volume(held: &mut Held, volume: &safety::Volume) {
+    held.volumes.values_mut().for_each(|v| *v = volume.clone());
+}
+
+#[test]
+fn a_disk_numbered_anew_keeps_its_saved_entries_only_when_the_volume_uuid_is_the_same() {
+    let uuid = || safety::Volume::Uuid(uuid::Uuid::new_v4().to_string());
+    let storage = fixture();
+    let mut queue = queue_of(&storage);
+    let n = nested();
+    let volume = uuid();
+    let mut folder = held("folder", false, snapshot(n.folder.clone()));
+    let mut disk = held("disk", true, snapshot(n.disk.clone()));
+    same_volume(&mut folder, &volume);
+    same_volume(&mut disk, &volume);
+    queue_nodes(&mut queue, &folder, &[&n.item]);
+    as_saved_before_a_replug(&mut queue);
+    assert_ne!(
+        queue.entries[0].item.identity.device,
+        folder.scan().snapshot.node(0).unwrap().identity.device
+    );
+    // The own-root rule and the covering-disk rule both still vouch for it, and a review holds it.
+    assert_eq!(standing(&queue, &[&folder]), is("ready", Some("folder")));
+    assert_eq!(standing(&queue, &[&disk]), is("ready", Some("disk")));
+    assert_eq!(review_of(&queue, &[&folder], "folder").len(), 1);
+    // Inode, kind and birth time are still compared: another file in the same place is not the item.
+    queue.entries[0].item.identity.inode ^= 1;
+    assert_eq!(standing(&queue, &[&folder]), is("changed", Some("folder")));
+    assert_eq!(standing(&queue, &[&disk]), is("needsScan", None));
+    queue.entries[0].item.identity.inode ^= 1;
+    // The entry holds a birth time and the scans none: the disk has the same one, so still the item.
+    queue.entries[0].item.identity.birth = safety::Identity::read(&n.item).unwrap().birth;
+    assert_eq!(standing(&queue, &[&folder]), is("ready", Some("folder")));
+    // Another birth time is another file in the same slot, as before.
+    queue.entries[0].item.identity.birth = Some((1, 0));
+    assert_eq!(standing(&queue, &[&folder]), is("blocked", Some("folder")));
+    queue.entries[0].item.identity.birth = None;
+    // The ancestors on the item's disk are compared too, and so is the root.
+    queue.entries[0].ancestors[0].identity.inode ^= 1;
+    assert_eq!(standing(&queue, &[&folder]), is("changed", Some("folder")));
+    assert_eq!(standing(&queue, &[&disk]), is("needsScan", None));
+    queue.entries[0].ancestors[0].identity.inode ^= 1;
+    queue.entries[0].root.identity.inode ^= 1;
+    assert_eq!(standing(&queue, &[&folder]), is("changed", Some("folder")));
+    queue.entries[0].root.identity.inode ^= 1;
+    // Another UUID is another disk, whatever its numbers.
+    queue.entries[0].volume = Some(uuid());
+    assert_eq!(standing(&queue, &[&folder]), is("changed", Some("folder")));
+    assert_eq!(standing(&queue, &[&disk]), is("needsScan", None));
+    // A disk without a UUID has only the device number to go by: a new one is a change.
+    let mut queue = queue_of(&storage);
+    queue.clear().unwrap();
+    same_volume(&mut folder, &safety::Volume::NoUuid);
+    same_volume(&mut disk, &safety::Volume::NoUuid);
+    queue_nodes(&mut queue, &folder, &[&n.item]);
+    assert_eq!(standing(&queue, &[&folder]), is("ready", Some("folder")));
+    as_saved_before_a_replug(&mut queue);
+    assert_eq!(standing(&queue, &[&folder]), is("changed", Some("folder")));
+    assert_eq!(standing(&queue, &[&disk]), is("needsScan", None));
+}
+
+#[test]
+fn a_queued_item_on_a_disk_numbered_anew_is_scanned_reviewed_and_trashed() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let _storage = queue_in_tempdir(&state);
+        let n = nested();
+        let scan = snapshot(n.folder.clone());
+        let id = node_of(&scan, &n.item);
+        install_in(&state, Slot::Folder, "folder", scan);
+        add_cleanup_queue(app.state(), "folder".into(), vec![id])
+            .await
+            .unwrap();
+        let entry = first_entry(&app).await.id;
+        assert!(matches!(
+            state.cleanup_queue.lock().unwrap().entries[0].volume,
+            Some(safety::Volume::Uuid(_))
+        ));
+        // As after a restart and a replug: no scan, and the saved numbers are not the disk's now.
+        state.scans.discard("folder");
+        as_saved_before_a_replug(&mut state.cleanup_queue.lock().unwrap());
+        assert_eq!(first_entry(&app).await.status, "needsScan");
+        // The Scan button: the root is accepted, and the scan starts on the number the disk has now.
+        let target = cleanup_queue_target(app.state(), entry).await.unwrap();
+        let guard = state.target_guards.lock().unwrap()[&target.id].clone();
+        assert_eq!(
+            guard.identity.device,
+            safety::Identity::read(&n.folder).unwrap().device
+        );
+        let scan_id = scan_to_end(&app, &target);
+        assert_eq!(first_entry(&app).await.status, "ready");
+        // The review and the commit hold it: the ticket is the fresh scan's, and `verify` stays strict.
+        let review = prepare_cleanup_queue(app.state(), scan_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(review.items.len(), 1);
+        let s = state.scans.find(&scan_id).unwrap();
+        let mut trash = Recording::ok();
+        let result = cleanup::commit(&s, &state.cleanup_queue, &review.token, true, &[], |i| {
+            trash.trash(i)
+        })
+        .unwrap();
+        assert_eq!((result.trashed, trash.calls), (1, vec![n.item.clone()]));
+    });
+}
+
+#[test]
+fn a_queue_scan_target_on_a_disk_numbered_anew_needs_the_same_volume_uuid() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let _storage = queue_in_tempdir(&state);
+        let n = nested();
+        let scan = snapshot(n.folder.clone());
+        let id = node_of(&scan, &n.item);
+        install_in(&state, Slot::Folder, "folder", scan);
+        add_cleanup_queue(app.state(), "folder".into(), vec![id])
+            .await
+            .unwrap();
+        let entry = first_entry(&app).await.id;
+        state.scans.discard("folder");
+        as_saved_before_a_replug(&mut state.cleanup_queue.lock().unwrap());
+        for (case, volume) in [
+            (
+                "another UUID",
+                Some(safety::Volume::Uuid(uuid::Uuid::new_v4().to_string())),
+            ),
+            ("no UUID", Some(safety::Volume::NoUuid)),
+            ("no recorded volume", None),
+        ] {
+            state.cleanup_queue.lock().unwrap().entries[0].volume = volume;
+            assert_eq!(
+                cleanup_queue_target(app.state(), entry.clone())
+                    .await
+                    .err()
+                    .as_deref(),
+                Some("The chosen folder changed. Choose it again before scanning."),
+                "{case}"
+            );
+        }
+    });
+}
+
+#[test]
+fn commit_refusals_before_any_move_say_nothing_was_moved() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let s = install(&state, synthetic(2));
+        let commit = |id: &str| {
+            commit_trash(
+                app.state(),
+                id.into(),
+                "ticket".into(),
+                app.handle().clone(),
+            )
+        };
+        assert_eq!(
+            commit("missing").await.err().as_deref(),
+            Some("Nothing was moved: This scan is no longer active.")
+        );
+        let busy = Activity::begin(&state.activity).unwrap();
+        assert_eq!(
+            commit(&s.id).await.err(),
+            Some(format!("Nothing was moved: {}", Activity::BUSY))
+        );
+        drop(busy);
+        // No review yet: refused inside the commit, with the same prefix once.
+        assert_eq!(
+            commit_cleanup_queue(
+                app.state(),
+                s.id.clone(),
+                "ticket".into(),
+                app.handle().clone()
+            )
+            .await
+            .err()
+            .as_deref(),
+            Some("Nothing was moved: Review the selection before cleanup.")
+        );
     });
 }
 

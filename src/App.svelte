@@ -798,7 +798,7 @@
     <div class="inspector-actions">
       {#if selection.length > 1}
         <small class="selection-action-scope" id="selection-action-scope"
-          >Actions apply to all {selection.length} selected items.</small
+          >Actions apply to all {selection.length.toLocaleString()} selected items.</small
         >
       {/if}
       {#if quickLook.error}

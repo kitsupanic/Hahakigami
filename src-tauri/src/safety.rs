@@ -124,6 +124,39 @@ impl CheckedItem {
     pub fn pin_birth(&mut self) {
         self.identity.birth = Identity::read(&self.path).ok().and_then(|i| i.birth);
     }
+    /// This saved record as a disk that was plugged in again reads: macOS can give it another device number when a
+    /// different disk took its old one. Only when the record's volume and `now_volume` are the same UUID, the item's
+    /// device number becomes `now_device` in the item and in every ancestor on that same device. The inode, kind
+    /// and birth time still have to match when the result is compared with the current one; an ancestor on another
+    /// device (`/Volumes`, `/`), a `NoUuid` or unknown volume, and a different UUID keep the strict device check.
+    /// Only for a record compared with a current scan: `verify` reads the disk and stays strict.
+    pub fn renumbered(&self, now_volume: Option<&Volume>, now_device: u64) -> Self {
+        let Some(Volume::Uuid(saved)) = &self.volume else {
+            return self.clone();
+        };
+        if !matches!(now_volume, Some(Volume::Uuid(now)) if now == saved) {
+            return self.clone();
+        }
+        let was = self.identity.device;
+        let renumber = |i: &Identity| Identity {
+            device: if i.device == was {
+                now_device
+            } else {
+                i.device
+            },
+            ..i.clone()
+        };
+        Self {
+            path: self.path.clone(),
+            identity: renumber(&self.identity),
+            ancestors: self
+                .ancestors
+                .iter()
+                .map(|(path, identity)| (path.clone(), renumber(identity)))
+                .collect(),
+            volume: self.volume.clone(),
+        }
+    }
 }
 
 /// One live scan as the cleanup rules see it: only what they read, with no session state. The caller decides which
@@ -139,7 +172,7 @@ pub struct Scan<'a> {
 }
 
 /// An item's volume is its nearest region's: its own node or the closest ancestor that starts a region.
-fn recorded_volume(scan: &Scan, id: u32) -> Option<Volume> {
+pub fn recorded_volume(scan: &Scan, id: u32) -> Option<Volume> {
     let volumes = scan.volumes?;
     std::iter::successors(Some(id), |&id| scan.snapshot.node(id)?.parent)
         .find_map(|id| volumes.get(&id))
@@ -321,6 +354,49 @@ impl Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renumbering_moves_only_guards_on_the_item_device_and_only_for_the_same_uuid() {
+        let id = |device, inode| Identity {
+            device,
+            inode,
+            kind: 0,
+            birth: Some((1, 0)),
+        };
+        let uuid = |u: &str| Some(Volume::Uuid(u.into()));
+        let saved = CheckedItem {
+            path: "/Volumes/Ext/build".into(),
+            identity: id(5, 30),
+            ancestors: vec![
+                ("/".into(), id(1, 2)),
+                ("/Volumes".into(), id(1, 10)),
+                ("/Volumes/Ext".into(), id(5, 2)),
+            ],
+            volume: uuid("A"),
+        };
+        let devices = |c: &CheckedItem| {
+            let mut all = vec![c.identity.device];
+            all.extend(c.ancestors.iter().map(|(_, i)| i.device));
+            all
+        };
+        // Same UUID: the disk's own guards move to the new number, `/` and `/Volumes` stay strict.
+        assert_eq!(
+            devices(&saved.renumbered(uuid("A").as_ref(), 9)),
+            [9, 1, 1, 9]
+        );
+        for now in [uuid("B"), Some(Volume::NoUuid), None] {
+            assert_eq!(devices(&saved.renumbered(now.as_ref(), 9)), [5, 1, 1, 5]);
+        }
+        for volume in [Some(Volume::NoUuid), None] {
+            let unknown = CheckedItem {
+                volume,
+                ..saved.clone()
+            };
+            assert_eq!(
+                devices(&unknown.renumbered(uuid("A").as_ref(), 9)),
+                [5, 1, 1, 5]
+            );
+        }
+    }
     #[test]
     fn ticket_expires_on_wall_clock_and_on_a_clock_set_back() {
         let ticket = |created| Ticket {

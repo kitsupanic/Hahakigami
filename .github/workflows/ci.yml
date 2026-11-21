@@ -30,6 +30,7 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm exec vite build
+      - run: pnpm smoke
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p hahakigami --features performance-benchmark --all-targets -- -D warnings

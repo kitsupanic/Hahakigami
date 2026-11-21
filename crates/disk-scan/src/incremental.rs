@@ -173,12 +173,13 @@ impl Reuse {
         }
         let mut ambiguous_alias_history =
             !seed.aliases_resolved && marks.values().any(|m| m.requested && m.node.is_none());
-        // An event path whose parent has no node is either a new directory or a cached directory spelled
-        // differently (case-insensitive or Unicode-equivalent names), whose cached listing would hide the
-        // change. C is the first unmatched component below the nearest cached ancestor M. A new directory
-        // has no cached listing and M's is dirty already. A child of M that C matches case-insensitively is
-        // dirtied whole. The loop below spreads either to descendants, whose hard links `touched` never
-        // sees, so dirtying any child makes every cached alias dirty, resolved aliases or not.
+        // An event path with an unmatched parent, or an unmatched last name under a cached parent, is either new
+        // or a cached entry spelled differently (case-insensitive or Unicode-equivalent names), whose cached
+        // listing would hide the change. C is the first unmatched component below the nearest cached ancestor
+        // M. A new directory has no cached listing and M's is dirty already. A child of M that C matches
+        // case-insensitively is dirtied whole. The loop below spreads either to descendants, whose hard
+        // links `touched` never sees, so dirtying any child makes every cached alias dirty, resolved
+        // aliases or not.
         let fold = |name: &std::ffi::OsStr| match name.to_str() {
             Some(name) => name.to_lowercase().into_bytes(),
             None => name.as_encoded_bytes().to_ascii_lowercase(),
@@ -186,16 +187,19 @@ impl Reuse {
         let mut children_by_fold: HashMap<u32, HashMap<Vec<u8>, Vec<u32>>> = HashMap::new();
         // Ancestors whose non-ASCII children were already dirtied: any unmatched non-ASCII name widens to the same set.
         let mut widened_non_ascii = HashSet::new();
-        for (path, _) in marks.iter().filter(|(_, m)| m.requested) {
-            let parent_unmatched = path
+        for (path, mark) in marks.iter().filter(|(_, m)| m.requested) {
+            let parent = path
                 .parent()
                 .and_then(|parent| marks.get(parent))
-                .is_some_and(|m| m.node.is_none());
+                .map(|m| m.node);
+            let parent_unmatched = parent == Some(None);
+            // Cached parent, unmatched last component: C is that component, matchable only by a case-insensitive twin.
+            let last_unmatched = mark.node.is_none() && parent.is_some_and(|node| node.is_some());
             let cached = path
                 .ancestors()
                 .skip(1)
                 .find_map(|a| Some((a, marks.get(a)?.node?)));
-            let Some((ancestor, id)) = cached.filter(|_| parent_unmatched) else {
+            let Some((ancestor, id)) = cached.filter(|_| parent_unmatched || last_unmatched) else {
                 continue;
             };
             let widen = [id];
@@ -216,7 +220,9 @@ impl Reuse {
                     });
                     match index.get(&fold(name)) {
                         Some(variants) => variants,
-                        None if name.is_ascii() => &[],
+                        // shortcut: an NFC/NFD-different last component under a cached parent is not dirtied, as widening
+                        // would re-read every non-ASCII sibling per new non-ASCII folder; upgrade with a normalization crate.
+                        None if name.is_ascii() || last_unmatched => &[],
                         // shortcut: no normalization crate to tell NFC from NFD, so every non-ASCII child
                         // may be the one spelled differently (both forms of a non-ASCII name stay non-ASCII,
                         // bar a few singletons such as U+037E); compare normalized names once one is a dependency.
@@ -913,6 +919,28 @@ mod tests {
         assert_eq!(
             reusable(&["build/CAF\u{c9}/new.bin"], &[]),
             [false, true, true, false, true]
+        );
+        // The same twin as the last component under a cached parent, as a path or a directory.
+        assert_eq!(
+            reusable(&["build/OUT"], &[]),
+            [false, false, true, true, true]
+        );
+        assert_eq!(
+            reusable(&[], &["build/OUT"]),
+            [false, false, true, true, true]
+        );
+        assert_eq!(
+            reusable(&["build/CAF\u{c9}"], &[]),
+            [false, true, true, false, true]
+        );
+        // A new last component, even non-ASCII, matches no twin and dirties no sibling.
+        assert_eq!(
+            reusable(&["build/new"], &[]),
+            [false, true, true, true, true]
+        );
+        assert_eq!(
+            reusable(&["build/\u{65b0}"], &[]),
+            [false, true, true, true, true]
         );
         assert_eq!(
             reusable(&["Build/out/new.bin"], &[]),

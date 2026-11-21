@@ -405,7 +405,7 @@ fn register_all(
 /// Paths `discover_targets` would list as disks. Reads the mount table only: no capacity probe, no registration.
 #[tauri::command]
 async fn mounted_volumes() -> Vec<String> {
-    platform::volume_paths()
+    platform::local_volume_paths()
         .into_iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
@@ -430,8 +430,17 @@ async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>
     .await
     .map_err(|e| e.to_string())?
 }
-fn validate_target(guard: &safety::CheckedItem) -> Result<(), String> {
-    if safety::Identity::read(&guard.path)? != guard.identity
+/// Checks `guard` against the disk. Returns it as the disk numbers it now: a queue entry's root on a disk plugged in
+/// again can have a new device number (`CheckedItem::renumbered`), so the scan start must use that one. A guard
+/// without a volume (a picked or discovered target) or with one that is not the same UUID stays strict.
+fn validate_target(guard: &safety::CheckedItem) -> Result<safety::CheckedItem, String> {
+    let now = safety::Identity::read(&guard.path)?;
+    // The volume is read only when the device differs, so an unchanged target never needs it.
+    let volume = (guard.volume.is_some() && now.device != guard.identity.device)
+        .then(|| safety::Volume::read(&guard.path).ok())
+        .flatten();
+    let guard = guard.renumbered(volume.as_ref(), now.device);
+    if now != guard.identity
         || std::fs::canonicalize(&guard.path).map_err(|e| e.to_string())? != guard.path
     {
         return Err("The chosen folder changed. Choose it again before scanning.".into());
@@ -441,7 +450,7 @@ fn validate_target(guard: &safety::CheckedItem) -> Result<(), String> {
             return Err("A scan target ancestor changed. Choose the folder again.".into());
         }
     }
-    Ok(())
+    Ok(guard)
 }
 
 fn now_ms() -> u64 {
@@ -823,7 +832,7 @@ fn open_scan_target(state: &AppState, target_id: String) -> Result<OpenedTarget,
         .get(&resolved_id)
         .cloned()
         .ok_or("Choose the scan target again.")?;
-    validate_target(&guard)?;
+    let guard = validate_target(&guard)?;
     let expected = disk_scan::Identity {
         device: guard.identity.device,
         inode: guard.identity.inode,
@@ -1676,9 +1685,13 @@ async fn commit_cleanup<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     queued: bool,
 ) -> Result<TrashResult, String> {
-    let activity = Activity::begin(&state.activity)?;
-    quick_look::close(app.clone(), state.preview.clone()).await?;
-    let s = state.scans.find(&scan_id)?;
+    // Nothing moves before the blocking task, so these refusals say so like `cleanup::commit`'s; a task that panics
+    // may have moved something, and its error keeps no prefix.
+    let activity = Activity::begin(&state.activity).map_err(cleanup::nothing_moved)?;
+    quick_look::close(app.clone(), state.preview.clone())
+        .await
+        .map_err(cleanup::nothing_moved)?;
+    let s = state.scans.find(&scan_id).map_err(cleanup::nothing_moved)?;
     let access_setup = state.access_setup.clone();
     let queue = state.cleanup_queue.clone();
     let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, o)| o).collect();
@@ -1758,14 +1771,14 @@ async fn cleanup_queue_target(
     // validate_target, statfs and statvfs can hang on an unresponsive mount: they run off the async workers and
     // before the gate, so a stalled disk never keeps every other operation refused.
     let root = queued_root(&state, &entry_id)?;
-    let (root, target) = tauri::async_runtime::spawn_blocking(move || {
-        validate_target(&root)?;
+    let (root, guard, target) = tauri::async_runtime::spawn_blocking(move || {
+        let guard = validate_target(&root)?;
         platform::ensure_local_volume(&root.path)?;
         let name = platform::folder_name(&root.path);
         // Flag a disk root like the Disks list does, so its scan uses the disk's own slot.
         let mut target = platform::target(&root.path, name);
         target.volume = platform::is_disk_path(&root.path);
-        Ok::<_, String>((root, target))
+        Ok::<_, String>((root, guard, target))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -1775,9 +1788,10 @@ async fn cleanup_queue_target(
     if recorded.path != root.path || recorded.identity != root.identity {
         return Err("Unknown cleanup queue entry.".into());
     }
-    // Retain the recorded guard. register() rereads authority and could accept a replacement
-    // occurring between validation and registration; start_scan validates this original guard.
-    Ok(retain_target(&state, target, root))
+    // Retain the recorded guard, with the device numbers validation just read when the disk was numbered anew.
+    // register() rereads authority and could accept a replacement occurring between validation and registration;
+    // start_scan validates this original guard.
+    Ok(retain_target(&state, target, guard))
 }
 #[tauri::command]
 async fn prepare_cleanup_queue(
@@ -1803,9 +1817,12 @@ async fn commit_cleanup_queue<R: tauri::Runtime>(
 ) -> Result<TrashResult, String> {
     commit_cleanup(state, scan_id, token, app, true).await
 }
+// Off the main thread: `full_disk_access` waits for `/usr/bin/open`.
 #[tauri::command]
-fn open_full_disk_access() -> Result<(), String> {
-    platform::full_disk_access()
+async fn open_full_disk_access() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(platform::full_disk_access)
+        .await
+        .map_err(|e| e.to_string())?
 }
 // Off the async workers: the lock is held across a native cleanup, which can hang on a slow disk.
 #[tauri::command]

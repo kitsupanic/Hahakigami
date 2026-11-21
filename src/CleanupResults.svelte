@@ -123,10 +123,10 @@
       <p class="cleanup-result-warning">
         Couldn't tell if the cleanup worked. Check Trash in Finder and the queue before you try again.
       </p>
-      {#if report.message}<p class="cleanup-result-message">
-          {report.message}
-        </p>{/if}
     {/if}
+    {#if report.message}<p class="cleanup-result-message">
+        {report.message}
+      </p>{/if}
     {#if report.persistenceWarning}
       <p class="cleanup-result-warning">
         The queue may be out of date. Moved items may still show in it.

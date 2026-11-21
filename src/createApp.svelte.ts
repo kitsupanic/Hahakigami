@@ -962,14 +962,20 @@ export default function createApp() {
         if (t.volume && String(e).includes("The chosen folder changed"))
           rediscover = true;
         if (how.batch && !accessOff) return false;
-        if (!how.batch && g !== generation.current) return true;
-        if (accessOff) {
-          // The backend probed again and found access off: show that state. Scan all asks once.
+        // The backend probed again and found access off: keep that state even if the view moved on.
+        if (accessOff)
           access = {
             status: "off",
             scanAnyway: false,
             appPath: access?.appPath ?? "",
           };
+        if (!how.batch && g !== generation.current) {
+          // The user is elsewhere: a toast, not a dialog over the new view.
+          if (!accessOff) showToast(`Couldn’t scan ${t.name}: ${String(e)}`);
+          return true;
+        }
+        if (accessOff) {
+          // Scan all asks once.
           if (!how.batch || !blockedScan) {
             blockScan(blocking);
             void loadAccess();
@@ -1471,15 +1477,25 @@ export default function createApp() {
       }
     } catch (e) {
       trash = null;
-      cleanupReport = {
-        ...cleanupResult(
-          ++cleanupReportId,
-          review.queued ? "queue" : "selection",
-          review.items,
-          null,
-        ),
-        message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
-      };
+      const base = cleanupResult(
+        ++cleanupReportId,
+        review.queued ? "queue" : "selection",
+        review.items,
+        null,
+      );
+      // The backend refused before moving anything: a plain failure, not an unconfirmed result.
+      cleanupReport = String(e).startsWith("Nothing was moved: ")
+        ? {
+            ...base,
+            state: "confirmed",
+            movedCount: 0,
+            failedCount: review.items.length,
+            message: String(e),
+          }
+        : {
+            ...base,
+            message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
+          };
       void refreshQueue();
     } finally {
       busy = false;
@@ -1556,15 +1572,8 @@ export default function createApp() {
       shown ||= scanId !== null && activeId.current === scanId;
     }
     if (!shown) return;
-    quickLook.dismiss();
-    clearResultsReturn();
-    clearNavigationHistory();
-    ++generation.current;
-    activeId.current = null;
+    resetView(null, null);
     liveTarget = null;
-    selection = [];
-    summary = null;
-    trash = null;
     if (wasShown) target = startup;
     void refreshQueue();
   }

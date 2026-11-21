@@ -5,8 +5,11 @@
   "windows": ["main"],
   "local": true,
   "permissions": [
-    "core:default",
+    "core:event:default",
+    "core:menu:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:webview:allow-internal-toggle-devtools",
     "core:window:allow-set-theme",
     "clipboard-manager:allow-write-text",
     "allow-discover-targets",

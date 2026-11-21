@@ -54,14 +54,19 @@ async fn execute(command: Command, service: Arc<Service>) -> Result<(i32, Option
     Ok((0, Some(result)))
 }
 
+/// A desktop launch has no arguments or starts with a macOS single-dash option (`-psn_*` from Finder,
+/// `-AppleLanguages '(ja)'` from `open --args`). Anything else goes to `Cli`, which rejects unknown names.
+fn is_command_mode(args: &[std::ffi::OsString]) -> bool {
+    args.get(1).is_some_and(|arg| {
+        let arg = arg.as_encoded_bytes();
+        !(arg.len() > 1 && arg[0] == b'-' && arg[1] != b'-') || arg == b"-h" || arg == b"-V"
+    })
+}
+
 /// Return an exit code for command mode, or None for an ordinary desktop launch.
 pub fn run() -> Option<i32> {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() <= 1
-        || args[1..]
-            .iter()
-            .all(|arg| arg.as_encoded_bytes().starts_with(b"-psn_"))
-    {
+    if !is_command_mode(&args) {
         return None;
     }
     let cli = match Cli::try_parse_from(args) {
@@ -96,4 +101,39 @@ pub fn run() -> Option<i32> {
             1
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_command_mode;
+
+    fn mode(args: &[&str]) -> bool {
+        is_command_mode(&args.iter().map(Into::into).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn only_macos_options_start_the_desktop_app() {
+        for first in [
+            "scan",
+            "mcp",
+            "help",
+            "-h",
+            "--help",
+            "-V",
+            "--version",
+            "unknown-command",
+            "--data-dir",
+            "-",
+        ] {
+            assert!(mode(&["hahakigami", first]), "{first}");
+        }
+        assert!(!mode(&["hahakigami"]));
+        assert!(!mode(&["hahakigami", "-psn_0_12345"]));
+        assert!(!mode(&["hahakigami", "-AppleLanguages", "(ja)"]));
+        assert!(!mode(&[
+            "hahakigami",
+            "-NSDocumentRevisionsDebugMode",
+            "YES"
+        ]));
+    }
 }

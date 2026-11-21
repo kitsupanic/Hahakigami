@@ -185,6 +185,18 @@ impl<'a> ClaimCursor<'a> {
     }
 }
 
+/// Whether `n` agrees with `first`, the first node of its inode: same sizes and claim, and a second node must
+/// be a hard link along with the first.
+pub(super) fn alias_consistent(
+    n: &crate::NodeRef<'_>,
+    claim: Option<&crate::CloneMetadata>,
+    first: &crate::NodeRef<'_>,
+    first_claim: Option<&crate::CloneMetadata>,
+) -> bool {
+    (first.length, first.own_allocated_size, first_claim) == (n.length, n.own_allocated_size, claim)
+        && (n.id == first.id || (n.hard_link && first.hard_link))
+}
+
 /// Avoid hashing every file against a tiny, immutable clone-alias index. Keep
 /// references to the original entries so duplicate insertion semantics and the
 /// map's lifetime and allocation accounting remain unchanged.
@@ -293,10 +305,7 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         if let Some(first) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
             let first_id = s.tree.clones[*first].0;
             let a = s.node(first_id).ok_or("invalid clone alias")?;
-            if (a.length, a.own_allocated_size, claims.at(*first))
-                != (n.length, n.own_allocated_size, current)
-                || (n.id != first_id && (!n.hard_link || !a.hard_link))
-            {
+            if !alias_consistent(&n, current, &a, claims.at(*first)) {
                 return Err("inconsistent cloned inode aliases or link flags".into());
             }
         }
