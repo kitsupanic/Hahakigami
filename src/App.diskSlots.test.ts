@@ -514,6 +514,30 @@ it("rescans a queue entry's disk in that disk's own slot without adding a second
   expect(diskRow("Macintosh HD").getAttribute("aria-current")).toBe("page");
 });
 
+it("opens a disk's completed scan from the queue instead of rescanning it while every entry is ready there", async () => {
+  await scanDisk("Macintosh HD");
+  await scanDisk("Backup");
+  queueEntries = [queueEntry("hd-item", "/", "ready", "scan-disk-1")];
+  queueTarget = { ...disk, id: "disk-queue", name: "/" };
+  const before = calls("start_scan").length;
+  await act(() => app().showQueue(true));
+  await settle();
+  await act(() => app().scanQueue("hd-item"));
+  await settle();
+  expect(calls("start_scan")).toHaveLength(before);
+  expect(app().scanSlots["/"].scanId).toBe("scan-disk-1");
+  expect(app().summary?.scanId).toBe("scan-disk-1");
+  expect(app().target).toBe(disk);
+  expect(app().queueOpen).toBe(false);
+  // An entry that needs a scan still rescans the disk.
+  queueEntries = [queueEntry("hd-item", "/", "needsScan")];
+  await act(() => app().showQueue(true));
+  await settle();
+  await act(() => app().scanQueue("hd-item"));
+  await settle();
+  expect(calls("start_scan")).toHaveLength(before + 1);
+});
+
 it("leaves the view alone when the queue entry's lookup returns after the user switched disk", async () => {
   await scanDisk("Macintosh HD");
   const standard = mock.invoke.getMockImplementation()!;

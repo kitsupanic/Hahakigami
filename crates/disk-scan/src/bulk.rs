@@ -503,24 +503,38 @@ impl CloneReadStats {
         self.buffer
     }
 }
+/// `rich` asks for the clone fields too; without them the records carry names, kinds and sizes only,
+/// which every volume answers (HFS+, exFAT).
 #[cfg(target_os = "macos")]
 pub(crate) fn visit_clone_records(
     fd: &std::os::fd::OwnedFd,
     cancel: &std::sync::atomic::AtomicBool,
     stats: &mut CloneReadStats,
+    rich: bool,
     mut visitor: impl FnMut(&Record) -> io::Result<()>,
 ) -> io::Result<()> {
-    visit_with_reader(
+    visit_records_with_reader(
         cancel,
         stats,
-        |buffer| read_batch(fd, buffer, true),
+        rich,
+        |buffer| read_batch(fd, buffer, rich),
         &mut visitor,
     )
 }
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn visit_with_reader(
     cancel: &std::sync::atomic::AtomicBool,
     stats: &mut CloneReadStats,
+    reader: impl FnMut(&mut [u8]) -> io::Result<usize>,
+    visitor: &mut impl FnMut(&Record) -> io::Result<()>,
+) -> io::Result<()> {
+    visit_records_with_reader(cancel, stats, true, reader, visitor)
+}
+#[cfg(target_os = "macos")]
+fn visit_records_with_reader(
+    cancel: &std::sync::atomic::AtomicBool,
+    stats: &mut CloneReadStats,
+    rich: bool,
     mut reader: impl FnMut(&mut [u8]) -> io::Result<usize>,
     visitor: &mut impl FnMut(&Record) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -538,7 +552,7 @@ fn visit_with_reader(
             return Ok(());
         }
         let mut used = 0;
-        let records = parse_with_payload(&buffer, count, true, &mut used)?;
+        let records = parse_with_payload(&buffer, count, rich, &mut used)?;
         for record in &records {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(io::Error::from_raw_os_error(libc::EINTR));
@@ -1542,7 +1556,7 @@ mod tests {
         let fresh = crate::descriptor::reopen(&fd, &expected).unwrap();
         let mut stats = CloneReadStats::default();
         let mut visited = 0;
-        visit_clone_records(&fresh, &cancel, &mut stats, |record| {
+        visit_clone_records(&fresh, &cancel, &mut stats, true, |record| {
             visited += 1;
             if record.kind == 1 {
                 assert!(record.clone_checked);

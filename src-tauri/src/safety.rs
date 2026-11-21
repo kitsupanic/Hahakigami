@@ -256,7 +256,8 @@ pub fn protected(path: &Path, root: &Path, home: Option<&Path>, mounts: &[PathBu
     // A mount point, or a folder with a mount anywhere inside it: Trash would leave that volume mounted.
     if path == root
         || path == Path::new("/")
-        || home.is_some_and(|h| path == h)
+        // The home folder and every folder above it.
+        || home.is_some_and(|h| h.starts_with(path))
         || mounts.iter().any(|p| p.starts_with(path))
     {
         return true;
@@ -440,6 +441,22 @@ mod tests {
         ] {
             assert!(!blocked(path), "{path}");
         }
+        // A home outside /Users is protected with its ancestors, but not its siblings or contents.
+        let home = Path::new("/Volumes/Ext/Users/me");
+        let off = |path: &str| {
+            protected(
+                Path::new(path),
+                Path::new("/Volumes/Ext/proj"),
+                Some(home),
+                &[],
+            )
+        };
+        assert!(
+            off("/Volumes/Ext/Users")
+                && off("/Volumes/Ext/Users/me")
+                && off("/Volumes/Ext/Users/me/Library")
+        );
+        assert!(!off("/Volumes/Ext/Users/other") && !off("/Volumes/Ext/Users/me/Downloads"));
         // Without a home folder, its two rules do not apply.
         assert!(!protected(Path::new("/Users/test"), root, None, &[]));
         assert!(!protected(
