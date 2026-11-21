@@ -266,19 +266,13 @@ impl Cache {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<u32>, usize), String> {
-        let node = snapshot
-            .node(node_id)
-            .filter(|n| n.id == node_id)
-            .ok_or("Unknown node ID")?;
+        let node = snapshot.node(node_id).ok_or("Unknown node ID")?;
         self.get_or_build(
             snapshot,
             &(node_id, order),
             || {
                 let mut ids = node.children().to_vec();
-                if ids
-                    .iter()
-                    .any(|&id| snapshot.node(id).is_none_or(|n| n.id != id))
-                {
+                if ids.iter().any(|&id| snapshot.node(id).is_none()) {
                     return Err("Invalid child node ID".into());
                 }
                 sort_ids(snapshot, &mut ids, order)?;

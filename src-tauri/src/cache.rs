@@ -69,6 +69,7 @@ pub fn eligible(s: &Snapshot) -> bool {
         && s.stats.errors == 0
         && s.stats.excluded == 0
         && s.node_count() != 0
+        && s.node_count() <= crate::cache_store::MAX_NODES
         && s.root != Path::new("/")
         && !s.iter_nodes().any(|n| n.excluded)
 }
@@ -209,7 +210,7 @@ impl Cache {
         let file = open(&self.store.path(id, "zst")?).map_err(|e| e.to_string())?;
         Ok(file.metadata().map_err(|e| e.to_string())?.len())
     }
-    fn maintain(&self) -> Result<(), String> {
+    pub(crate) fn maintain(&self) -> Result<(), String> {
         let entries = self.store.list()?;
         let now = crate::now_ms();
         // An entry `recent` refuses or whose record is missing or invalid can never seed a scan again: keep
@@ -914,6 +915,22 @@ mod tests {
             assert!(!c.root.join(format!("{expired}.{suffix}")).exists());
             assert!(c.root.join(format!("{kept}.{suffix}")).exists());
         }
+    }
+    #[test]
+    fn configuring_the_cache_deletes_expired_entries() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("cache");
+        let c = Cache::new(dir.clone());
+        let s = fixture(&d.path().join("source"));
+        let token = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: 1000,
+        };
+        c.save(&s, &metadata(), &token).unwrap();
+        assert_eq!(c.store.list().unwrap().len(), 1);
+        crate::baseline::Baselines::default().configure(dir);
+        assert!(c.store.list().unwrap().is_empty());
     }
     #[test]
     fn maintenance_deletes_only_entries_that_can_never_be_read() {

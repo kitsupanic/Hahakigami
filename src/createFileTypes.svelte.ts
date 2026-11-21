@@ -12,6 +12,8 @@ export default function createFileTypes(context: {
   readonly focus: NodeView | null;
   readonly nodes: NodeView[];
   readonly enabled: boolean;
+  // The explorer is on screen; highlights show on the Files tab's map too, so `enabled` is not enough.
+  readonly visible: boolean;
 }) {
   let scope = $state<FileTypeScope>("scan");
   const queryStats = latestOnly(),
@@ -136,6 +138,7 @@ export default function createFileTypes(context: {
     const root = nodeId;
     const selected = extension;
     const nodeIds = highlightNodeIds;
+    if (!context.visible) return;
     if (scan === undefined || root === undefined || selected === null) return;
     untrack(() => (highlightFailure = null));
     let ignore = false;

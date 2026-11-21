@@ -575,6 +575,26 @@ mod tests {
             b"disposable recovery fixture"
         );
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "Moves only a disposable symlink to native Trash and deletes it there; run explicitly on macOS"]
+    fn native_trash_moves_a_symlink_not_its_target() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = d
+            .path()
+            .join(format!("hahakigami-link-{}", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let recycled = trash(&link, false)
+            .expect("native Trash move")
+            .expect("native Trash receipt");
+        let kind = std::fs::symlink_metadata(&recycled).map(|m| m.file_type().is_symlink());
+        std::fs::remove_file(&recycled).expect("remove the disposable link from the Trash");
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(kind.unwrap());
+        assert!(target.is_dir());
+    }
 }
 
 /// The UUID of the filesystem holding `path` (not following a final symlink): Ok(None) when that filesystem has none, Err when it cannot be read.

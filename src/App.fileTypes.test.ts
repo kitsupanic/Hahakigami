@@ -566,6 +566,18 @@ it("re-queries file-type highlights once per revision of a live scan, not on eve
   expect(map().dataset.ids).toBe("0,3");
 });
 
+it("does not re-query file-type highlights of a live scan while the explorer is hidden behind Home", async () => {
+  const report = liveReports();
+  await openTypes();
+  await selectType(".jpg");
+  await report("running", 1000);
+  await act(() => app().showHome());
+  await flush();
+  const before = count("get_file_type_highlights");
+  await report("running", 10000);
+  expect(count("get_file_type_highlights")).toBe(before);
+});
+
 it("re-queries file-type highlights of a live scan when the map shows mostly other tiles", async () => {
   const report = liveReports();
   await openTypes();

@@ -173,7 +173,10 @@ struct PreparedRescan {
 
 impl Baselines {
     pub(crate) fn configure(&self, dir: PathBuf) {
-        *self.lock() = Some(cache::Cache::new(dir));
+        let cache = cache::Cache::new(dir);
+        // An expired entry never lingers: scans of "/" never reach probe or save, which sweep otherwise.
+        let _ = cache.maintain();
+        *self.lock() = Some(cache);
     }
     // A scan thread that panicked while holding the cache lock poisons it; the cache's files stay
     // consistent (temp file, then rename; leftovers are swept), so other scans keep using it.

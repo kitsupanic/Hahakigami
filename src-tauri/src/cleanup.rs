@@ -297,8 +297,13 @@ fn spend(
     }
     // Only the root is needed, so the store is not held across the Trash calls either.
     let root = held.completed_snapshot()?.root.clone();
-    let (mut result, successful, failures, moved_unconfirmed) =
-        execute(&ticket.items, &root, &host()?, trash)?;
+    let (mut result, successful, failures, moved_unconfirmed) = execute(
+        &ticket.items,
+        &root,
+        &host()?,
+        platform::mounted_paths,
+        trash,
+    )?;
     // A failed Trash step can still have moved something (an unconfirmed receipt): the scan no longer matches.
     if result.trashed > 0 || moved_unconfirmed {
         s.invalidate();
@@ -352,10 +357,12 @@ fn execute(
     items: &[safety::CheckedItem],
     root: &Path,
     host: &Host,
+    mut mounts_now: impl FnMut() -> Option<Vec<PathBuf>>,
     mut trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<Execution, String> {
     let (home, data, mounts) = (host.home.as_deref(), host.data.as_deref(), &host.mounts);
-    // Verify all first, so a stale ticket moves nothing; then again just before each item's move.
+    // Verify all first, so a stale ticket moves nothing; then again just before each item's move, with the mounts
+    // read anew: a disk mounted mid-batch inside a later item's folder must stop that item.
     for item in items {
         safety::verify(item, root, home, data, mounts)?;
     }
@@ -371,13 +378,16 @@ fn execute(
     let mut failures = vec![];
     let mut moved_unconfirmed = false;
     for (review_index, item) in items.iter().enumerate() {
-        let step = safety::verify(item, root, home, data, mounts).and_then(|_| {
-            trash(item).inspect_err(|_| {
-                // The reviewed item is no longer where it was: the failed step moved something.
-                moved_unconfirmed |=
-                    safety::Identity::read(&item.path).as_ref() != Ok(&item.identity);
-            })
-        });
+        let step = mounts_now()
+            .ok_or_else(|| MOUNTS_UNREADABLE.to_string())
+            .and_then(|now| safety::verify(item, root, home, data, &now))
+            .and_then(|_| {
+                trash(item).inspect_err(|_| {
+                    // The reviewed item is no longer where it was: the failed step moved something.
+                    moved_unconfirmed |=
+                        safety::Identity::read(&item.path).as_ref() != Ok(&item.identity);
+                })
+            });
         match step {
             Ok(()) => {
                 result.trashed += 1;
@@ -776,6 +786,45 @@ mod tests {
         })
         .unwrap();
         assert_eq!((result.trashed, trash.calls.len()), (2, 2));
+    }
+
+    #[test]
+    fn a_mount_that_appears_between_items_stops_the_later_item() {
+        let (_dir, root) = home_dir();
+        std::fs::create_dir(root.join("folder")).unwrap();
+        std::fs::write(root.join("plain"), b"p").unwrap();
+        let state = AppState::default();
+        let (s, _) = reviewed(&state, &root);
+        let items = s.ticket.lock().unwrap().take().unwrap().items;
+        let host = Host {
+            home: None,
+            data: None,
+            mounts: vec![],
+        };
+        // The second read, before the second item, finds a disk mounted inside that item.
+        let second = items[1].path.join("mnt");
+        let mut reads = 0;
+        let mut trash = Recording::ok();
+        let (result, _, _, _) = execute(
+            &items,
+            &root,
+            &host,
+            || {
+                reads += 1;
+                Some(if reads > 1 {
+                    vec![second.clone()]
+                } else {
+                    vec![]
+                })
+            },
+            |i| trash.trash(i),
+        )
+        .unwrap();
+        assert_eq!(
+            (result.trashed, trash.calls),
+            (1, vec![items[0].path.clone()])
+        );
+        assert_eq!(result.failures, [PROTECTED]);
     }
 
     #[test]

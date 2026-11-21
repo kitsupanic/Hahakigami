@@ -119,7 +119,7 @@ pub(crate) fn open(path: &Path, expected: &Identity) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 #[cfg(target_os = "macos")]
-fn file_length(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<u64> {
+fn file_length(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<Option<u64>> {
     let mut list: libc::attrlist = unsafe { std::mem::zeroed() };
     list.bitmapcount = 5;
     list.commonattr = libc::ATTR_CMN_RETURNED_ATTRS
@@ -162,18 +162,35 @@ fn file_length(fd: &OwnedFd, name: &CStr, expected: &Identity) -> io::Result<u64
     {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
     }
-    if attrs.length as usize != std::mem::size_of::<Attributes>()
-        || attrs.returned.volattr != 0
-        || attrs.returned.dirattr != 0
-        || attrs.returned.fileattr != list.fileattr
-        || attrs.returned.forkattr != 0
-        || attrs.file_length < 0
-    {
-        return Err(io::Error::other(
-            "file attributes changed since enumeration",
-        ));
+    total_size(
+        attrs.length as usize,
+        &attrs.returned,
+        attrs.file_length,
+        std::mem::size_of::<Attributes>(),
+        std::mem::offset_of!(Attributes, file_length),
+    )
+}
+/// The file size from a reply of `full` bytes asked for `ATTR_FILE_TOTALSIZE` (`before_size` bytes without it).
+/// `Ok(None)`: the filesystem left the size out, as its bulk records do, so the caller keeps stat's length.
+#[cfg(target_os = "macos")]
+fn total_size(
+    length: usize,
+    returned: &libc::attribute_set_t,
+    file_length: i64,
+    full: usize,
+    before_size: usize,
+) -> io::Result<Option<u64>> {
+    let changed = || io::Error::other("file attributes changed since enumeration");
+    if returned.volattr != 0 || returned.dirattr != 0 || returned.forkattr != 0 {
+        return Err(changed());
     }
-    Ok(attrs.file_length as u64)
+    match (returned.fileattr, length) {
+        (0, l) if l == before_size => Ok(None),
+        (libc::ATTR_FILE_TOTALSIZE, l) if l == full && file_length >= 0 => {
+            Ok(Some(file_length as u64))
+        }
+        _ => Err(changed()),
+    }
 }
 pub(crate) fn entry_at(fd: &OwnedFd, path: &Path, name: &std::ffi::OsStr) -> io::Result<Entry> {
     let name_c = cstr(name)?;
@@ -196,7 +213,7 @@ pub(crate) fn entry_at(fd: &OwnedFd, path: &Path, name: &std::ffi::OsStr) -> io:
     #[cfg(target_os = "macos")]
     let length = if identity.kind == NodeKind::File {
         // Match Bulk's total-fork sizes without opening file contents.
-        file_length(fd, &name_c, &identity)?
+        file_length(fd, &name_c, &identity)?.unwrap_or(length)
     } else {
         length
     };
@@ -616,7 +633,7 @@ mod tests {
         std::fs::rename(&p, &renamed).unwrap();
         std::fs::create_dir(&p).unwrap();
         std::fs::write(p.join("file"), b"replacement").unwrap();
-        assert_eq!(file_length(&fd, c"file", &expected).unwrap(), 12);
+        assert_eq!(file_length(&fd, c"file", &expected).unwrap(), Some(12));
         let mut wrong = expected.clone();
         wrong.inode = wrong.inode.wrapping_add(1);
         assert!(file_length(&fd, c"file", &wrong).is_err());
@@ -736,5 +753,26 @@ mod tests {
         );
         std::fs::remove_dir_all(p).unwrap();
         std::fs::remove_dir_all(renamed).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_reply_without_the_total_size_keeps_the_stat_length() {
+        let reply = |fileattr| libc::attribute_set_t {
+            commonattr: 0,
+            volattr: 0,
+            dirattr: 0,
+            fileattr,
+            forkattr: 0,
+        };
+        let size = libc::ATTR_FILE_TOTALSIZE;
+        assert_eq!(total_size(48, &reply(size), 7, 48, 40).unwrap(), Some(7));
+        // The reply omits the size: fall back. Anything else off is a real change.
+        assert_eq!(total_size(40, &reply(0), 0, 48, 40).unwrap(), None);
+        assert!(total_size(48, &reply(0), 0, 48, 40).is_err());
+        assert!(total_size(40, &reply(size), 0, 48, 40).is_err());
+        assert!(total_size(48, &reply(size), -1, 48, 40).is_err());
+        let mut other = reply(0);
+        other.forkattr = 1;
+        assert!(total_size(40, &other, 0, 48, 40).is_err());
     }
 }

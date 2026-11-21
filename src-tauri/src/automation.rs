@@ -363,18 +363,14 @@ fn validate_page(limit: usize) -> Result<(), String> {
     }
 }
 
-fn state(snapshot: &Snapshot) -> &'static str {
-    crate::state_name(snapshot.state)
-}
-
 fn coverage(snapshot: &Snapshot) -> Value {
-    json!({"state": state(snapshot), "incomplete": snapshot.stats.incomplete, "errors": snapshot.stats.errors,
+    json!({"state": crate::state_name(snapshot.state), "incomplete": snapshot.stats.incomplete, "errors": snapshot.stats.errors,
         "excluded": snapshot.stats.excluded, "errorsStored": snapshot.errors.len(), "exclusionsStored": snapshot.exclusions.len(),
         "restrictedSystemIssues": snapshot.stats.restricted_system_issues, "accounting": snapshot.accounting})
 }
 
 fn summary(snapshot: &Snapshot) -> Value {
-    json!({"state": state(snapshot), "rootPath": snapshot.root.to_string_lossy(), "pathKey": crate::path_key(&snapshot.root),
+    json!({"state": crate::state_name(snapshot.state), "rootPath": snapshot.root.to_string_lossy(), "pathKey": crate::path_key(&snapshot.root),
         "rootId": snapshot.node(0).map(|node| node.id), "allocatedBytes": snapshot.stats.allocated_bytes,
         "entries": snapshot.stats.entries, "errors": snapshot.stats.errors, "excluded": snapshot.stats.excluded, "incomplete": snapshot.stats.incomplete,
         "stats": snapshot.stats, "accounting": snapshot.accounting, "coverage": coverage(snapshot)})

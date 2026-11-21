@@ -16,7 +16,7 @@ use std::{
 // Lossless fast mode for disposable caches.
 const CACHE_COMPRESSION_LEVEL: i32 = -1;
 const PARALLEL_CACHE_MIN_NODES: usize = 4096;
-const MAX_NODES: usize = 8_000_000;
+pub(crate) const MAX_NODES: usize = 8_000_000;
 // Decoded bytes are streamed; this is a budget, not a buffer allocation.
 const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
