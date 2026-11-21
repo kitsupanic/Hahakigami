@@ -71,14 +71,34 @@ const summary = (scanId = "live"): ScanSummary => ({
 });
 let container: HTMLDivElement, root: Root;
 let previewRevision: number;
-// The id the next start_scan answers with.
+// The id the next start_scan answers with, and the state its summary reports.
 let nextScan: string;
+let nextState: ScanSummary["state"];
 async function flush() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
+// A rescan whose scan is still running; `report` then moves it along like the backend's events do.
+async function rescanRunning(scanId = "second") {
+  nextScan = scanId;
+  nextState = "running";
+  await click("Rescan Fixture");
+}
+async function report(patch: Partial<ScanSummary>) {
+  const channel = mock.invoke.mock.calls
+    .filter(([command]) => command === "start_scan")
+    .at(-1)![1].onEvent as { onmessage: (summary: ScanSummary) => void };
+  await act(() =>
+    channel.onmessage({ ...summary(app().summary!.scanId), ...patch }),
+  );
+  await flush();
+}
+const nodeCalls = (ids: number[]) =>
+  mock.invoke.mock.calls.filter(
+    ([command, args]) => command === "get_node" && ids.includes(args.nodeId),
+  );
 const inspector = () =>
   container.querySelector<HTMLElement>("#selection-inspector")!;
 function row(node: NodeView) {
@@ -113,6 +133,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   previewRevision = 0;
   nextScan = "live";
+  nextState = "completed";
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args = {}) => {
     switch (command) {
@@ -137,7 +158,7 @@ beforeEach(async () => {
       case "start_scan":
         return nextScan;
       case "scan_summary":
-        return summary(args.scanId);
+        return { ...summary(args.scanId), state: nextState };
       case "get_node":
         return args.nodeId === 1
           ? folder
@@ -148,13 +169,16 @@ beforeEach(async () => {
               : scanRoot;
       case "get_children":
         return {
-          items: args.nodeId === 1 ? [image, other] : [folder, image, other],
+          items: (args.nodeId === 1
+            ? [image, other]
+            : [folder, image, other]
+          ).map((node) => ({ ...node })),
           total: args.nodeId === 1 ? 2 : 3,
         };
       case "search_nodes":
         return { items: [image, folder], total: 2 };
       case "get_map":
-        return { nodes: [folder, image, other] };
+        return { nodes: [folder, image, other].map((node) => ({ ...node })) };
       case "list_cleanup_queue":
         return { entries: [], revision: 0, blocked: false, warning: null };
       case "quick_look_node":
@@ -268,7 +292,8 @@ it("keeps file-list selections visible beside the details and shares them", asyn
   expect(inspector().querySelector(".details-name")?.textContent).toBe(
     image.name,
   );
-  await act(() => app().setSelection([]));
+  await select(image, true);
+  expect(app().selection).toEqual([]);
   expect(inspector().hidden).toBe(false);
   expect(inspector().querySelector(".details-name")?.textContent).toBe(
     scanRoot.name,
@@ -367,25 +392,33 @@ it("keeps a newer selection when a pending breadcrumb ancestor completes", async
   const previous = mock.invoke.getMockImplementation()!;
   let finish!: (node: NodeView) => void;
   mock.invoke.mockImplementation((command, args) =>
-    command === "get_node" && args.nodeId === 0
+    command === "get_node" && args.nodeId === folder.id
       ? new Promise<NodeView>((resolve) => {
           finish = resolve;
         })
-      : previous(command, args),
+      : command === "get_children" && args.nodeId === 4
+        ? Promise.resolve({ items: [image, other], total: 2 })
+        : previous(command, args),
   );
-  // With no known chain the walk asks the backend for the root.
-  await act(() => app().setCrumbs([]));
+  // The chain holds only the root, so the walk to the nested folder asks the backend for its parent.
+  const nested = {
+    ...folder,
+    id: 4,
+    parentId: 1,
+    name: "2026",
+    path: "/fixture/Photos/2026",
+  };
   let navigation!: Promise<void>;
   await act(() => {
-    navigation = app().open(folder);
+    navigation = app().open(nested);
   });
   await flush();
   await select(other);
   await act(async () => {
-    finish(scanRoot);
+    finish(folder);
     await navigation;
   });
-  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1]);
+  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1, 4]);
   expect(app().selection.map((n) => n.id)).toEqual([other.id]);
   expect(inspector().hidden).toBe(false);
 });
@@ -403,15 +436,6 @@ it("reuses the known breadcrumb chain when opening a child folder", async () => 
 });
 
 it("walks to the root when the known chain does not start there", async () => {
-  // A restore can leave only the focus while its own walk is pending.
-  await act(() => app().setCrumbs([folder]));
-  // Folder 4 has its own (empty) contents, not the root's rows, which would list file 2 twice.
-  const standard = mock.invoke.getMockImplementation()!;
-  mock.invoke.mockImplementation((command, args) =>
-    command === "get_children" && args.nodeId === 4
-      ? Promise.resolve({ items: [], total: 0 })
-      : standard(command, args),
-  );
   const nested = {
     ...folder,
     id: 4,
@@ -419,8 +443,36 @@ it("walks to the root when the known chain does not start there", async () => {
     name: "2026",
     path: "/fixture/Photos/2026",
   };
-  await act(() => app().open(nested));
-  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1, 4]);
+  const child = { ...nested, id: 5, parentId: 4, name: "jan" };
+  const standard = mock.invoke.getMockImplementation()!;
+  const walks: ((node: NodeView) => void)[] = [];
+  mock.invoke.mockImplementation((command, args) =>
+    command === "get_node" && args.nodeId === folder.id
+      ? new Promise<NodeView>((resolve) => walks.push(resolve))
+      : command === "get_node" && args.nodeId === nested.id
+        ? Promise.resolve(nested)
+        : command === "get_children" && args.nodeId >= nested.id
+          ? Promise.resolve({ items: [], total: 0 })
+          : standard(command, args),
+  );
+  // A view saved while its breadcrumbs still load comes back with only its focus, its own walk pending.
+  await act(() => {
+    void app().open(nested);
+  });
+  await act(() => app().open(folder));
+  await act(() => {
+    void app().goBack();
+  });
+  expect(app().crumbs.map((n) => n.id)).toEqual([nested.id]);
+  let opening!: Promise<void>;
+  await act(() => {
+    opening = app().open(child);
+  });
+  await act(async () => {
+    for (const finish of walks) finish(folder);
+    await opening;
+  });
+  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1, 4, 5]);
 });
 
 it("preserves Files & Folders when Space previews a completed live row", async () => {
@@ -454,21 +506,17 @@ it("refreshes selected folder sizes and contents during scanning and at completi
       ? Promise.resolve(current)
       : standard(command, args),
   );
-  await act(() =>
-    app().setSummary({ ...summary(), state: "running" }),
-  );
+  await rescanRunning();
   await select(folder);
   current = { ...folder, allocatedBytes: 2048, childrenCount: 4 };
-  await act(() => app().setSummary({ ...app().summary!, elapsedMs: 2000 }));
-  await flush();
+  await report({ state: "running", elapsedMs: 2000 });
   expect(app().selection).toEqual([current]);
   current = {
     ...current,
     allocatedBytes: 4096,
     childrenCount: 7,
   };
-  await act(() => app().setSummary({ ...app().summary!, state: "completed" }));
-  await flush();
+  await report({ state: "completed", elapsedMs: 2000 });
   expect(app().selection).toEqual([current]);
   expect(inspector().querySelector(".details-size")?.textContent).toContain(
     "4",
@@ -487,39 +535,72 @@ it("refreshes every selected file before calculating completed selection totals"
     }
     return standard(command, args);
   });
-  await act(() =>
-    app().setSummary({ ...summary(), state: "running" }),
-  );
+  await rescanRunning();
   await select(image);
   await select(other, true);
   completed = true;
-  await act(() => app().setSummary({ ...app().summary!, state: "completed" }));
-  await flush();
+  await report({ state: "completed", elapsedMs: 2000 });
   expect(app().selection).toEqual([freshImage, freshOther]);
   expect(inspector().querySelector(".details-name")?.textContent).toBe(
     "2 items selected",
   );
 });
 
-it("does not refetch selected rows that a finished scan already loaded", async () => {
-  const nodeCalls = () =>
-    mock.invoke.mock.calls.filter(
-      ([command, args]) =>
-        command === "get_node" && [folder.id, other.id].includes(args.nodeId),
-    );
-  await select(folder);
-  await select(other, true);
-  expect(app().selection.map((n) => n.id)).toEqual([folder.id, other.id]);
-  expect(nodeCalls()).toHaveLength(0);
-  // A selection restored from a snapshot is not one of the loaded rows: it is read again.
-  await act(() => app().setSelection([{ ...folder }]));
+it("does not refetch selected nodes that a finished scan already returned, wherever they were listed", async () => {
+  const nested: NodeView = {
+    ...image,
+    id: 4,
+    name: "nested.jpg",
+    path: "/fixture/Photos/nested.jpg",
+  };
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "get_children" && args.nodeId === folder.id
+      ? Promise.resolve({ items: [{ ...nested }], total: 1 })
+      : standard(command, args),
+  );
+  const all = [folder.id, image.id, other.id, nested.id];
+  // A row of the page, a row inside an expanded folder and a map node.
+  await select(other);
+  await act(() =>
+    row(folder).querySelector<HTMLElement>(".disclosure")!.click(),
+  );
   await flush();
-  expect(nodeCalls()).toHaveLength(1);
+  await select(nested, true);
+  await act(() =>
+    container.querySelector<HTMLButtonElement>(".test-map-select")!.click(),
+  );
+  await flush();
+  await select(image, true);
+  await select(nested, true);
+  expect(app().selection.map((n) => n.id)).toEqual([
+    folder.id,
+    image.id,
+    nested.id,
+  ]);
+  expect(nodeCalls(all)).toHaveLength(0);
+  // Rows read while the scan ran are not known to be final: they are read again once, at the end.
+  await rescanRunning();
+  await select(folder);
+  await select(image, true);
+  const running = nodeCalls(all).length;
+  await report({ state: "completed", elapsedMs: 2000 });
+  expect(
+    nodeCalls(all)
+      .slice(running)
+      .map(([, args]) => args.nodeId)
+      .sort(),
+  ).toEqual([folder.id, image.id]);
+  await select(other, true);
+  expect(nodeCalls(all)).toHaveLength(running + 2);
 });
 
 it.each(["selection", "scan", "revision"])(
   "ignores a pending selection refresh after the %s changes",
   async (change) => {
+    // A row read while the scan ran is the kind a finished scan still refetches.
+    await rescanRunning();
+    await select(folder);
     let finish!: (value: NodeView) => void;
     const standard = mock.invoke.getMockImplementation()!;
     mock.invoke.mockImplementation((command, args) =>
@@ -529,20 +610,18 @@ it.each(["selection", "scan", "revision"])(
           })
         : standard(command, args),
     );
-    // A copy outside the loaded rows is the one kind a finished scan still refetches.
-    await act(() => app().setSelection([{ ...folder }]));
-    await flush();
+    await report({ state: "completed", elapsedMs: 2000 });
     const stale = finish;
     expect(stale).toBeTypeOf("function");
     mock.invoke.mockImplementation(standard);
     if (change === "scan") {
-      nextScan = "second";
+      nextScan = "third";
+      nextState = "completed";
       await click("Rescan Fixture");
-      expect(app().summary?.scanId).toBe("second");
+      expect(app().summary?.scanId).toBe("third");
     }
     if (change === "revision") {
-      await act(() => app().setSummary({ ...app().summary!, elapsedMs: 2000 }));
-      await flush();
+      await report({ elapsedMs: 3000 });
     } else {
       await select(other);
     }

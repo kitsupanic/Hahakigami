@@ -11,6 +11,8 @@ export interface QueueEntry {
   reason: string | null;
   /** The live scan this entry is checked against; review is addressed to it. Null when none can vouch for it. */
   matchedScanId?: string | null;
+  /** The matched scan holds this item on the entry's own volume. False for a same-path item on another disk. */
+  onScanVolume: boolean;
   lastError?: string | null;
 }
 export interface QueueView {

@@ -40,8 +40,11 @@ export default function createApp() {
   let focus = $state.raw<NodeView | null>(null);
   let crumbs = $state.raw<NodeView[]>([]);
   let page = $state.raw<Page>({ items: [], total: 0 });
-  // The rows of `page` were read from a finished scan, so they cannot change.
-  let pageSettled = false;
+  // Nodes read (as list rows, branch rows, map nodes or a refresh) while their scan was finished, so they cannot
+  // change: a selection refresh skips them.
+  const settledNodes = new WeakSet<NodeView>();
+  const markSettled = (nodes: readonly NodeView[]) =>
+    nodes.forEach((node) => settledNodes.add(node));
   let map = $state.raw<NodeView[]>([]);
   let mapColorMode = $state<"folder" | "fileType">("folder");
   const queryFileTypeMap = latestOnly();
@@ -998,11 +1001,9 @@ export default function createApp() {
         revision === version &&
         selectionIdentity === ids;
       // A running scan ticks every second: refresh only the newest picks, the rest at the final state.
-      // A finished scan's loaded rows are already current: refetch only the picks outside them.
-      const loaded =
-        summary.state !== "running" && pageSettled
-          ? new Set(page.items)
-          : null;
+      // A finished scan's nodes are already current: refetch only the picks that were not read from it.
+      const settled = summary.state !== "running";
+      const loaded = settled ? settledNodes : null;
       const nodeIds = (
         summary.state === "running" ? selection.slice(-20) : selection
       )
@@ -1017,6 +1018,7 @@ export default function createApp() {
         )
           .then((nodes) => {
             if (!current()) return;
+            if (settled) markSettled(nodes);
             const fresh = new Map(nodes.map((node) => [node.id, node]));
             selection = selection.map((node) => fresh.get(node.id) ?? node);
           })
@@ -1079,6 +1081,7 @@ export default function createApp() {
                   if (n.kind === "aggregate")
                     n.name = countLabel(n.childrenCount, "smaller item");
               benchmark?.mapQueryResult(result.nodes, snapshot);
+              if (snapshot.state !== "running") markSettled(result.nodes);
               map = result.nodes;
             }
           })
@@ -1159,7 +1162,7 @@ export default function createApp() {
               return;
             }
             page = result;
-            pageSettled = settled;
+            if (settled) markSettled(result.items);
           })
           .catch((failure) => {
             if (current()) fail(failure);
@@ -1342,6 +1345,21 @@ export default function createApp() {
     )
       quickLook.dismiss();
     selection = nodes;
+  }
+  /** The rows inside an expanded folder of the list. */
+  async function loadBranch(nodeId: number) {
+    if (!summary) throw new Error("No scan to read");
+    const scanId = summary.scanId,
+      settled = summary.state !== "running";
+    const branch = await invoke<Page>("get_children", {
+      scanId,
+      nodeId,
+      offset: 0,
+      limit: PAGE_SIZE,
+      sort,
+    });
+    if (settled) markSettled(branch.items);
+    return branch;
   }
   function select(n: NodeView, multi = false) {
     if (n.kind === "aggregate") return;
@@ -1855,23 +1873,9 @@ export default function createApp() {
     get accessReturned() {
       return accessReturned;
     },
-    setTargets: (value: Target[]) => {
-      targets = value;
-    },
+    loadBranch,
     setTarget: (value: Target | null) => {
       target = value;
-    },
-    setSummary: (value: ScanSummary | null) => {
-      summary = value;
-    },
-    setFocus: (value: NodeView | null) => {
-      focus = value;
-    },
-    setCrumbs: (value: NodeView[]) => {
-      crumbs = value;
-    },
-    setSelection: (value: NodeView[]) => {
-      selection = value;
     },
     setMode: (value: "treemap" | "sunburst") => {
       mode = value;
@@ -1882,17 +1886,11 @@ export default function createApp() {
     get setError() {
       return setError;
     },
-    setBusy: (value: boolean) => {
-      busy = value;
-    },
     setCancelling: (value: boolean) => {
       cancelling = value;
     },
     setTrash: (value: typeof trash) => {
       trash = value;
-    },
-    setAccessOpen: (value: boolean) => {
-      accessOpen = value;
     },
     setAccessError: (value: string) => {
       accessError = value;
@@ -1936,9 +1934,6 @@ export default function createApp() {
     },
     get inspected() {
       return inspected;
-    },
-    get generation() {
-      return generation;
     },
     get navigation() {
       return navigation;

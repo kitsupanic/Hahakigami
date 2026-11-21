@@ -6,6 +6,7 @@
   import {
     createQueueMarker,
     normalizePath,
+    queuePathKey,
     type QueuePath,
   } from "./queueMarkers";
   import { compactBytes, countLabel, percent, usageColor } from "./uiFormat";
@@ -45,7 +46,7 @@
   }: {
     items: NodeView[];
     selection: number[];
-    /** Path of a single selection, so a row inside collapsed folders can be revealed. */
+    /** Path key of a single selection (not its display path, which can match another name), so a row inside collapsed folders can be revealed. */
     selectionPath?: string | null;
     scanBytes: number;
     running: boolean;
@@ -239,7 +240,7 @@
               (row) =>
                 !row.more &&
                 row.node.kind === "directory" &&
-                isAncestor(row.node.path, path),
+                isAncestor(queuePathKey(row.node), path),
             )
             .at(-1)?.node
         : undefined;

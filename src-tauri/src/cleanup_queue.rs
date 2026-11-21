@@ -535,6 +535,8 @@ pub(crate) struct EntryView {
     pub reason: Option<String>,
     /// The live scan this entry is checked against, when it has one. Review is addressed to that scan.
     pub matched_scan_id: Option<String>,
+    /// The matched scan holds this entry's item on the entry's own volume (not a same-path item on another disk).
+    pub on_scan_volume: bool,
     pub last_error: Option<String>,
 }
 #[derive(Serialize)]
@@ -608,6 +610,8 @@ pub(crate) struct EntryStatus {
     /// The item's node in that scan, set only when the entry is ready.
     pub node_id: Option<u32>,
     pub scan_id: String,
+    /// The scan's node at the item's path is on the entry's recorded volume.
+    pub on_scan_volume: bool,
 }
 
 /// Matches every queue entry to one of `scans` (all usable), then gives it a status from that scan. Entries are
@@ -718,6 +722,8 @@ pub(crate) fn statuses(
         };
         for (c, exact) in entries {
             let found = matches.get(c.item.path.as_path()).copied();
+            let on_scan_volume = c.volume.is_some()
+                && found.is_some_and(|id| safety::recorded_volume(scan, id) == c.volume);
             let (status, reason, node_id) = if !exact {
                 // The queued root is not this scan's root, so its identity is not compared with it: it is
                 // part of the item's recorded ancestor chain, which is compared below.
@@ -749,6 +755,7 @@ pub(crate) fn statuses(
                     reason,
                     node_id,
                     scan_id: scan.id.to_string(),
+                    on_scan_volume,
                 },
             );
         }
@@ -846,6 +853,7 @@ pub(crate) fn view(queue: &Queue, statuses: &HashMap<String, EntryStatus>) -> Vi
                         ),
                     },
                     matched_scan_id: matched.map(|m| m.scan_id.clone()),
+                    on_scan_volume: matched.is_some_and(|m| m.on_scan_volume),
                     last_error: c.last_error.clone(),
                 }
             })

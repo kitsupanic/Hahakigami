@@ -73,11 +73,21 @@ pub fn eligible(s: &Snapshot) -> bool {
         && s.root != Path::new("/")
         && !s.iter_nodes().any(|n| n.excluded)
 }
+const MAX_AGE_MS: u64 = 60 * 60 * 1000;
 pub fn recent(token: &Token, started_at_ms: u64, now: u64) -> bool {
     token.full_scan_at_ms != 0
         && token.full_scan_at_ms <= started_at_ms
         && started_at_ms <= now
-        && now - token.full_scan_at_ms <= 60 * 60 * 1000
+        && now - token.full_scan_at_ms <= MAX_AGE_MS
+}
+/// Whether a record is invalid or older than an hour. Unlike `!recent`, an entry stamped in the future is not dead:
+/// the clock may have stepped back, and `matches` keeps it from seeding a scan until it catches up.
+fn dead(token: &Token, started_at_ms: u64, now: u64) -> bool {
+    token.full_scan_at_ms == 0
+        || token.full_scan_at_ms > started_at_ms
+        || now
+            .checked_sub(token.full_scan_at_ms)
+            .is_some_and(|age| age > MAX_AGE_MS)
 }
 impl Record {
     /// The check every use of a record repeats: same root, identity and epoch, and still `recent`.
@@ -213,14 +223,14 @@ impl Cache {
     pub(crate) fn maintain(&self) -> Result<(), String> {
         let (entries, mut skipped) = self.store.rows()?;
         let now = crate::now_ms();
-        // An entry `recent` refuses or whose record is missing or invalid can never seed a scan again: keep
+        // An entry that is expired, or whose record is missing or invalid, can never seed a scan again: keep
         // only the others, so the sweep below deletes the rest (row, record and archive share the ID's stem).
         // A file that merely failed to read (EMFILE, EIO) is not dead: delete nothing this pass, but do not fail
         // either, or one bad block would turn off the cache for good.
         let mut ids = std::collections::HashSet::new();
         for row in &entries {
             match self.read_record(&row.id) {
-                Ok(r) if recent(&r.token, r.started_at_ms, now) => {
+                Ok(r) if !dead(&r.token, r.started_at_ms, now) => {
                     ids.insert(row.id.as_str());
                 }
                 Ok(_) => (),
@@ -230,6 +240,7 @@ impl Cache {
         if skipped {
             return Ok(());
         }
+        let mut removed = false;
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -249,10 +260,14 @@ impl Cache {
                 }
                 // One undeletable leftover (EPERM, `uchg`) must not fail every later
                 // pass; the next one retries it, as the prune loop in `save` does.
-                let _ = fs::remove_file(&path);
+                removed |= fs::remove_file(&path).is_ok();
             }
         }
-        sync_dir(&self.root).map_err(|e| e.to_string())
+        // F_FULLFSYNC flushes the whole drive: only when there is a removal to persist.
+        if removed {
+            sync_dir(&self.root).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
     fn remove(&self, id: &str) -> Result<(), String> {
         self.store.delete(id)?;
@@ -1025,6 +1040,46 @@ mod tests {
         let (rows, skipped) = rows.unwrap();
         assert!(rows.is_empty() && skipped);
         assert_eq!(c.store.list().unwrap().len(), 1);
+    }
+    #[test]
+    fn maintenance_keeps_entries_stamped_in_the_future_after_a_clock_step_back() {
+        let token = Token {
+            cursor: 1,
+            epoch: "epoch".into(),
+            full_scan_at_ms: 10_000,
+        };
+        // Refused for use (`recent`), but only a clock step back explains it: not dead.
+        assert!(!recent(&token, 10_000, 9_000));
+        assert!(!dead(&token, 10_000, 9_000));
+        assert!(dead(&token, 10_000, 10_000 + MAX_AGE_MS + 1));
+        assert!(dead(&token, 9_000, 20_000));
+        assert!(dead(
+            &Token {
+                full_scan_at_ms: 0,
+                ..token.clone()
+            },
+            10_000,
+            10_000
+        ));
+        let d = tempfile::tempdir().unwrap();
+        let c = Cache::new(d.path().join("cache"));
+        let s = fixture(&d.path().join("source"));
+        let future = crate::now_ms() + 5 * 60 * 1000;
+        let token = Token {
+            full_scan_at_ms: future,
+            ..token
+        };
+        let metadata = ScanMetadata {
+            started_at_ms: future,
+            workers: 1,
+        };
+        c.save(&s, &metadata, &token).unwrap();
+        c.maintain().unwrap();
+        assert_eq!(c.store.list().unwrap().len(), 1);
+        let id = c.store.list().unwrap().remove(0).id;
+        for suffix in ["json", "zst", "cursor"] {
+            assert!(c.root.join(format!("{id}.{suffix}")).exists(), "{suffix}");
+        }
     }
     // An immutable old record cannot be removed (macOS `uchg`), standing in for a failed removal.
     #[cfg(target_os = "macos")]

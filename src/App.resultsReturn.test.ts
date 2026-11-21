@@ -64,6 +64,18 @@ const summary = (id = "live"): ScanSummary => ({
   errors: 0,
 });
 let container: HTMLDivElement, root: Root;
+// An open native folder picker is an operation in flight, which blocks navigation like a Trash review does.
+let closePicker: () => void;
+let picking: Promise<unknown> | void;
+const pickerOpen = [
+  () => {
+    picking = app().chooseFolder();
+  },
+  async () => {
+    closePicker();
+    await picking;
+  },
+];
 function calls(command: string) {
   return mock.invoke.mock.calls.filter(([name]) => name === command);
 }
@@ -142,6 +154,10 @@ beforeEach(async () => {
           return { items: [image, folder], total: 320 };
         case "search_nodes":
           return { items: [image, folder], total: 320 };
+        case "choose_folder":
+          return new Promise<null>((done) => {
+            closePicker = () => done(null);
+          });
         case "start_scan":
           return "live";
         case "scan_summary":
@@ -267,8 +283,8 @@ it("blocks returning while busy, previewing, or using a different active scan", 
   await browse();
   const saved = app().resultsReturn;
   for (const [block, unblock] of [
-    [() => app().setBusy(true), () => app().setBusy(false)],
-    [() => app().setAccessOpen(true), () => app().setAccessOpen(false)],
+    pickerOpen,
+    [() => app().openAccess(), () => app().closeAccess()],
     [
       () => {
         app().activeId.current = "other";
@@ -294,11 +310,11 @@ it("ignores delayed folder rows and breadcrumb failures after returning", async 
   let crumbFailure!: (reason: Error) => void;
   let breadcrumbPending = true;
   mock.invoke.mockImplementation((command, args) => {
-    if (command === "get_children" && args.nodeId === 1)
+    if (command === "get_children" && args.nodeId === deeper.id)
       return new Promise<Page>((done) => {
         folderRows = done;
       });
-    if (command === "get_node" && args.nodeId === 0 && breadcrumbPending) {
+    if (command === "get_node" && args.nodeId === folder.id && breadcrumbPending) {
       breadcrumbPending = false;
       return new Promise((_done, reject) => {
         crumbFailure = reject;
@@ -306,11 +322,10 @@ it("ignores delayed folder rows and breadcrumb failures after returning", async 
     }
     return previous(command, args);
   });
-  // With no known chain the walk asks the backend for the root.
-  await act(() => app().setCrumbs([]));
+  // The chain holds only the root, so the walk to the deeper folder asks the backend for its parent.
   let opening!: Promise<void>;
   await act(() => {
-    opening = app().open(folder);
+    opening = app().open(deeper);
   });
   await act(() => app().returnToResults());
   await act(async () => {
@@ -558,8 +573,8 @@ it("blocks both directions while busy, in modal or alternate views, or using a d
   await act(() => app().open(deeper));
   await act(() => app().goBack());
   for (const [block, unblock] of [
-    [() => app().setBusy(true), () => app().setBusy(false)],
-    [() => app().setAccessOpen(true), () => app().setAccessOpen(false)],
+    pickerOpen,
+    [() => app().openAccess(), () => app().closeAccess()],
     [() => app().showQueue(true), () => app().showQueue(false)],
     [
       () => {
@@ -681,11 +696,11 @@ it("uses the ordinary folder-opening search return behavior when moving Up", asy
   expect(app().query).toBe("photo");
 });
 
-it("disables Enclosing Folder for blocked views and incomplete or mismatched parent breadcrumbs", async () => {
+it("disables Enclosing Folder for blocked views and while the parent breadcrumb is still loading", async () => {
   await browse();
   for (const [block, unblock] of [
-    [() => app().setBusy(true), () => app().setBusy(false)],
-    [() => app().setAccessOpen(true), () => app().setAccessOpen(false)],
+    pickerOpen,
+    [() => app().openAccess(), () => app().closeAccess()],
     [() => app().showQueue(true), () => app().showQueue(false)],
   ]) {
     await act(block);
@@ -697,20 +712,29 @@ it("disables Enclosing Folder for blocked views and incomplete or mismatched par
     await flush();
     expect(upEnabled()).toBe(true);
   }
-  await act(() => app().open(deeper));
-  const complete = app().crumbs;
-  for (const incomplete of [
-    [rootNode, deeper],
-    [folder, deeper],
-  ]) {
-    await act(() => app().setCrumbs(incomplete));
-    await flush();
-    expect(upEnabled()).toBe(false);
-    await up();
-    expect(app().focus?.id).toBe(deeper.id);
-  }
-  await act(() => app().setCrumbs(complete));
+  // While the walk to a folder's ancestors is pending its parent is unknown, so Up waits for the chain.
+  await act(() => app().goBack());
+  const previous = mock.invoke.getMockImplementation()!;
+  let finish!: (node: NodeView) => void;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "get_node" && args.nodeId === folder.id
+      ? new Promise<NodeView>((done) => {
+          finish = done;
+        })
+      : previous(command, args),
+  );
+  let opening!: Promise<void>;
+  await act(() => {
+    opening = app().open(deeper);
+  });
   await flush();
+  expect(upEnabled()).toBe(false);
+  await up();
+  expect(app().focus?.id).toBe(deeper.id);
+  await act(async () => {
+    finish(folder);
+    await opening;
+  });
   expect(upEnabled()).toBe(true);
   await up();
   expect(app().focus?.id).toBe(folder.id);

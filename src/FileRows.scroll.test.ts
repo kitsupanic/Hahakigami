@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, createTestRoot, type Root } from "./testUtils";
 import FileRows from "./FileRows.svelte";
 import type { NodeView } from "./types";
+import { queuePathKey } from "./queueMarkers";
 
 let container: HTMLDivElement, root: Root, rows: HTMLElement;
 const items: NodeView[] = Array.from({ length: 30 }, (_, id) => ({
@@ -157,10 +158,48 @@ it("opens collapsed folders to reveal a row selected on the map", async () => {
   const shown = { ...props, items: [...items, outer], onLoadChildren };
   await act(() => root.render(FileRows, shown));
   await act(() =>
-    root.render(FileRows, { ...shown, selection: [52], selectionPath: leaf.path }),
+    root.render(FileRows, { ...shown, selection: [52], selectionPath: queuePathKey(leaf) }),
   );
   for (let i = 0; i < 5; i++) await act(async () => {});
   expect(onLoadChildren.mock.calls.map(([id]) => id)).toEqual([50, 51]);
   // Row 32 of 33 (30 files, outer, inner, leaf), centred in the 230px view.
   expect(rows.scrollTop).toBe(32 * 36 - (230 - 36) / 2);
+});
+
+it("reveals through the folder with the same path key, not one whose name displays the same", async () => {
+  const dir = (id: number, key: string): NodeView => ({
+    ...items[0],
+    id,
+    parentId: 100,
+    name: "caf\uFFFD",
+    path: "/fixture/caf\uFFFD",
+    pathKey: `/fixture/caf%${key}`,
+    kind: "directory",
+    childrenCount: 1,
+  });
+  const first = dir(60, "E9"),
+    second = dir(61, "E8");
+  const leaf: NodeView = {
+    ...items[0],
+    id: 62,
+    parentId: 60,
+    name: "leaf.bin",
+    path: "/fixture/caf\uFFFD/leaf.bin",
+    pathKey: "/fixture/caf%E9/leaf.bin",
+  };
+  const onLoadChildren = vi.fn(async (_id: number) => ({
+    items: [leaf],
+    total: 1,
+  }));
+  const shown = { ...props, items: [first, second], onLoadChildren };
+  await act(() => root.render(FileRows, shown));
+  await act(() =>
+    root.render(FileRows, {
+      ...shown,
+      selection: [62],
+      selectionPath: queuePathKey(leaf),
+    }),
+  );
+  for (let i = 0; i < 5; i++) await act(async () => {});
+  expect(onLoadChildren.mock.calls.map(([id]) => id)).toEqual([60]);
 });

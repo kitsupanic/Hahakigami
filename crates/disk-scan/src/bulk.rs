@@ -256,23 +256,61 @@ fn parse_into<'a, N>(
     parsed
 }
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn enumerate_with_accounting(
     path: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     fd: &std::os::fd::OwnedFd,
+    device: u64,
+    rich_refused: &std::sync::Mutex<std::collections::HashSet<u64>>,
     warnings: &mut Vec<String>,
     observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
     buffer: &mut Vec<u8>,
 ) -> io::Result<Vec<io::Result<Entry>>> {
-    enumerate_using(
+    enumerate_remembering(
         path,
         cancel,
         fd,
-        true,
+        device,
+        rich_refused,
         warnings,
         observations,
         buffer,
         &mut read_batch,
+    )
+}
+/// Asks for clone fields first, unless this device already refused them in a listing. The memo is the
+/// listing's own: the per-file probes' map also records one file's missing reply, which says nothing
+/// about the volume's listing.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn enumerate_remembering(
+    path: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    fd: &std::os::fd::OwnedFd,
+    device: u64,
+    rich_refused: &std::sync::Mutex<std::collections::HashSet<u64>>,
+    warnings: &mut Vec<String>,
+    observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
+    buffer: &mut Vec<u8>,
+    reader: &mut impl FnMut(&std::os::fd::OwnedFd, &mut [u8], bool) -> io::Result<usize>,
+) -> io::Result<Vec<io::Result<Entry>>> {
+    let rich = !rich_refused.lock().unwrap().contains(&device);
+    enumerate_using(
+        path,
+        cancel,
+        fd,
+        rich,
+        warnings,
+        observations,
+        buffer,
+        &mut |fd, buffer, rich| {
+            let batch = reader(fd, buffer, rich);
+            if rich && batch.as_ref().is_err_and(is_unsupported) {
+                rich_refused.lock().unwrap().insert(device);
+            }
+            batch
+        },
     )
 }
 #[cfg(target_os = "macos")]
@@ -424,16 +462,8 @@ fn enumerate_using(
                 device: r.device,
                 inode: r.inode,
                 kind,
-                length: if kind == NodeKind::Directory {
-                    0
-                } else {
-                    r.length
-                },
-                allocated: if kind == NodeKind::Directory {
-                    0
-                } else {
-                    r.allocated
-                },
+                length: r.length,
+                allocated: r.allocated,
             })
         }));
         grow_packed_buffer(buffer, used);
@@ -1527,6 +1557,8 @@ mod tests {
             &p,
             &cancel,
             &fd,
+            0,
+            &std::sync::Mutex::new(std::collections::HashSet::new()),
             &mut Vec::new(),
             &mut observations,
             &mut Vec::new(),
@@ -1732,6 +1764,40 @@ mod tests {
         .unwrap();
         assert!(warnings.is_empty());
         assert!(!unsupported[0].as_ref().unwrap().clone_checked);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refused_clone_fields_are_remembered_per_device() {
+        let path = std::env::temp_dir();
+        let fd: std::os::fd::OwnedFd = std::fs::File::open(&path).unwrap().into();
+        let device = crate::descriptor::identity_fd(&fd).unwrap().device;
+        let refused = std::sync::Mutex::new(std::collections::HashSet::new());
+        let mut asked = Vec::new();
+        let mut list = |refused: &std::sync::Mutex<_>| {
+            enumerate_remembering(
+                &path,
+                &std::sync::atomic::AtomicBool::new(false),
+                &fd,
+                device,
+                refused,
+                &mut Vec::new(),
+                &mut std::collections::VecDeque::new(),
+                &mut Vec::new(),
+                &mut |_, _, rich| {
+                    asked.push(rich);
+                    if rich {
+                        Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+                    } else {
+                        Ok(0)
+                    }
+                },
+            )
+            .unwrap()
+        };
+        list(&refused);
+        list(&refused);
+        assert_eq!(asked, [true, false, false]);
+        assert!(refused.lock().unwrap().contains(&device));
     }
     #[cfg(target_os = "macos")]
     #[test]

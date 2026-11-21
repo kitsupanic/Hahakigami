@@ -144,6 +144,46 @@ pub fn target(path: &Path, name: String) -> Target {
     }
 }
 
+/// The home folder for the protection rules: the user database first, so an empty or redirected `$HOME`
+/// (`env -i`, a dev shell) cannot leave the real home folder unprotected; `$HOME` only if that lookup fails.
+pub fn home_dir() -> Option<PathBuf> {
+    passwd_home().or_else(|| {
+        std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
+/// The effective user's home folder from the user database.
+fn passwd_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buffer = vec![0u8; 4096];
+    loop {
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::geteuid(),
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status == libc::ERANGE && buffer.len() < 1 << 20 {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        if status != 0 || found.is_null() || entry.pw_dir.is_null() {
+            return None;
+        }
+        let dir = std::path::Path::new(std::ffi::OsStr::from_bytes(
+            unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) }.to_bytes(),
+        ));
+        return dir.is_absolute().then(|| dir.to_path_buf());
+    }
+}
+
 /// "/" and the `/Volumes/*` mounts, from the mount table only (no statvfs, so it never blocks).
 pub fn volume_paths() -> Vec<PathBuf> {
     // A home folder mounted at /Volumes/<name> is listed as home, not as a disk.
@@ -423,6 +463,11 @@ pub fn trash(path: &Path, is_directory: bool) -> Result<Option<PathBuf>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_user_database_names_an_absolute_home_folder() {
+        let home = passwd_home().expect("the passwd entry has a home folder");
+        assert!(home.is_absolute());
+    }
     #[test]
     fn volume_mounts_exclude_the_volumes_folder_and_other_mounts() {
         assert!(is_volume_mount(Path::new("/Volumes/Backup")));

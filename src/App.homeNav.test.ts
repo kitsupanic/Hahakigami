@@ -361,7 +361,13 @@ it("adds a connected disk and drops an ejected one, taking the ids the backend n
 
 it("brings a remounted disk back when a chosen folder shares its path", async () => {
   const folder: Target = { ...backup, id: "backup-folder", volume: false };
-  await act(() => app().setTargets([...app().targets, folder]));
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command: string, args: unknown) =>
+    command === "choose_folder" ? Promise.resolve(folder) : standard(command, args),
+  );
+  await act(() => app().chooseFolder());
+  expect(app().targets).toContainEqual(folder);
+  mock.invoke.mockImplementation(standard);
   mounted = ["/"];
   discovered = [disk, home];
   await refresh();

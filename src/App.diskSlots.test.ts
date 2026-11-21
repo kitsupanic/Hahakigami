@@ -885,6 +885,7 @@ const queueEntry = (
   status,
   reason: status === "ready" ? null : "Scan the original location",
   matchedScanId,
+  onScanVolume: true,
 });
 const statusOf = (id: string) =>
   [...container.querySelectorAll(".cleanup-entry")]

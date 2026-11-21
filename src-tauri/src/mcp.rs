@@ -1,6 +1,9 @@
 use crate::automation::Service;
 use rmcp::{
-    handler::server::wrapper::Parameters, model::CallToolResult, schemars, service::RequestContext,
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, ProgressNotificationParam},
+    schemars,
+    service::RequestContext,
     tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
@@ -107,8 +110,28 @@ impl Mcp {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
+        let progress = async {
+            // Clients reset their request timeout on progress only when the request carries a token.
+            let Some(token) = context.meta.get_progress_token() else {
+                return std::future::pending().await;
+            };
+            let mut count = 0.0;
+            loop {
+                count += 1.0;
+                // `progress` must grow with every notification, but the entry count can stand still.
+                let message = format!("{} entries scanned", self.service.entries_scanned());
+                let _ = context
+                    .peer
+                    .notify_progress(
+                        ProgressNotificationParam::new(token.clone(), count).with_message(message),
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        };
         tokio::select! {
             result = self.execute(move |service| service.scan_with(PathBuf::from(input.path), flag)) => result,
+            () = progress => unreachable!("the progress loop never ends"),
             // A client's `notifications/cancelled` only cancels this request; stop this request's scan
             // (not whichever one is active), even if its blocking task has not started yet.
             _ = context.ct.cancelled() => {

@@ -1,6 +1,6 @@
 //! Independent metadata scans and their in-memory results for the CLI and local MCP server.
 use crate::{filters, platform, settings, sorting};
-use disk_scan::{Progress, ScanState, Snapshot};
+use disk_scan::{Progress, Snapshot};
 use serde_json::{json, Value};
 use std::{
     path::PathBuf,
@@ -134,12 +134,11 @@ impl Service {
                 }
             },
         );
-        if result.is_err() {
+        if let Err(error) = &result {
             let mut snapshot = store
                 .write()
                 .map_err(|_| "Automation snapshot lock poisoned")?;
-            snapshot.state = ScanState::Failed;
-            snapshot.stats.incomplete = true;
+            crate::mark_failed(&mut snapshot, error.to_string());
         }
         let snapshot = store
             .read()
@@ -200,6 +199,15 @@ impl Service {
         value["running"] = json!(active);
         value["error"] = json!(error);
         Ok(value)
+    }
+
+    /// Entries counted so far by the active scan (0 before its first progress report).
+    pub(crate) fn entries_scanned(&self) -> u64 {
+        self.session
+            .lock()
+            .ok()
+            .and_then(|session| session.progress.as_ref().map(|p| p.entries))
+            .unwrap_or(0)
     }
 
     pub(crate) fn cancel(&self) -> Result<Value, String> {

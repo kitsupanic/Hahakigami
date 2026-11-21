@@ -33,6 +33,7 @@ const entry = (
   status: "ready",
   reason: null,
   matchedScanId: "scan-1",
+  onScanVolume: true,
   ...change,
 });
 const deferred = <T>() => {

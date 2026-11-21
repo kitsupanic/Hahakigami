@@ -133,7 +133,7 @@ impl Store {
             open(path)?.take(1024 * 1024),
         ))?)
     }
-    // The sync-failure warning is dropped: `Cache::maintain` syncs the directory again before every use.
+    // The sync-failure warning is dropped: the cache only speeds up scans, so a rename lost to a crash costs a full scan.
     pub(crate) fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
         atomic(&self.root, path, "", |mut f| {
             serde_json::to_writer(&mut f, value).map_err(err)?;

@@ -272,10 +272,10 @@ it("disables every app command while a dialog is open and restores them afterwar
   await flush();
   expect(enabled("trash")).toBe(true);
   expect(enabled("rescan")).toBe(true);
-  await act(() => app().setAccessOpen(true));
+  await act(() => app().openAccess());
   await flush();
   expect([...menuItems().values()].every((item) => !item.enabled)).toBe(true);
-  await act(() => app().setAccessOpen(false));
+  await act(() => app().closeAccess());
   await flush();
   expect(enabled("rescan")).toBe(true);
 });
