@@ -2,7 +2,6 @@ import { onMount, untrack } from "svelte";
 import createQuickLook from "./createQuickLook.svelte";
 import { createCleanupQueue, tauriQueuePort } from "./cleanupQueue.svelte";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
 import "./quickLook.css";
 import {
   isSortOrder,
@@ -21,7 +20,7 @@ import { countLabel } from "./uiFormat";
 import type { CleanupReport, QueueView } from "./cleanupTypes";
 import { cleanupResult } from "./cleanupResults";
 import type { AppToast } from "./toastTypes";
-import { canvasEvidence, runNativeInteractions } from "./nativeBenchmark";
+import { createPerformanceHarness } from "./performanceHarness.svelte";
 import {
   type FullDiskAccess,
   type NodeView,
@@ -33,39 +32,8 @@ import {
 // Mirrors the backend limit in cleanup.rs ("Select between 1 and 1,000 items.").
 const MAX_TRASH_ITEMS = 1000;
 const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
-declare global {
-  interface Window {
-    __PERFORMANCE_BENCHMARK__?: {
-      root: string;
-      mode: string;
-      interactions?: boolean;
-    };
-  }
-}
 export default function createApp() {
-  let performanceConfig = $state.raw<{
-    root: string;
-    mode: string;
-    interactions?: boolean;
-  } | null>(null);
-  const performanceStarted = { current: false };
-  const performanceReported = { current: false };
-  const performanceRescanned = { current: false };
-  let performanceDrawnMap = $state.raw<NodeView[] | null>(null);
-  let performanceProgressUpdates = 0;
-  let performanceMapReady = $state.raw(false);
-  let performanceMapQueryPending = $state.raw(false);
-  let performanceMapQueryEpoch = 0;
-  let performanceEventsReady = $state.raw(!performanceBuild);
-  let performanceMapScan = $state.raw<string | null>(null);
-  onMount(() => {
-    if (!performanceBuild) return;
-    const receive = () =>
-      (performanceConfig = window.__PERFORMANCE_BENCHMARK__ ?? null);
-    receive();
-    window.addEventListener("performance-config", receive);
-    return () => window.removeEventListener("performance-config", receive);
-  });
+  let mapRequestEpoch = 0;
   let targets = $state.raw<Target[]>([]);
   let target = $state.raw<Target | null>(null);
   let summary = $state.raw<ScanSummary | null>(null);
@@ -772,121 +740,41 @@ export default function createApp() {
       window.removeEventListener("focus", onFocus);
     };
   });
-  onMount(() => {
-    if (!performanceBuild) return;
-    let cancelled = false;
-    let unsubscribe: (() => void) | undefined;
-    void listen<{
-      scanId: string;
-    }>("performance-rescan-ready", ({ payload }) => {
-      if (
-        cancelled ||
-        performanceRescanned.current ||
-        !["same_process", "changed"].includes(performanceConfig?.mode ?? "") ||
-        !performanceReported.current ||
-        activeId.current !== payload.scanId
-      )
-        return;
-      performanceRescanned.current = true;
-      activeId.current = null;
-      performanceReported.current = false;
-      void start(liveTarget);
-    })
-      .then((off) => {
-        if (cancelled) off();
-        else {
-          unsubscribe = off;
-          performanceEventsReady = true;
-        }
+  const benchmark = performanceBuild
+    ? createPerformanceHarness({
+        get map() {
+          return map;
+        },
+        get summary() {
+          return summary;
+        },
+        get focus() {
+          return focus;
+        },
+        get listLoading() {
+          return listLoading;
+        },
+        get targets() {
+          return targets;
+        },
+        get access() {
+          return access;
+        },
+        get sortReady() {
+          return sortReady;
+        },
+        get busy() {
+          return busy;
+        },
+        get liveTarget() {
+          return liveTarget;
+        },
+        activeId,
+        setTarget: (t) => (target = t),
+        start: (t) => start(t),
+        setError: (message) => setError(message),
       })
-      .catch((e) => {
-        if (!cancelled) setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  });
-  $effect(() => {
-    [
-      performanceConfig,
-      performanceEventsReady,
-      targets,
-      access,
-      sortReady,
-      busy,
-    ];
-    return untrack(() => {
-      if (
-        !performanceBuild ||
-        !performanceEventsReady ||
-        !performanceConfig ||
-        performanceStarted.current ||
-        !access ||
-        !sortReady ||
-        busy
-      )
-        return;
-      const location = targets.find(
-        (item) => item.path === performanceConfig!.root,
-      );
-      if (!location) return;
-      performanceStarted.current = true;
-      target = location;
-      void start(location);
-    });
-  });
-  function performanceLayoutPending() {
-    if (!performanceBuild) return;
-    performanceMapReady = false;
-    performanceDrawnMap = null;
-  }
-  function performanceRendered(nodes: NodeView[]) {
-    if (performanceBuild && nodes === map) {
-      performanceDrawnMap = nodes;
-      performanceMapReady = true;
-    }
-    void finishPerformanceRender(nodes);
-  }
-  // The list can finish after the canvas draws. Retain the current draw identity
-  // so reporting does not depend on repainting for unrelated query state.
-  $effect(() => {
-    const drawn = performanceDrawnMap;
-    const loading = listLoading;
-    untrack(() => {
-      if (drawn && !loading) void finishPerformanceRender(drawn);
-    });
-  });
-  async function finishPerformanceRender(nodes: NodeView[]) {
-    if (
-      !performanceBuild ||
-      performanceReported.current ||
-      !summary ||
-      activeId.current !== summary.scanId ||
-      summary.state !== "completed" ||
-      summary.scanPhase !== "done" ||
-      performanceMapScan !== summary.scanId ||
-      nodes !== map ||
-      listLoading ||
-      performanceMapQueryPending
-    )
-      return;
-    performanceReported.current = true;
-    const scanId = summary.scanId;
-    const canvas = canvasEvidence(nodes, focus?.id ?? summary.rootId);
-    const interactions =
-      performanceConfig?.interactions &&
-      (!["same_process", "changed"].includes(performanceConfig.mode) ||
-        performanceRescanned.current)
-        ? await runNativeInteractions()
-        : undefined;
-    await emit("performance-rendered", {
-      scanId,
-      interactions,
-      progressUpdates: performanceProgressUpdates,
-      canvas_evidence: canvas,
-    });
-  }
+    : null;
   function start(t = target) {
     if (!t) return Promise.resolve();
     // A saved scan keeps the target it started with, whose id the backend may have replaced since: scan the place
@@ -919,12 +807,10 @@ export default function createApp() {
     let taken = false;
     const samePlace = () =>
       g === generation.current && target?.id === pressed.id;
-    const performanceClock = performanceBuild
-      ? emit("performance-start")
-      : undefined;
+    const benchmarkClock = benchmark?.scanStarting();
     setError("");
     return {
-      ready: performanceClock,
+      ready: benchmarkClock,
       // After taking the view, the start stops being `home` (accepted closes it).
       current: () =>
         (taken || (homeOpen === pressed.home && queueOpen === pressed.queue)) &&
@@ -955,9 +841,7 @@ export default function createApp() {
         clearResultsReturn();
         clearNavigationHistory();
         liveTarget = t;
-        performanceDrawnMap = null;
-        performanceMapReady = false;
-        performanceProgressUpdates = 0;
+        benchmark?.viewTaken();
         ++navigation.current;
         activeId.current = id;
         ++listRequest.current;
@@ -977,7 +861,7 @@ export default function createApp() {
       event(s, restarted) {
         // Progress from a scan whose results are not on screen only updates its slot.
         if (activeId.current !== s.scanId) return;
-        if (s.state === "running") performanceProgressUpdates++;
+        benchmark?.progress(s.state);
         if (s.state !== "running") cancelling = false;
         if (
           s.state === "cancelled" &&
@@ -1163,8 +1047,8 @@ export default function createApp() {
     return untrack(() => {
       if (!summary || !focus || !exploring) return;
       let ignore = false;
-      const mapRequest = ++performanceMapQueryEpoch;
-      if (performanceBuild) performanceMapQueryPending = true;
+      const mapRequest = ++mapRequestEpoch;
+      benchmark?.mapQueryStarted();
       const snapshot = summary;
       const scanId = snapshot.scanId,
         nodeId = focus.id;
@@ -1187,29 +1071,15 @@ export default function createApp() {
           ...(queryColorMode === "fileType" ? { colorMode: "fileType" } : {}),
         })
           .then((result) => {
-            if (!ignore && mapRequest === performanceMapQueryEpoch) {
-              // A worker can draw the old node array while the native query is
-              // outstanding. Only the returned dataset can certify readiness.
-              if (performanceBuild) {
-                if (result.nodes !== performanceDrawnMap) {
-                  performanceDrawnMap = null;
-                  performanceMapReady = false;
-                }
-                performanceMapQueryPending = false;
-              }
+            if (!ignore && mapRequest === mapRequestEpoch) {
               // The folder map's tile of grouped small items: the backend counts them, the count is written in the
               // user's locale here. The file-type map's leftover tile keeps its name.
               if (queryColorMode === "folder")
                 for (const n of result.nodes)
                   if (n.kind === "aggregate")
                     n.name = countLabel(n.childrenCount, "smaller item");
+              benchmark?.mapQueryResult(result.nodes, snapshot);
               map = result.nodes;
-              if (
-                performanceBuild &&
-                snapshot.state === "completed" &&
-                snapshot.scanPhase === "done"
-              )
-                performanceMapScan = scanId;
             }
           })
           .catch((failure) => {
@@ -1220,9 +1090,9 @@ export default function createApp() {
       else queryMap(loadMap);
       return () => {
         ignore = true;
-        if (mapRequest === performanceMapQueryEpoch) {
-          ++performanceMapQueryEpoch;
-          if (performanceBuild) performanceMapQueryPending = false;
+        if (mapRequest === mapRequestEpoch) {
+          ++mapRequestEpoch;
+          benchmark?.mapQueryEnded();
         }
       };
     });
@@ -1887,9 +1757,9 @@ export default function createApp() {
     setClearQueueOpen: (value: boolean) => {
       clearQueueOpen = value;
     },
-    performanceLayoutPending,
+    performanceLayoutPending: () => benchmark?.layoutPending(),
     get performanceMapReady() {
-      return performanceMapReady && !performanceMapQueryPending;
+      return benchmark?.mapReady ?? false;
     },
     get targets() {
       return targets;
@@ -2132,7 +2002,7 @@ export default function createApp() {
       return fail;
     },
     get performanceRendered() {
-      return performanceRendered;
+      return (nodes: NodeView[]) => benchmark?.rendered(nodes);
     },
     get start() {
       return start;
