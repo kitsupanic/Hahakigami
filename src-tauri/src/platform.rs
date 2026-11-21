@@ -159,6 +159,15 @@ pub fn volume_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// `volume_paths` without network mounts: the paths `discover` lists as disks, still from the mount table only.
+pub fn local_volume_paths() -> Vec<PathBuf> {
+    let mounts = mounted_flags().unwrap_or_default();
+    volume_paths()
+        .into_iter()
+        .filter(|path| is_local_path(path, &mounts))
+        .collect()
+}
+
 /// A disk Finder would show: directly under /Volumes and not hidden. Skips Time
 /// Machine's nested and hidden snapshot mounts (e.g. /Volumes/.timemachine/...).
 fn is_volume_mount(path: &Path) -> bool {

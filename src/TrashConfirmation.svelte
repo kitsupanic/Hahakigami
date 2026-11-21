@@ -108,7 +108,7 @@
     <dl class="trash-summary">
       <div>
         <dt>Items to move</dt>
-        <dd>{items.length}</dd>
+        <dd>{items.length.toLocaleString()}</dd>
       </div>
       <div>
         <dt>On disk</dt>

@@ -42,7 +42,7 @@ export const writeText = async () => { throw new Error('Clipboard disabled'); };
 const gib=1024**3;
 const base={childrenCount:0,incomplete:false};
 const dirs=[{...base,id:0,parentId:null,name:'File types fixture',path:'/fixture',kind:'directory'}, {...base,id:1,parentId:0,name:'Media',path:'/fixture/Media',kind:'directory'}, {...base,id:2,parentId:0,name:'Downloads',path:'/fixture/Downloads',kind:'directory'}, {...base,id:3,parentId:1,name:'Exports',path:'/fixture/Media/Exports',kind:'directory'}, {...base,id:4,parentId:3,name:'Transcoded',path:'/fixture/Media/Exports/Transcoded',kind:'directory'}, {...base,id:5,parentId:4,name:'High Quality Media',path:'/fixture/Media/Exports/Transcoded/High Quality Media',kind:'directory'}];
-let id=10;
+let id=10,quickLookRevision=0;
 const files=[['feature.MOV',5,28],['interview.mov',1,12],['installer.dmg',2,17],['backup.zip',2,10],['render.mp4',5,8],['artwork.png',1,5],['portrait.jpg',1,4],['guide.pdf',2,3],['README',2,2],...Array.from({length:34},(_,i)=>['sample.type'+String(i).padStart(2,'0'),2,1/(i+2)])].map(([name,parentId,gb])=>({...base,id:id++,parentId,name,path:dirs.find(d=>d.id===parentId)!.path+'/'+name,kind:'file',allocatedBytes:Math.round(Number(gb)*gib)}));
 const nodes=[...dirs,...files],byId=new Map(nodes.map(n=>[n.id,n]));
 function within(n:any,scope:number){const seen=new Set();while(n&&!seen.has(n.id)){if(n.id===scope)return true;seen.add(n.id);n=byId.get(n.parentId)}return false}
@@ -55,12 +55,12 @@ const summary={scanId:'file-types-fixture',rootId:0,state:'completed',scanPhase:
 export async function invoke(command:string,args:any={}) {
  (window as any).__fileTypes.commands.push({command,...args});
  switch(command){
- case 'disk_access_setup':return {required:false,confirmed:true,pendingRestart:false,appPath:'/fixture/Hahakigami.app'};
  case 'full_disk_access_status':return {status:'on',scanAnyway:false,appPath:'/fixture/Hahakigami.app'};
  case 'start_scan':return summary.scanId;
  case 'scan_summary':return {...summary};
  case 'discover_targets':return [{id:'fixture',name:dirs[0].name,path:'/fixture',totalBytes:200*gib,freeBytes:50*gib}];
- case 'get_explorer_preferences':case 'set_explorer_preferences':return {sort:args.sort??'sizeDescending',warning:null};
+ case 'get_explorer_preferences':case 'set_explorer_sort':return {sort:args.sort??'sizeDescending',warning:null};
+ case 'mounted_volumes':return [];
  case 'list_cleanup_queue':return {entries:[],revision:0,warning:null,blocked:false};
  case 'get_node':return {...byId.get(args.nodeId)};
  case 'get_map':return {nodes:(args.colorMode==='fileType'?[...dirs.filter(n=>within(n,args.nodeId)),...[...groups.values()].filter(n=>within(byId.get(n.parentId),args.nodeId))]:dirs.filter(n=>within(n,args.nodeId))).map(n=>({...n}))};
@@ -68,7 +68,7 @@ export async function invoke(command:string,args:any={}) {
  case 'get_file_types':{const items=new Map();for(const f of files.filter(n=>within(n,args.nodeId))){const ext=extension(f),row=items.get(ext)??{extension:ext,files:0,allocatedBytes:0};row.files++;row.allocatedBytes+=f.allocatedBytes;items.set(ext,row)}const rows=[...items.values()];return {items:rows,files:rows.reduce((a,r)=>a+r.files,0),allocatedBytes:rows.reduce((a,r)=>a+r.allocatedBytes,0),incomplete:false}};
  case 'get_file_type_highlights':{const matches=files.filter(n=>within(n,args.nodeId)&&extension(n)===args.extension);return args.nodeIds.filter((id:number)=>{const n=byId.get(id);return n&&matches.some(f=>within(f,n.id))})};
  case 'filter_nodes':{const items=files.filter(n=>within(n,args.scopeId??0)&&(args.extension==null||extension(n)===args.extension));return {items,total:items.length}};
- case 'close_quick_look':return {visible:false,scanId:null,nodeId:null};
+ case 'close_quick_look':return {open:false,scanId:null,nodeId:null,revision:++quickLookRevision};
  default:throw new Error('Unexpected mocked command: '+command);
  }
 }
@@ -235,7 +235,7 @@ export async function invoke(command:string,args:any={}) {
         check.typeCoverage = await page.evaluate(() => {
           const p = window.__mapPaint,
             byId = new Map(p.nodes.map((n) => [n.id, n]));
-          const canvas = document.querySelector(".map-wrap canvas");
+          const canvas = document.querySelector(".map-wrap canvas[role=img]");
           const area = p.shapes
             .filter((s) => byId.get(s.id)?.fileType !== undefined)
             .reduce((sum, s) => sum + s.width * s.height, 0);
@@ -250,7 +250,7 @@ export async function invoke(command:string,args:any={}) {
           fullPage: true,
         });
         const zipGroupPoint = async () => {
-          await page.locator(".map-wrap canvas").scrollIntoViewIfNeeded();
+          await page.locator(".map-wrap canvas[role=img]").scrollIntoViewIfNeeded();
           return page.evaluate(() => {
             const p = window.__mapPaint;
             const group = p.nodes.find((n) => n.fileType === "zip");
@@ -258,7 +258,7 @@ export async function invoke(command:string,args:any={}) {
             if (!shape)
               throw new Error("Expected a visible ZIP composition block");
             const canvas = document
-              .querySelector(".map-wrap canvas")
+              .querySelector(".map-wrap canvas[role=img]")
               .getBoundingClientRect();
             return {
               x: canvas.left + shape.x + shape.width / 2,
@@ -359,7 +359,7 @@ export async function invoke(command:string,args:any={}) {
         );
         if (name === "light-1536x1024") {
           const originalPoint = await zipGroupPoint();
-          const before = await page.locator(".map-wrap canvas").boundingBox();
+          const before = await page.locator(".map-wrap canvas[role=img]").boundingBox();
           await page.evaluate(() => {
             window.__groupGestureEvents = [];
             for (const type of ["click", "dblclick"])
@@ -394,7 +394,7 @@ export async function invoke(command:string,args:any={}) {
           await wait(
             () => window.__mapPaint.completed === window.__mapPaint.requestId,
           );
-          const after = await page.locator(".map-wrap canvas").boundingBox();
+          const after = await page.locator(".map-wrap canvas[role=img]").boundingBox();
           assert(
             after.width < before.width - 1,
             "Resizing between group clicks changes the canvas geometry",
@@ -470,7 +470,7 @@ export async function invoke(command:string,args:any={}) {
           const probe = document.createElement("canvas").getContext("2d");
           probe.fillStyle = color;
           const normalized = probe.fillStyle;
-          const canvas = document.querySelector(".map-wrap canvas");
+          const canvas = document.querySelector(".map-wrap canvas[role=img]");
           const pixels = canvas
             .getContext("2d")
             .getImageData(0, 0, canvas.width, canvas.height).data;
@@ -606,13 +606,13 @@ export async function invoke(command:string,args:any={}) {
         check.steps.push(
           "clear highlight; scroll keeps footer and tabs visible",
         );
-        await page.locator(".map-wrap canvas").scrollIntoViewIfNeeded();
+        await page.locator(".map-wrap canvas[role=img]").scrollIntoViewIfNeeded();
         const mediaPoint = await page.evaluate(() => {
           const shape = window.__mapPaint.shapes.find((s) => s.id === 1);
           if (!shape?.headerHeight)
             throw new Error("Expected a visible Media folder label band");
           const canvas = document
-            .querySelector(".map-wrap canvas")
+            .querySelector(".map-wrap canvas[role=img]")
             .getBoundingClientRect();
           return {
             x: canvas.left + shape.x + shape.width / 2,

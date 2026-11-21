@@ -174,7 +174,11 @@ impl Candidate {
                 .iter()
                 .map(|g| (g.path.clone(), g.identity.clone()))
                 .collect(),
-            volume: self.volume.clone(),
+            // Only the item's volume is recorded: it is the root's when both were on one device (a folder scan can
+            // cross a mount). Otherwise the root's volume is unknown and its checks stay strict.
+            volume: (self.root.identity.device == self.item.identity.device)
+                .then(|| self.volume.clone())
+                .flatten(),
         }
     }
     fn valid(&self) -> bool {
@@ -701,6 +705,16 @@ pub(crate) fn statuses(
             matches
         };
         let root_identity = snapshot.node(0).map(|n| Identity::of(&n));
+        // The scan's root as the record has it, once a disk that was plugged in again is read under its new number.
+        let root_changed = |c: &Candidate| {
+            let Some(now) = &root_identity else {
+                return true;
+            };
+            let saved = c
+                .root_checked()
+                .renumbered(safety::recorded_volume(scan, 0).as_ref(), now.device);
+            saved.identity != *now || scan.root_ancestors != saved.ancestors
+        };
         for (c, exact) in entries {
             let found = matches.get(c.item.path.as_path()).copied();
             let (status, reason, node_id) = if !exact {
@@ -716,9 +730,7 @@ pub(crate) fn statuses(
                         status => status,
                     },
                 }
-            } else if root_identity.as_ref() != Some(&c.root.identity)
-                || scan.root_ancestors != c.root_checked().ancestors
-            {
+            } else if root_changed(c) {
                 ("changed", Some("Original scan location or its ancestors changed. Remove this entry and deliberately add it again.".into()), None)
             } else if let Some(id) = found {
                 item_status(scan, c, id, home, mounts)
@@ -753,15 +765,32 @@ fn item_status(
     home: Option<&Path>,
     mounts: &[PathBuf],
 ) -> (&'static str, Option<String>, Option<u32>) {
-    match safety::checked_item(scan, id) {
+    let current = match safety::checked_item(scan, id) {
+        Ok(current) => current,
+        Err(error) => return ("blocked", Some(error), None),
+    };
+    // An entry without a recorded volume (queued by an older version) fails closed here.
+    if c.volume.is_none() || current.volume != c.volume {
+        return ("changed", Some("This entry's volume was replaced, or the entry was queued by an older version. Remove it and deliberately add it again.".into()), None);
+    }
+    // The same volume plugged in again may have a new device number: the record is read under it, and the inode,
+    // kind and birth time must still match. The path checks below use that record too.
+    let saved = c
+        .checked()
+        .renumbered(current.volume.as_ref(), current.identity.device);
+    if current.identity != saved.identity || current.ancestors != saved.ancestors {
+        return (
+            "changed",
+            Some(
+                "Item or its ancestors changed. Remove this entry and deliberately add it again."
+                    .into(),
+            ),
+            None,
+        );
+    }
+    match safety::verify_paths(&saved, &scan.snapshot.root, home, mounts) {
+        Ok(()) => ("ready", None, Some(id)),
         Err(error) => ("blocked", Some(error), None),
-        // An entry without a recorded volume (queued by an older version) fails closed here.
-        Ok(current) if c.volume.is_none() || current.volume != c.volume => ("changed", Some("This entry's volume was replaced, or the entry was queued by an older version. Remove it and deliberately add it again.".into()), None),
-        Ok(current) if current.identity != c.item.identity || current.ancestors != c.checked().ancestors => ("changed", Some("Item or its ancestors changed. Remove this entry and deliberately add it again.".into()), None),
-        Ok(_) => match safety::verify_paths(&c.checked(), &scan.snapshot.root, home, mounts) {
-            Ok(()) => ("ready", None, Some(id)),
-            Err(error) => ("blocked", Some(error), None),
-        },
     }
 }
 

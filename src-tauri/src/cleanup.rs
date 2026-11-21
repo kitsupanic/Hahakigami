@@ -165,11 +165,17 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
     }
 }
 /// Whether an entry of `queue` is the reviewed item's path and volume but another file: one that reuses its device
-/// and inode (FAT) has another birth time. An entry on another volume is another place.
+/// and inode (FAT) has another birth time. An entry on another volume is another place. A disk plugged in again can
+/// have a new device number (`CheckedItem::renumbered`): the same UUID, inode, kind and birth time are still the item.
 fn replaced_since_queued(queue: &Queue, items: &[safety::CheckedItem]) -> bool {
     items.iter().any(|item| {
         queue.entries.iter().any(|c| {
-            c.item.path == item.path && c.volume == item.volume && c.item.identity != item.identity
+            c.item.path == item.path
+                && c.volume == item.volume
+                && c.checked()
+                    .renumbered(item.volume.as_ref(), item.identity.device)
+                    .identity
+                    != item.identity
         })
     })
 }
@@ -220,8 +226,25 @@ pub(crate) fn commit(
 ) -> Result<TrashResult, String> {
     commit_on(s, queue, token, queued, others, Host::read, trash)
 }
+/// A refusal the frontend tells apart from "could not be confirmed": the commit stopped before the first Trash call.
+pub(crate) fn nothing_moved(error: String) -> String {
+    format!("Nothing was moved: {error}")
+}
 /// `commit` with the home folder and mounts from `host`, read once the ticket is spent and the disk checks begin.
+/// Every error it returns comes before the first Trash call (`execute` ends in `Ok`, failures inside it are
+/// outcomes), so each starts with `nothing_moved`'s prefix, once, here.
 pub(crate) fn commit_on(
+    s: &Session,
+    queue: &Mutex<Queue>,
+    token: &str,
+    queued: bool,
+    others: &[Arc<Session>],
+    host: impl FnOnce() -> Result<Host, String>,
+    trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
+) -> Result<TrashResult, String> {
+    spend(s, queue, token, queued, others, host, trash).map_err(nothing_moved)
+}
+fn spend(
     s: &Session,
     queue: &Mutex<Queue>,
     token: &str,
@@ -701,7 +724,11 @@ mod tests {
             let refused = commit_on(&s, &queue, &token, false, &[], host(home, mounts), |i| {
                 trash.trash(i)
             });
-            assert_eq!(refused.err().as_deref(), Some(PROTECTED), "{case}");
+            assert_eq!(
+                refused.err(),
+                Some(format!("Nothing was moved: {PROTECTED}")),
+                "{case}"
+            );
             // The whole batch is refused up front, the plain file beside the folder too.
             assert!(trash.calls.is_empty(), "{case}");
             assert!(s.is_valid(), "{case}");
@@ -825,16 +852,25 @@ mod tests {
         // A ticket of the direct review, spent on the queue's endpoint.
         let token = review(&s, Pick::Nodes(&ids)).unwrap().token;
         let refused = commit(&s, &queue, &token, true, &[], |i| trash.trash(i));
-        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        assert_eq!(
+            refused.err(),
+            Some(format!("Nothing was moved: {QUEUE_CHANGED}"))
+        );
         // A ticket of the queue's review, spent on the direct endpoint.
         let token = review(&s, Pick::Queue(&queue, &scans)).unwrap().token;
         let refused = commit(&s, &queue, &token, false, &[], |i| trash.trash(i));
-        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        assert_eq!(
+            refused.err(),
+            Some(format!("Nothing was moved: {QUEUE_CHANGED}"))
+        );
         // A queue that turned unreadable after its review.
         let token = review(&s, Pick::Queue(&queue, &scans)).unwrap().token;
         queue.lock().unwrap().blocked = true;
         let refused = commit(&s, &queue, &token, true, &[], |i| trash.trash(i));
-        assert_eq!(refused.err().as_deref(), Some(QUEUE_CHANGED));
+        assert_eq!(
+            refused.err(),
+            Some(format!("Nothing was moved: {QUEUE_CHANGED}"))
+        );
         queue.lock().unwrap().blocked = false;
         assert!(trash.calls.is_empty());
         assert!(s.is_valid());

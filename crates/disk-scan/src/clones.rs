@@ -1171,11 +1171,7 @@ mod native {
             let current = alias_claims.get(n.id);
             if let Some((first, m)) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
                 let prior = s.node(*first).unwrap();
-                if current != Some(*m)
-                    || n.length != prior.length
-                    || n.own_allocated_size != prior.own_allocated_size
-                    || (n.id != *first && (!n.hard_link || !prior.hard_link))
-                {
+                if !super::accounting::alias_consistent(&n, current, &prior, Some(*m)) {
                     conflicting.insert((n.identity.device, m.clone_id));
                     if let Some(current) = current {
                         conflicting.insert((n.identity.device, current.clone_id));

@@ -205,10 +205,11 @@ impl Baselines {
     ) -> (Start, Option<Ticket<'a>>) {
         let root = request.root;
         let started_at_ms = request.started_at_ms;
-        let configured = self
+        let holds_cache = self
             .lock()
             .as_ref()
-            .is_some_and(|c| !storage_inside(c.storage(), root.path()));
+            .map(|c| storage_inside(c.storage(), root.path()));
+        let configured = holds_cache == Some(false);
         let history = if configured && root.path() != Path::new("/") {
             journal.history(root)
         } else {
@@ -228,12 +229,15 @@ impl Baselines {
         });
         started();
         let Some((token, history)) = start else {
-            return (
-                Start::Full(
-                    "This location requires a full scan or event history is unavailable".into(),
-                ),
-                None,
-            );
+            // Not dropping the cache's own events instead: the cache's size, and its folders' totals up
+            // the tree, would go stale by up to the 512 MB cap, and the spelling the journal and the
+            // scan use for the same path can differ, so a miss would hide a real change.
+            let reason = if holds_cache == Some(true) {
+                "This location contains Hahakigami's rescan cache, so it is always scanned in full"
+            } else {
+                "This location requires a full scan or event history is unavailable"
+            };
+            return (Start::Full(reason.into()), None);
         };
         let (start, prior) = self.choose(journal, request, &token, &history);
         let mut token = token;
@@ -525,6 +529,8 @@ mod tests {
 
     const EPOCH: &str = "boot:journal";
     const NO_HISTORY: &str = "This location requires a full scan or event history is unavailable";
+    const HOLDS_CACHE: &str =
+        "This location contains Hahakigami's rescan cache, so it is always scanned in full";
     const NOT_CACHED: &str = "No compatible recent clean scan is cached";
     const UNAVAILABLE: &str = "Rescan cache unavailable: ";
 
@@ -868,7 +874,7 @@ mod tests {
         rig.journal.set_cursor(Some(10));
         rig.baselines.configure(tree.root.join(".cache"));
         let (start, ticket) = rig.acquire(&root, None, t);
-        assert_eq!(full(start), NO_HISTORY);
+        assert_eq!(full(start), HOLDS_CACHE);
         assert!(ticket.is_none());
         // No cache at all: the journal is not even asked.
         rig.baselines = Baselines::default();

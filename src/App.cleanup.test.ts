@@ -507,6 +507,32 @@ it("rescans after a failed Trash that still invalidated the scan", async () => {
     mock.invoke.mock.calls.filter(([c]) => c === "start_scan"),
   ).toHaveLength(2);
 });
+it.each([
+  ["Nothing was moved: The review expired.", "No items moved to Trash", false],
+  ["Disk read failed.", "Cleanup result unconfirmed", true],
+])("reports a commit error %j as %s", async (reason, title, unconfirmed) => {
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command, args) => {
+    if (command === "prepare_cleanup_queue")
+      return { token: "ticket", items: [file] };
+    if (command === "commit_cleanup_queue") throw reason;
+    return original(command, args);
+  });
+  await click("Scan location");
+  await click("Cleanup queue · 1");
+  await click("Review 1 ready");
+  await click("Move to Trash");
+  await flush();
+  await flush();
+  const text = container.querySelector(".cleanup-modal")!.textContent!;
+  expect(text).toContain(title);
+  expect(text).toContain(
+    unconfirmed
+      ? `Cleanup could not be confirmed. ${reason} Check the items in Finder`
+      : reason,
+  );
+  expect(text).not.toContain(unconfirmed ? "Nothing was moved" : "could not be confirmed");
+});
 it("opens the cleanup result as a modal that traps focus, closes with Done or Escape and returns focus", async () => {
   let trashed = 0;
   const original = mock.invoke.getMockImplementation()!;

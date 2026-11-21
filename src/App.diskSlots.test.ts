@@ -382,6 +382,26 @@ it("keeps a still-mounted disk's scan when that disk fails to register on a refr
   expect(app().summary?.scanId).toBe("scan-backup-2");
 });
 
+it("shows a toast when a scan start is refused after another scan took the view", async () => {
+  let refuse!: (error: Error) => void;
+  const refused = new Promise<void>((_, reject) => (refuse = reject));
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "start_scan" && args.targetId === "backup") await refused;
+    return standard(command, args);
+  });
+  void app().start(backup);
+  await settle();
+  await act(() => app().start(disk));
+  await settle();
+  refuse(new Error("Disk is busy"));
+  await settle();
+  expect(container.textContent).toContain(
+    "Couldn’t scan Backup: Error: Disk is busy",
+  );
+  expect(app().error).toBeFalsy();
+});
+
 it("does not discard anything when a disk with no scan is ejected", async () => {
   await scanDisk("Macintosh HD");
   mounted = ["/"];
