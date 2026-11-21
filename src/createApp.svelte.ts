@@ -1084,9 +1084,9 @@ export default function createApp() {
     selection.map((node) => node.id).join(","),
   );
   $effect(() => {
-    [scanIdentity, revision, selectionIdentity];
+    [scanIdentity, revision, selectionIdentity, exploring];
     return untrack(() => {
-      if (!summary || !selection.length) return;
+      if (!summary || !selection.length || !exploring) return;
       const scanId = summary.scanId,
         version = revision,
         ids = selectionIdentity;
@@ -1142,9 +1142,9 @@ export default function createApp() {
       : revision,
   );
   $effect(() => {
-    [scanIdentity, mapRevision, focusIdentity, mapColorMode];
+    [scanIdentity, mapRevision, focusIdentity, mapColorMode, exploring];
     return untrack(() => {
-      if (!summary || !focus) return;
+      if (!summary || !focus || !exploring) return;
       let ignore = false;
       const mapRequest = ++performanceMapQueryEpoch;
       if (performanceBuild) performanceMapQueryPending = true;
@@ -1217,10 +1217,11 @@ export default function createApp() {
       sort,
       sortReady,
       navigationRevision,
+      exploring,
     ];
     return untrack(() => {
       const request = ++listRequest.current;
-      if (!summary || !focus || !sortReady) return;
+      if (!summary || !focus || !sortReady || !exploring) return;
       listLoading = true;
       // Preserve valid rows during background scan revisions; user changes
       // synchronously clear rows through invalidateList before requesting again.

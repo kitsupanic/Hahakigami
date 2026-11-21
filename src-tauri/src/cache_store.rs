@@ -28,7 +28,6 @@ pub(crate) struct Row {
     pub started_at_ms: u64,
     // Last write or refresh: the recency order.
     pub used_at_ms: u64,
-    pub file_bytes: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ScanMetadata {
@@ -224,7 +223,6 @@ impl Store {
             id: id.clone(),
             started_at_ms: m.started_at_ms,
             used_at_ms: crate::now_ms(),
-            file_bytes: open(&archive).map_err(err)?.metadata().map_err(err)?.len(),
         };
         if let Err(e) = self.write_json(&self.path(&id, "json")?, &row) {
             let _ = fs::remove_file(archive);
@@ -689,7 +687,6 @@ mod tests {
         let (_d, l, s, m) = fixture();
         let row = l.save(&s, &m).unwrap();
         let size = fs::metadata(l.path(&row.id, "zst").unwrap()).unwrap().len();
-        assert_eq!(size, row.file_bytes);
         let files = || fs::read_dir(&l.root).unwrap().count();
         // The first save's archive and row: the refused save adds no temp file.
         assert_eq!(files(), 2);
@@ -697,8 +694,7 @@ mod tests {
         assert!(error.contains("storage budget"), "{error}");
         assert_eq!(files(), 2);
         // An archive of exactly the limit fits.
-        let fits = l.with_file_limit(size).save(&s, &m).unwrap();
-        assert_eq!(fits.file_bytes, size);
+        l.with_file_limit(size).save(&s, &m).unwrap();
     }
     #[test]
     fn invalid_snapshots_and_tampered_records_are_rejected() {
@@ -736,7 +732,7 @@ mod tests {
         let row = l.save(&s, &m).unwrap();
         let json = format!(
             r#"{{"id":"{}","name":"n","rootPath":"/r","startedAtMs":{},"completedAtMs":2,"usedAtMs":{},"entries":3,"allocatedBytes":4,"incomplete":false,"errors":0,"excluded":0,"fileBytes":{}}}"#,
-            row.id, row.started_at_ms, row.used_at_ms, row.file_bytes
+            row.id, row.started_at_ms, row.used_at_ms, 5
         );
         fs::write(l.path(&row.id, "json").unwrap(), json).unwrap();
         assert_eq!(l.list().unwrap()[0].id, row.id);

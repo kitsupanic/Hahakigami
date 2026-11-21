@@ -138,7 +138,7 @@
       return app.map;
     },
     get enabled() {
-      return listView === "fileTypes";
+      return app.can.explore && listView === "fileTypes";
     },
   });
   function showListView(view: "files" | "fileTypes") {

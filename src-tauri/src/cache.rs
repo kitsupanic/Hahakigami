@@ -320,10 +320,8 @@ impl Cache {
         entries.sort_by_key(|entry| entry.id != row.id);
         for entry in entries {
             let new = entry.id == row.id;
+            // The new entry is already saved: a failed size check skips it like an old one.
             let Ok(actual_bytes) = self.archive_bytes(&entry.id) else {
-                if new {
-                    return Err("Could not read the saved rescan cache".into());
-                }
                 continue;
             };
             let record = match self.read_record(&entry.id) {
@@ -488,7 +486,7 @@ mod tests {
             },
         )
         .unwrap();
-        let one = c.store.list().unwrap()[0].file_bytes;
+        let one = c.archive_bytes(&c.store.list().unwrap()[0].id).unwrap();
         c.count_limit = 5;
         // Room for three archives of this size, so the byte cap binds before the count cap.
         c.bytes_limit = one * 3 + one / 2;
@@ -707,7 +705,6 @@ mod tests {
         assert_eq!(loaded_metadata.started_at_ms, m.started_at_ms);
         let touched = c.store.list().unwrap().remove(0);
         assert_eq!(touched.started_at_ms, row.started_at_ms);
-        assert_eq!(touched.file_bytes, row.file_bytes);
         assert!(touched.used_at_ms > row.used_at_ms);
         assert!(!recent(
             &next,
