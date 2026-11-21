@@ -405,6 +405,13 @@ it("reuses the known breadcrumb chain when opening a child folder", async () => 
 it("walks to the root when the known chain does not start there", async () => {
   // A restore can leave only the focus while its own walk is pending.
   await act(() => app().setCrumbs([folder]));
+  // Folder 4 has its own (empty) contents, not the root's rows, which would list file 2 twice.
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "get_children" && args.nodeId === 4
+      ? Promise.resolve({ items: [], total: 0 })
+      : standard(command, args),
+  );
   const nested = {
     ...folder,
     id: 4,

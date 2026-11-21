@@ -390,10 +390,10 @@
     const scan = app.summary;
     if (!scan) return;
     setCancelling(true);
-    invoke("cancel_scan", { scanId: scan.scanId }).catch((e) => {
-      setCancelling(false);
-      fail(e);
-    });
+    // A scan finishing its rescan cache refuses to cancel; it ends on its own soon.
+    invoke("cancel_scan", { scanId: scan.scanId }).catch(() =>
+      setCancelling(false),
+    );
   }
   function revealInFinder() {
     const scan = app.summary;

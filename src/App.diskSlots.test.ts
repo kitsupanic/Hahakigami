@@ -712,6 +712,12 @@ it("does not let a stalled rescan take the view after the user selected another 
   expect(welcome()).not.toBeNull();
   // The hidden results are still the old scan's, not the rescan's.
   expect(app().summary?.scanId).toBe("scan-backup-1");
+  // Through the queue back to the explorer: the dead scan is not shown, the disk's live rescan is.
+  await act(() => app().showQueue(true));
+  await act(() => app().showQueue(false));
+  await settle();
+  expect(app().activeId.current).toBe("scan-backup-2");
+  expect(app().summary?.scanId ?? "scan-backup-2").toBe("scan-backup-2");
 });
 
 it("shows the new scan when a rescan's start lands after the user reopened the old scan of that disk", async () => {
