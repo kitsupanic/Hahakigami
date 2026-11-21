@@ -1869,6 +1869,7 @@ pub fn run() {
             #[cfg(not(feature = "performance-benchmark"))]
             let data = app.path().app_data_dir()?;
             app.manage(instance::acquire(&data)?);
+            cleanup::set_app_data(&data);
             #[cfg(feature = "performance-benchmark")]
             {
                 performance::install(app, benchmark_config).map_err(std::io::Error::other)?;

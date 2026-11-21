@@ -292,8 +292,8 @@ it.each(["generation", "scan", "navigation", "target"])(
       picking.resolve(folder);
       await pending;
     });
-    // Another scan taking the view must not drop the chosen folder; only a newer target wins.
-    expect(app().target?.id).toBe(context === "target" ? "newer" : folder.id);
+    // Neither another scan nor a disk refresh replacing the target may drop the chosen folder.
+    expect(app().target?.id).toBe(folder.id);
     expect(app().choosingFolder).toBe(false);
   },
 );

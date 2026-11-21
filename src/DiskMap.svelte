@@ -14,6 +14,7 @@
     countLabel,
     mapLabelColor,
     mapFontFamily,
+    percent,
     mapTileTones,
   } from "./uiFormat";
   import { createBranchPalette, neutralColor } from "./branchColors";
@@ -615,7 +616,7 @@
             typedGroup(n) ? `${fileTypeLabel(n.fileType!)} files` : n.name,
             compactBytes(n.allocatedBytes, 1),
             ...(total > 0
-              ? [`${((n.allocatedBytes / total) * 100).toFixed(1)}%`]
+              ? [percent(n.allocatedBytes, total)]
               : []),
           ];
           ctx.save();

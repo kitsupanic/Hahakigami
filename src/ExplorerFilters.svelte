@@ -68,11 +68,20 @@
   let error = $state.raw("");
   let appliedMinimum = $derived(value.minBytes);
   let appliedMaximum = $derived(value.maxBytes);
+  // A comma is the decimal point only where the locale writes one, so "1,000" never reads as 1 elsewhere.
+  const parse = (draft: string) =>
+    Number(
+      new Intl.NumberFormat()
+        .formatToParts(1.1)
+        .some((part) => part.type === "decimal" && part.value === ",")
+        ? draft.trim().replace(",", ".")
+        : draft.trim(),
+    );
   // Keep the typed text when it already converts to the applied bytes, so 1.1 does not become 1.0999….
   const shown = (draft: string, bytes: number | null) =>
     bytes === null
       ? ""
-      : draft.trim() && Math.round(Number(draft) * units[unit]) === bytes
+      : draft.trim() && Math.round(parse(draft) * units[unit]) === bytes
         ? draft
         : text(bytes);
   $effect(() => {
@@ -88,7 +97,7 @@
   function apply() {
     const convert = (text: string) => {
       if (!text.trim()) return null;
-      const number = Number(text);
+      const number = parse(text);
       const result = Math.round(number * units[unit]);
       if (
         !Number.isFinite(number) ||

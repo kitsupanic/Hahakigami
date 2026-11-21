@@ -419,7 +419,6 @@ mod native {
     }
     struct State {
         root: Root,
-        since: u64,
         collected: Mutex<Collected>,
         ready: Condvar,
         /// Set once the replay has failed, for the cache loader to stop early.
@@ -491,9 +490,10 @@ mod native {
             .ok()
             .map(|relative| root.path.join(relative))
     }
-    fn old_unrelated_mount(root: &Root, path: &Path, flags: u32, id: u64, since: u64) -> bool {
+    /// A mount or unmount event that cannot touch the scan: the mount point is neither inside the root nor a
+    /// folder above it. Whenever it happened, it changes nothing the scan holds.
+    fn unrelated_mount(root: &Root, path: &Path, flags: u32, id: u64) -> bool {
         if id == 0
-            || id > since
             || flags == 0
             || flags & !0xc0 != 0
             || !root.path.is_absolute()
@@ -552,7 +552,7 @@ mod native {
         id: u64,
         inode: Option<u64>,
     ) {
-        if old_unrelated_mount(&state.root, path, flag, id, state.since) {
+        if unrelated_mount(&state.root, path, flag, id) {
             return;
         }
         // Validate history and namespace before ignoring an out-of-scope path.
@@ -856,7 +856,6 @@ mod native {
         }
         let state = Box::new(State {
             root: Root::new(root),
-            since,
             collected: Mutex::new(Collected::default()),
             ready: Condvar::new(),
             abort: AtomicBool::new(false),
@@ -1101,7 +1100,6 @@ mod native {
             // History is done, so the flush waits on the loader; the stream then fails.
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
                     ..Collected::default()
@@ -1198,7 +1196,6 @@ mod native {
         fn replay_wait_observes_cancel_error_and_deadline() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1223,7 +1220,6 @@ mod native {
         fn replay_wait_wakes_for_marker_delivery() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
                     ..Collected::default()
@@ -1257,7 +1253,6 @@ mod native {
         fn replay_wait_gives_the_marker_a_fresh_timeout_after_a_slow_flush() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected {
                     done: true,
                     ..Collected::default()
@@ -1330,26 +1325,23 @@ mod native {
         fn paths_and_sentinel() {
             assert!(classify(&Root::new("/parent/scanned"), Path::new("/parent"), 0x800).is_err());
 
-            assert!(old_unrelated_mount(
+            assert!(unrelated_mount(
                 &Root::new("/Users/demo"),
                 Path::new("/Volumes/other"),
                 0xc0,
-                1,
-                2
+                1
             ));
-            assert!(!old_unrelated_mount(
+            assert!(!unrelated_mount(
                 &Root::new("/Users/demo"),
                 Path::new("/Users/demo/mount"),
                 0xc0,
-                1,
-                2
+                1
             ));
-            assert!(!old_unrelated_mount(
+            assert!(!unrelated_mount(
                 &Root::new("/Users/demo"),
                 Path::new("/Volumes/other"),
                 4,
-                1,
-                2
+                1
             ));
             assert_eq!(
                 mapped(
@@ -1389,7 +1381,6 @@ mod native {
         fn overlap_and_old_dropped_notices_are_preserved() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1415,10 +1406,43 @@ mod native {
             assert!(collected.error.is_some());
         }
         #[test]
+        fn an_unrelated_mount_newer_than_the_cursor_does_not_force_a_full_scan() {
+            let state = State {
+                root: Root::new("/Users/demo"),
+                collected: Mutex::new(Collected::default()),
+                ready: Condvar::new(),
+                abort: AtomicBool::new(false),
+            };
+            let mut collected = Collected::default();
+            for flag in [0x40, 0x80, 0xc0] {
+                collect_event(
+                    &state,
+                    &mut collected,
+                    Path::new("/Volumes/other"),
+                    flag,
+                    11,
+                    None,
+                );
+                assert!(collected.error.is_none(), "{flag:#x}");
+            }
+            assert!(collected.changes.paths.is_empty());
+            // A mount under the scan root, or at a folder above it, still does.
+            // Other spellings of those (case, the Data volume's firmlink prefix) too.
+            for path in [
+                "/Users/demo/mount",
+                "/Users",
+                "/users/DEMO/mnt",
+                "/System/Volumes/Data/Users",
+            ] {
+                let mut collected = Collected::default();
+                collect_event(&state, &mut collected, Path::new(path), 0xc0, 11, None);
+                assert!(collected.error.is_some(), "{path}");
+            }
+        }
+        #[test]
         fn a_file_event_without_an_inode_cannot_be_resolved_by_inode() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1438,7 +1462,6 @@ mod native {
         fn events_elsewhere_on_the_volume_do_not_use_up_the_event_limit() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1483,7 +1506,6 @@ mod native {
                 .unwrap();
             let state = State {
                 root: Root::new(snapshot.root.clone()),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1540,7 +1562,6 @@ mod native {
                 .inode;
             let state = State {
                 root: Root::new(snapshot.root.clone()),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1582,7 +1603,6 @@ mod native {
         fn directory_metadata_invalidates_listings_but_namespace_changes_stay_broad() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),
@@ -1627,7 +1647,6 @@ mod native {
         fn shared_event_identity_and_history_guards() {
             let state = State {
                 root: Root::new("/private/tmp/root"),
-                since: 10,
                 collected: Mutex::new(Collected::default()),
                 ready: Condvar::new(),
                 abort: AtomicBool::new(false),

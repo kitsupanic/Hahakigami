@@ -40,6 +40,8 @@ pub(crate) struct Store {
     root: PathBuf,
     node_limit: usize,
     byte_limit: u64,
+    // Compressed bytes one archive may take: `save` stops writing once it would pass this.
+    file_limit: u64,
 }
 pub(crate) fn err(e: impl fmt::Display) -> String {
     e.to_string()
@@ -99,6 +101,14 @@ impl Store {
             root,
             node_limit: MAX_NODES,
             byte_limit: MAX_CACHE_BYTES,
+            file_limit: u64::MAX,
+        }
+    }
+    /// This store, but `save` fails, before it syncs or publishes anything, once the archive passes `limit` bytes.
+    pub fn with_file_limit(&self, limit: u64) -> Self {
+        Self {
+            file_limit: limit,
+            ..self.clone()
         }
     }
     fn prepare(&self) -> Result<(), String> {
@@ -181,8 +191,14 @@ impl Store {
                 parallel,
                 || validate(s, self.node_limit),
                 || {
+                    let file = LimitedWriter {
+                        inner: f,
+                        count: 0,
+                        limit: self.file_limit,
+                        error: "Rescan cache exceeds its storage budget",
+                    };
                     let mut encoder = zstd::stream::write::Encoder::new(
-                        BufWriter::new(f),
+                        BufWriter::new(file),
                         CACHE_COMPRESSION_LEVEL,
                     )
                     .map_err(err)?;
@@ -191,6 +207,7 @@ impl Store {
                         inner: &mut encoder,
                         count: 0,
                         limit: self.byte_limit,
+                        error: "Cache exceeds decoded byte limit",
                     };
                     let mut buffered =
                         BufWriter::with_capacity(crate::cache_codec::WRITE_BATCH, limited);
@@ -199,7 +216,7 @@ impl Store {
                     drop(buffered);
                     let mut writer = encoder.finish().map_err(err)?;
                     writer.flush().map_err(err)?;
-                    writer.get_ref().sync_all().map_err(err)
+                    writer.get_ref().inner.sync_all().map_err(err)
                 },
             )
         })?; // Warning dropped as in `write_json`.
@@ -285,11 +302,12 @@ struct LimitedWriter<W> {
     inner: W,
     count: u64,
     limit: u64,
+    error: &'static str,
 }
 impl<W: Write> Write for LimitedWriter<W> {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
         if b.len() as u64 > self.limit - self.count {
-            return Err(io::Error::other("Cache exceeds decoded byte limit"));
+            return Err(io::Error::other(self.error));
         }
         let n = self.inner.write(b)?;
         self.count += n as u64;
@@ -665,6 +683,22 @@ mod tests {
         limited.byte_limit += 1;
         let row = limited.save(&s, &m).unwrap();
         assert!(limited.load(&row.id).is_ok());
+    }
+    #[test]
+    fn an_archive_over_the_file_limit_stops_being_written_and_leaves_nothing() {
+        let (_d, l, s, m) = fixture();
+        let row = l.save(&s, &m).unwrap();
+        let size = fs::metadata(l.path(&row.id, "zst").unwrap()).unwrap().len();
+        assert_eq!(size, row.file_bytes);
+        let files = || fs::read_dir(&l.root).unwrap().count();
+        // The first save's archive and row: the refused save adds no temp file.
+        assert_eq!(files(), 2);
+        let error = l.with_file_limit(size - 1).save(&s, &m).unwrap_err();
+        assert!(error.contains("storage budget"), "{error}");
+        assert_eq!(files(), 2);
+        // An archive of exactly the limit fits.
+        let fits = l.with_file_limit(size).save(&s, &m).unwrap();
+        assert_eq!(fits.file_bytes, size);
     }
     #[test]
     fn invalid_snapshots_and_tampered_records_are_rejected() {

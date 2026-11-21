@@ -9,6 +9,14 @@ export function compactBytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
   return bytes(n, minimumFractionDigits).split(" (")[0];
 }
 
+/** A share of the whole as a localized percentage with one decimal. */
+export const percent = (part: number, whole: number) =>
+  (part / whole).toLocaleString(undefined, {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+
 /** The reported scan duration, shared by the recorded summary and diagnostics. */
 export function scanTime(ms: number) {
   // Round to tenths first so 59.96 s reads "1m 0s", not "60.0 seconds".
