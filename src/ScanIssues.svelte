@@ -125,15 +125,7 @@
       if (!stale()) copying = false;
     }
   }
-  let count = $derived(
-    kind === "other"
-      ? other
-      : kind === "restricted"
-        ? restricted
-        : kind === "errors"
-          ? summary.errors
-          : (summary.excluded ?? 0),
-  );
+  let count = $derived(kind === "other" ? other : restricted);
   const queryIssues = latestOnly();
   $effect(() => {
     scanIdentity;

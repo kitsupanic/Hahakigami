@@ -1636,13 +1636,6 @@ fn issue_pages_are_bounded_separate_and_preserve_native_reasons() {
             .unwrap();
         assert_eq!(last.offset, 100);
         assert_eq!(last.items.len(), 3);
-        let excluded = get_scan_issues(app.state(), "fixture".into(), IssueKind::Excluded, 0, 100)
-            .await
-            .unwrap();
-        assert_eq!(excluded.kind, IssueKind::Excluded);
-        assert_eq!(excluded.total, 1);
-        assert_eq!(excluded.items[0].path, "/fixture/mount");
-        assert!(excluded.items[0].raw_os_error.is_none());
         let empty = get_scan_issues(
             app.state(),
             "fixture".into(),
@@ -1677,11 +1670,12 @@ fn issue_pages_reject_stale_or_invalidated_sessions() {
         );
         s.invalidate();
         assert!(
-            get_scan_issues(app.state(), "fixture".into(), IssueKind::Excluded, 0, 100)
+            get_scan_issues(app.state(), "fixture".into(), IssueKind::Errors, 0, 100)
                 .await
                 .is_err()
         );
         assert!(serde_json::from_str::<IssueKind>("\"filesystemPath\"").is_err());
+        assert!(serde_json::from_str::<IssueKind>("\"excluded\"").is_err());
     });
 }
 

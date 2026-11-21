@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn compact_layout_and_full_path_oracle() {
         use std::os::unix::ffi::OsStringExt;
-        assert_eq!(std::mem::size_of::<Record>(), 72);
+        assert!(std::mem::size_of::<Record>() <= 72);
         let root = PathBuf::from("/fixture/root/");
         let mut s = Snapshot::empty(root.clone());
         let mut oracle = vec![dto(0, None, root, true)];

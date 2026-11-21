@@ -12,24 +12,6 @@ pub struct IncrementalSeed {
     /// hard link dirty.
     pub aliases_resolved: bool,
 }
-/// Requested vector capacities and hash-table payload estimates for reuse scratch.
-/// These per-category samples are not an aggregate concurrent or process-memory peak.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct ReuseStorageStats {
-    pub seed_snapshot_retained_capacity_bytes: usize,
-    pub directory_index_payload_capacity_bytes: usize,
-    pub scheduling_index_payload_capacity_bytes: usize,
-    pub known_hardlinks_payload_capacity_bytes: usize,
-    pub root_child_ids_capacity_bytes: usize,
-    pub root_lookup_payload_capacity_bytes: usize,
-    pub root_seen_payload_capacity_bytes: usize,
-    pub preparation_workload_capacity_bytes: usize,
-    pub preparation_path_cursor_capacity_bytes: usize,
-    pub preparation_marks_payload_capacity_bytes: usize,
-    pub preparation_touched_payload_capacity_bytes: usize,
-    pub largest_materialized_listing_capacity_bytes: usize,
-    pub estimation_notes: &'static str,
-}
 #[derive(Debug, Default, Serialize)]
 pub struct ReuseStats {
     pub reused_entries: u64,
@@ -38,7 +20,6 @@ pub struct ReuseStats {
     /// Exact metadata equivalence: no dirty history, all descendant listings
     /// reused, and the freshly enumerated root listing and totals match.
     pub unchanged_metadata: bool,
-    pub storage: Option<ReuseStorageStats>,
 }
 pub(crate) struct CachedListing {
     seed: Arc<Snapshot>,
@@ -177,23 +158,31 @@ impl Reuse {
         // or a cached entry spelled differently (case-insensitive or Unicode-equivalent names), whose cached
         // listing would hide the change. C is the first unmatched component below the nearest cached ancestor
         // M. A new directory has no cached listing and M's is dirty already. A child of M that C matches
-        // case-insensitively is dirtied whole. The loop below spreads either to descendants, whose hard
-        // links `touched` never sees, so dirtying any child makes every cached alias dirty, resolved
-        // aliases or not.
+        // case-insensitively, or as an NFC/NFD twin, is dirtied whole. The loop below spreads either to
+        // descendants, whose hard links `touched` never sees, so dirtying any child makes every cached
+        // alias dirty, resolved aliases or not.
+        let nfd = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
         let fold = |name: &std::ffi::OsStr| match name.to_str() {
-            Some(name) => name.to_lowercase().into_bytes(),
+            Some(name) if name.is_ascii() => name.to_ascii_lowercase().into_bytes(),
+            // Per character, without context: `str::to_lowercase` turns a final Σ into ς but leaves a typed σ,
+            // and keeps ϐ apart from β, while APFS folds each pair together. Over-matching only dirties more.
+            Some(name) => nfd
+                .normalize(name)
+                .chars()
+                .flat_map(char::to_uppercase)
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+                .into_bytes(),
             None => name.as_encoded_bytes().to_ascii_lowercase(),
         };
         let mut children_by_fold: HashMap<u32, HashMap<Vec<u8>, Vec<u32>>> = HashMap::new();
-        // Ancestors whose non-ASCII children were already dirtied: any unmatched non-ASCII name widens to the same set.
-        let mut widened_non_ascii = HashSet::new();
         for (path, mark) in marks.iter().filter(|(_, m)| m.requested) {
             let parent = path
                 .parent()
                 .and_then(|parent| marks.get(parent))
                 .map(|m| m.node);
             let parent_unmatched = parent == Some(None);
-            // Cached parent, unmatched last component: C is that component, matchable only by a case-insensitive twin.
+            // Cached parent, unmatched last component: C is that component, matchable only by a case-insensitive or NFC/NFD twin.
             let last_unmatched = mark.node.is_none() && parent.is_some_and(|node| node.is_some());
             let cached = path
                 .ancestors()
@@ -203,7 +192,6 @@ impl Reuse {
                 continue;
             };
             let widen = [id];
-            let non_ascii: Vec<u32>;
             let dirty: &[u32] = match path.strip_prefix(ancestor).unwrap().components().next() {
                 Some(std::path::Component::Normal(name)) => {
                     let index = children_by_fold.entry(id).or_insert_with(|| {
@@ -220,21 +208,7 @@ impl Reuse {
                     });
                     match index.get(&fold(name)) {
                         Some(variants) => variants,
-                        // shortcut: an NFC/NFD-different last component under a cached parent is not dirtied, as widening
-                        // would re-read every non-ASCII sibling per new non-ASCII folder; upgrade with a normalization crate.
-                        None if name.is_ascii() || last_unmatched => &[],
-                        // shortcut: no normalization crate to tell NFC from NFD, so every non-ASCII child
-                        // may be the one spelled differently (both forms of a non-ASCII name stay non-ASCII,
-                        // bar a few singletons such as U+037E); compare normalized names once one is a dependency.
-                        None if !widened_non_ascii.insert(id) => continue,
-                        None => {
-                            non_ascii = index
-                                .iter()
-                                .filter(|(folded, _)| !folded.is_ascii())
-                                .flat_map(|(_, children)| children.iter().copied())
-                                .collect();
-                            &non_ascii
-                        }
+                        None => &[],
                     }
                 }
                 _ => &widen,
@@ -244,9 +218,6 @@ impl Reuse {
                 ambiguous_alias_history = true;
             }
         }
-        let preparation_marks_payload_capacity_bytes = marks.capacity()
-            * std::mem::size_of::<(PathBuf, DirtyMark)>()
-            + marks.keys().map(|p| p.capacity()).sum::<usize>();
         drop(marks);
         for node in seed.snapshot.iter_nodes() {
             let index = node.id as usize;
@@ -307,10 +278,6 @@ impl Reuse {
                 })
                 .collect(),
         });
-        let preparation_workload_capacity_bytes = subtree_dirty.capacity()
-            + listing_dirty.capacity()
-            + direct_listing_dirty.capacity()
-            + costs.capacity() * std::mem::size_of::<u64>();
         drop(costs);
         let listings: HashMap<(u64, u64), (u32, bool)> = seed
             .snapshot
@@ -332,28 +299,12 @@ impl Reuse {
                 )
             })
             .collect();
-        let storage=ReuseStorageStats {
-            seed_snapshot_retained_capacity_bytes: crate::storage::buffer_stats(&seed.snapshot).retained_capacity_bytes,
-            directory_index_payload_capacity_bytes: listings.capacity()*std::mem::size_of::<((u64,u64),(u32,bool))>(),
-            scheduling_index_payload_capacity_bytes: priorities.costs.capacity()*std::mem::size_of::<((u64,u64),(u32,u64))>(),
-            known_hardlinks_payload_capacity_bytes: known_hardlinks.capacity()*std::mem::size_of::<(u64,u64)>(),
-            root_child_ids_capacity_bytes: root_listing.capacity()*std::mem::size_of::<u32>(),
-            preparation_workload_capacity_bytes,
-            preparation_path_cursor_capacity_bytes:path_cursor.capacity_bytes(),
-            preparation_marks_payload_capacity_bytes,
-            preparation_touched_payload_capacity_bytes: touched.capacity()*std::mem::size_of::<(u64,u64)>(),
-            estimation_notes: "Vector capacities are requested buffer bytes. Hash-table capacities estimate key/value payload (plus owned path buffers for preparation marks), excluding control bytes, allocator headers and fragmentation. Preparation categories are separately sampled; largest materialized listing is one listing's entry buffer (names too long to store inline are excluded), not concurrent or process peak memory. Caller queries and earlier seed-validation scratch are excluded.",
-            ..Default::default()
-        };
         let seed = seed.snapshot;
         Self {
             priorities,
             listings,
             seed,
-            stats: ReuseStats {
-                storage: Some(storage),
-                ..Default::default()
-            },
+            stats: ReuseStats::default(),
             reused_directories: 0,
             new_hardlink: false,
             known_hardlinks,
@@ -377,11 +328,6 @@ impl Reuse {
             .iter()
             .map(|id| (self.seed.native_name(*id).unwrap(), *id))
             .collect();
-        if let Some(storage) = self.stats.storage.as_mut() {
-            storage.root_lookup_payload_capacity_bytes =
-                index.capacity() * std::mem::size_of::<(&std::ffi::OsStr, u32)>();
-        }
-        let mut root_seen_capacity = 0usize;
         self.unchanged_possible = listing.as_ref().is_ok_and(|entries| {
             let mut seen = HashSet::new();
             let unchanged = entries.len() == self.root_listing.len()
@@ -402,12 +348,8 @@ impl Reuse {
                                 })
                     })
                 });
-            root_seen_capacity = seen.capacity() * std::mem::size_of::<&Path>();
             unchanged
         });
-        if let Some(storage) = self.stats.storage.as_mut() {
-            storage.root_seen_payload_capacity_bytes = root_seen_capacity;
-        }
     }
     /// Removes the candidate under the shared lock; it must pass `CachedListing::verified` before use.
     /// A candidate that fails stays removed, as before: the directory is simply read fresh.
@@ -423,14 +365,9 @@ impl Reuse {
     fn take_checked(&mut self, path: &Path, expected: &Identity) -> Option<CachedListing> {
         self.take_listing(expected)?.verified(path, expected)
     }
-    pub(crate) fn mark_reused(&mut self, entries: usize, listing_capacity: usize) {
+    pub(crate) fn mark_reused(&mut self, entries: usize) {
         self.reused_directories += 1;
         self.stats.reused_entries += entries as u64;
-        if let Some(storage) = self.stats.storage.as_mut() {
-            storage.largest_materialized_listing_capacity_bytes = storage
-                .largest_materialized_listing_capacity_bytes
-                .max(listing_capacity);
-        }
     }
 }
 fn valid_seed(snapshot: &Snapshot) -> bool {
@@ -640,14 +577,12 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
         } else {
             "sharing or unresolved accounting requires a full scan"
         };
-        let storage = reuse.stats.storage.take();
         drop(reuse);
         on_workers(base_workers);
         outcome = scan_live_authorized(retry_root, options, cancel, candidate.clone(), report);
         ReuseStats {
             rescanned_directories: candidate.read().unwrap().worker_directories(),
             fallback_reason: Some(reason.into()),
-            storage,
             ..Default::default()
         }
     } else {
@@ -696,14 +631,9 @@ impl CachedListing {
         (self.seed.node(self.id)?.identity == *expected && self.seed.path(self.id).ok()? == path)
             .then_some(self)
     }
-    #[cfg(test)]
-    pub(crate) fn materialize(self) -> Vec<std::io::Result<Entry>> {
-        self.materialize_with_storage().0
-    }
     /// Entries carry bare basenames like a fresh bulk listing; the worker joins the listing directory.
-    pub(crate) fn materialize_with_storage(self) -> (Vec<std::io::Result<Entry>>, usize) {
-        let entries: Vec<_> = self
-            .seed
+    pub(crate) fn materialize(self) -> Vec<std::io::Result<Entry>> {
+        self.seed
             .children(self.id)
             .unwrap()
             .iter()
@@ -723,9 +653,7 @@ impl CachedListing {
                     })
                     .map_err(std::io::Error::other)
             })
-            .collect();
-        let capacity = entries.capacity() * std::mem::size_of::<std::io::Result<Entry>>();
-        (entries, capacity)
+            .collect()
     }
 }
 #[cfg(all(test, unix))]
@@ -946,14 +874,14 @@ mod tests {
             reusable(&["Build/out/new.bin"], &[]),
             [false, false, false, false, true]
         );
-        // A non-ASCII name no child matches may be an NFD spelling of a non-ASCII child: only those are dirtied.
+        // An NFD spelling of the cached NFC child dirties it; a non-ASCII name no child matches is new.
         assert_eq!(
             reusable(&["build/cafe\u{301}/new.bin"], &[]),
             [false, true, true, false, true]
         );
         assert_eq!(
             reusable(&["build/\u{65b0}/a"], &[]),
-            [false, true, true, false, true]
+            [false, true, true, true, true]
         );
         // A new directory is walked fresh, never taken from a cached listing.
         fs::create_dir_all(f.0.join("build/new/sub")).unwrap();
@@ -964,7 +892,40 @@ mod tests {
         compare(&actual, &f.full());
     }
     #[test]
-    fn many_events_under_one_new_non_ascii_folder_widen_the_siblings_once() {
+    fn an_nfc_event_dirties_only_the_nfd_cached_child_it_spells() {
+        let f = Fixture::new();
+        for dir in [
+            "build/cafe\u{301}",
+            "build/\u{65b0}",
+            "build/\u{39f}\u{394}\u{39f}\u{3a3}",
+            "build/beta_\u{3d0}",
+        ] {
+            fs::create_dir_all(f.0.join(dir)).unwrap();
+            fs::write(f.0.join(dir).join("kept"), b"cached").unwrap();
+        }
+        // NFC for NFD, a typed σ for a final Σ, and β for its variant ϐ: each spells the cached folder.
+        let reuse = Reuse::new(IncrementalSeed {
+            snapshot: Arc::new(f.full()),
+            dirty_paths: vec![
+                f.0.join("build/caf\u{e9}/new.bin"),
+                f.0.join("build/\u{3bf}\u{3b4}\u{3bf}\u{3c3}/new.bin"),
+                f.0.join("build/beta_\u{3b2}/new.bin"),
+            ],
+            dirty_directories: vec![],
+            aliases_resolved: false,
+        });
+        let cached = listing_paths(&reuse);
+        for dirty in [
+            "build/cafe\u{301}",
+            "build/\u{39f}\u{394}\u{39f}\u{3a3}",
+            "build/beta_\u{3d0}",
+        ] {
+            assert!(!cached.contains_key(&f.0.join(dirty)), "{dirty}");
+        }
+        assert!(cached.contains_key(&f.0.join("build/\u{65b0}")));
+    }
+    #[test]
+    fn many_events_under_one_new_non_ascii_folder_do_not_scan_the_siblings() {
         // A wide folder of non-ASCII children and an event burst under one new non-ASCII name.
         let f = Fixture::new();
         let mut snapshot = f.full();
@@ -1005,7 +966,7 @@ mod tests {
         let (one, _) = listings(1);
         let (many, elapsed) = listings(wide);
         assert_eq!(many, one);
-        // Every event used to rebuild the whole non-ASCII sibling list: seconds, not milliseconds.
+        // Each event is one indexed lookup; a per-event sibling scan would take seconds.
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
     impl Drop for Fixture {
@@ -1551,33 +1512,11 @@ mod tests {
     fn unchanged_reuses_metadata_and_matches_full() {
         let f = Fixture::new();
         let seed = f.full();
-        let seed_capacity = crate::storage_stats(&seed).retained_capacity_bytes;
-        let root_child_bytes = std::mem::size_of_val(seed.children(0).unwrap());
         let (actual, stats) = f.incremental(seed, vec![]);
         compare(&actual, &f.full());
         assert!(stats.reused_entries > 0);
         assert_eq!(stats.rescanned_directories, 1);
         assert!(stats.unchanged_metadata);
-        let storage = stats.storage.unwrap();
-        assert_eq!(storage.seed_snapshot_retained_capacity_bytes, seed_capacity);
-        assert!(storage.root_child_ids_capacity_bytes >= root_child_bytes);
-        assert!(storage.directory_index_payload_capacity_bytes > 0);
-        assert!(storage.scheduling_index_payload_capacity_bytes > 0);
-        assert!(storage.root_lookup_payload_capacity_bytes > 0);
-        assert!(storage.root_seen_payload_capacity_bytes > 0);
-        assert!(storage.preparation_workload_capacity_bytes >= actual.node_count() * 11);
-        assert!(storage.preparation_marks_payload_capacity_bytes > 0);
-        assert!(
-            storage.largest_materialized_listing_capacity_bytes
-                >= std::mem::size_of::<std::io::Result<Entry>>()
-        );
-        assert!(storage
-            .estimation_notes
-            .contains("not concurrent or process peak"));
-        let serialized = serde_json::to_value(storage).unwrap();
-        assert!(serialized
-            .get("largest_materialized_listing_capacity_bytes")
-            .is_some());
     }
     #[test]
     fn reused_listings_with_long_names_match_a_fresh_scan() {

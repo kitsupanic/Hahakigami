@@ -1193,6 +1193,27 @@ it("fades a toast after about four seconds, unless hovered or focused", async ()
     );
     await act(() => vi.advanceTimersByTimeAsync(4100));
     expect(toast()).toBeNull();
+    // A toast that appears under a resting pointer gets no mouseenter, but is hovered.
+    const original = Element.prototype.matches;
+    const matches = vi
+      .spyOn(Element.prototype, "matches")
+      .mockImplementation(function (this: Element, selector: string) {
+        return selector === ":hover"
+          ? this.classList.contains("toast")
+          : original.call(this, selector);
+      });
+    try {
+      await cancelledScan();
+    } finally {
+      matches.mockRestore();
+    }
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(toast()).not.toBeNull();
+    await act(() =>
+      toast()!.dispatchEvent(new MouseEvent("mouseleave")),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(4100));
+    expect(toast()).toBeNull();
   } finally {
     vi.useRealTimers();
   }
