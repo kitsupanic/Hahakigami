@@ -444,7 +444,12 @@ fn start_recorded(
 pub(crate) fn install(state: &AppState, snapshot: Snapshot) -> Arc<Session> {
     install_in(state, Slot::Folder, "fixture", snapshot)
 }
-fn install_in(state: &AppState, slot: Slot, id: &str, snapshot: Snapshot) -> Arc<Session> {
+pub(crate) fn install_in(
+    state: &AppState,
+    slot: Slot,
+    id: &str,
+    snapshot: Snapshot,
+) -> Arc<Session> {
     install_on(state, slot, id, snapshot, None)
 }
 /// `install_in`, but with every device of the scan recorded on `volume` when given, as if the disk had been

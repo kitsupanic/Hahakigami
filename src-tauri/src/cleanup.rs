@@ -53,6 +53,9 @@ pub(crate) enum TrashOutcomeStatus {
 }
 
 const MOUNTS_UNREADABLE: &str = "Could not read the mounted volumes. Try again.";
+/// Each error of `confirm_trashed` starts with one of these: the Trash call moved something, maybe not the reviewed item.
+const WENT_TO_TRASH: &str = "The item went to the Trash";
+const DIFFERENT_ITEM: &str = "A different item than the reviewed one went to the Trash";
 
 /// The app's own data folder, set once at startup: the protection rules keep it out of the Trash.
 static APP_DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -97,9 +100,9 @@ pub(crate) fn native_trash(item: &safety::CheckedItem) -> Result<(), String> {
 }
 /// Checks, by lstat, that what sits at the Trash `receipt` is `item`. On a mismatch it stays in the Trash to put back.
 fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result<(), String> {
-    let receipt = receipt.ok_or(
-        "The item went to the Trash, but macOS did not say where, so it could not be checked. Look in the Trash.",
-    )?;
+    let receipt = receipt.ok_or_else(|| {
+        format!("{WENT_TO_TRASH}, but macOS did not say where, so it could not be checked. Look in the Trash.")
+    })?;
     match safety::Identity::read(receipt) {
         Ok(moved)
             if same_trashed_item(
@@ -112,11 +115,11 @@ fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result
             Ok(())
         }
         Ok(_) => Err(format!(
-            "A different item than the reviewed one went to the Trash, because a folder changed during cleanup. Open the Trash and choose Put Back: {}",
+            "{DIFFERENT_ITEM}, because a folder changed during cleanup. Open the Trash and choose Put Back: {}",
             receipt.display()
         )),
         Err(e) => Err(format!(
-            "The item went to the Trash, but could not be checked there: {e}"
+            "{WENT_TO_TRASH}, but could not be checked there: {e}"
         )),
     }
 }
@@ -382,10 +385,13 @@ fn execute(
             .ok_or_else(|| MOUNTS_UNREADABLE.to_string())
             .and_then(|now| safety::verify(item, root, home, data, &now))
             .and_then(|_| {
-                trash(item).inspect_err(|_| {
-                    // The reviewed item is no longer where it was: the failed step moved something.
-                    moved_unconfirmed |=
-                        safety::Identity::read(&item.path).as_ref() != Ok(&item.identity);
+                trash(item).inspect_err(|e| {
+                    // The failed step moved something: another item went to the Trash, or the reviewed item is no
+                    // longer where it was.
+                    moved_unconfirmed |= [WENT_TO_TRASH, DIFFERENT_ITEM]
+                        .iter()
+                        .any(|moved| e.starts_with(moved))
+                        || safety::Identity::read(&item.path).as_ref() != Ok(&item.identity);
                 })
             });
         match step {
@@ -545,7 +551,7 @@ fn statuses(
 mod tests {
     use super::*;
     use crate::{
-        tests::{install, snapshot, Recording},
+        tests::{install, install_in, snapshot, Recording},
         AppState,
     };
 
@@ -681,6 +687,54 @@ mod tests {
         // Something did move, so the scan no longer matches the disk.
         assert!(!s.is_valid());
         assert!(result.invalidated);
+    }
+
+    #[test]
+    fn another_item_in_the_trash_invalidates_every_scan_even_when_the_reviewed_one_stayed() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let (_other_dir, other_root) = home_dir();
+        let other = other_root.join("a");
+        std::fs::write(&other, b"o").unwrap();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let elsewhere = install_in(
+            &state,
+            Slot::Folder,
+            "elsewhere",
+            snapshot(other_root.clone()),
+        );
+        let queue = Mutex::new(Queue::default());
+        // A parent swapped for a symlink and put back: the reviewed item is still in place, another one moved.
+        let result = commit(
+            &s,
+            &queue,
+            &token,
+            false,
+            std::slice::from_ref(&elsewhere),
+            |item| confirm_trashed(item, Some(&other)),
+        )
+        .unwrap();
+        assert_eq!(result.trashed, 0);
+        assert!(result.invalidated && !s.is_valid());
+        assert_eq!(result.stale_scan_ids, std::slice::from_ref(&elsewhere.id));
+        assert!(!elsewhere.is_valid());
+    }
+
+    #[test]
+    fn a_trash_call_without_a_receipt_invalidates_the_scan_even_when_the_reviewed_item_stayed() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let queue = Mutex::new(Queue::default());
+        // Something went to the Trash, but macOS did not say what.
+        let result = commit(&s, &queue, &token, false, &[], |item| {
+            confirm_trashed(item, None)
+        })
+        .unwrap();
+        assert_eq!(result.trashed, 0);
+        assert!(result.invalidated && !s.is_valid());
     }
 
     #[test]

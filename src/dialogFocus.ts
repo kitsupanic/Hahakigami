@@ -77,8 +77,14 @@ export function dialogFocus(node: HTMLElement, initial: DialogOptions) {
       // Svelte removes the modal and clears background inert in the same update.
       // Focusing during action teardown can still hit the inert background.
       queueMicrotask(() => {
-        if (opener?.isConnected && document.activeElement === document.body)
-          opener.focus();
+        if (document.activeElement !== document.body) return;
+        // A cleanup's rescan can remove the opener (its row or the queue page): fall back to a stable control.
+        (opener?.isConnected
+          ? opener
+          : document.querySelector<HTMLElement>(
+              "[data-dialog-fallback]:not(:disabled)",
+            )
+        )?.focus();
       });
     },
   };

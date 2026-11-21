@@ -173,6 +173,9 @@ impl Reuse {
                 .chars()
                 .flat_map(char::to_uppercase)
                 .flat_map(char::to_lowercase)
+                // Again, so ẞ (lowercased to ß) folds like ß: ß → SS → ss.
+                .flat_map(char::to_uppercase)
+                .flat_map(char::to_lowercase)
                 .collect::<String>()
                 .into_bytes(),
             None => name.as_encoded_bytes().to_ascii_lowercase(),
@@ -906,17 +909,19 @@ mod tests {
             "build/\u{65b0}",
             "build/\u{39f}\u{394}\u{39f}\u{3a3}",
             "build/beta_\u{3d0}",
+            "build/stra\u{df}e",
         ] {
             fs::create_dir_all(f.0.join(dir)).unwrap();
             fs::write(f.0.join(dir).join("kept"), b"cached").unwrap();
         }
-        // NFC for NFD, a typed σ for a final Σ, and β for its variant ϐ: each spells the cached folder.
+        // NFC for NFD, a typed σ for a final Σ, β for its variant ϐ, and ẞ for ß: each spells the cached folder.
         let reuse = Reuse::new(IncrementalSeed {
             snapshot: Arc::new(f.full()),
             dirty_paths: vec![
                 f.0.join("build/caf\u{e9}/new.bin"),
                 f.0.join("build/\u{3bf}\u{3b4}\u{3bf}\u{3c3}/new.bin"),
                 f.0.join("build/beta_\u{3b2}/new.bin"),
+                f.0.join("build/STRA\u{1e9e}E/new.bin"),
             ],
             dirty_directories: vec![],
             aliases_resolved: false,
@@ -926,6 +931,7 @@ mod tests {
             "build/cafe\u{301}",
             "build/\u{39f}\u{394}\u{39f}\u{3a3}",
             "build/beta_\u{3d0}",
+            "build/stra\u{df}e",
         ] {
             assert!(!cached.contains_key(&f.0.join(dirty)), "{dirty}");
         }

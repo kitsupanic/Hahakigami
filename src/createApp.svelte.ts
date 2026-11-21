@@ -17,6 +17,7 @@ import {
   type StartView,
 } from "./scanSlots.svelte";
 import { latestOnly } from "./latestQuery";
+import { countLabel } from "./uiFormat";
 import type { CleanupReport, QueueView } from "./cleanupTypes";
 import { cleanupResult } from "./cleanupResults";
 import type { AppToast } from "./toastTypes";
@@ -190,6 +191,13 @@ export default function createApp() {
   // A disk of the Disks list, by its path.
   const listedDisk = (path: string) =>
     targets.find((t) => t.volume && t.path === path);
+  // The backend gave the listed `disk` a new id and dropped the old one: its row takes `next`, under its listed name.
+  function replaceDisk(disk: Target, next: Target) {
+    if (disk.id === next.id) return disk;
+    const renamed = { ...next, name: disk.name };
+    targets = targets.map((t) => (t === disk ? renamed : t));
+    return renamed;
+  }
   function scanQueue(entryId: string) {
     if (sessionBlocked) return;
     // The lookup can take seconds; what the user opened meanwhile keeps the view.
@@ -213,7 +221,7 @@ export default function createApp() {
           ),
           location,
         ];
-      target = disk ?? location;
+      target = disk ? replaceDisk(disk, location) : location;
       queueOpen = false;
       // Entries already ready in a completed scan of this slot: open it, a rescan would drop them to "Needs scan".
       const key = slotKey(location);
@@ -623,7 +631,9 @@ export default function createApp() {
     try {
       const chosen = await invoke<Target | null>("choose_folder");
       if (!current()) return;
-      if (chosen) {
+      const disk = chosen?.volume ? listedDisk(chosen.path) : undefined;
+      if (disk) target = replaceDisk(disk, chosen!);
+      else if (chosen) {
         target = chosen;
         targets = targets.some((item) => item.id === chosen.id)
           ? targets
@@ -709,13 +719,11 @@ export default function createApp() {
           ...found.map((item) => item.path),
           ...mounted,
         ]);
-        // A refused scan means another volume now sits at the path: it replaces the old target, so a scan uses its new id.
+        // The backend gives a remounted or swapped volume a new id and drops the old one: the new target replaces it.
         const fresh = new Map(found.map((item) => [item.path, item]));
         const kept = targets
           .filter((item) => !item.volume || present.has(item.path))
-          .map((item) =>
-            rediscover && item.volume ? (fresh.get(item.path) ?? item) : item,
-          );
+          .map((item) => (item.volume ? (fresh.get(item.path) ?? item) : item));
         const added = found.filter(
           // Only volumes count: a chosen folder may share a disk's path.
           (item) =>
@@ -730,10 +738,9 @@ export default function createApp() {
         const gone = targets.filter(
           (item) => item.volume && !present.has(item.path),
         );
-        const swapped = rediscover;
         rediscover = false;
         targets = next;
-        if (swapped && liveTarget?.volume)
+        if (liveTarget?.volume)
           liveTarget = fresh.get(liveTarget.path) ?? liveTarget;
         dropEjected(gone, startup);
         if (target?.volume && !kept.includes(target))
@@ -882,7 +889,15 @@ export default function createApp() {
   }
   function start(t = target) {
     if (!t) return Promise.resolve();
-    return scans.start(t);
+    // A saved scan keeps the target it started with, whose id the backend may have replaced since: scan the place
+    // as it is listed now.
+    const listed = targets.find(
+      (x) =>
+        x.path === t.path &&
+        !!x.volume === !!t.volume &&
+        !!x.home === !!t.home,
+    );
+    return scans.start(listed ?? t);
   }
   // The app's side of a start, for the scan slots: its gates, then what the view does as the scan
   // reports. Only a start that no newer start or navigation overtook (`g`) takes the view.
@@ -1182,6 +1197,12 @@ export default function createApp() {
                 }
                 performanceMapQueryPending = false;
               }
+              // The folder map's tile of grouped small items: the backend counts them, the count is written in the
+              // user's locale here. The file-type map's leftover tile keeps its name.
+              if (queryColorMode === "folder")
+                for (const n of result.nodes)
+                  if (n.kind === "aggregate")
+                    n.name = countLabel(n.childrenCount, "smaller item");
               map = result.nodes;
               if (
                 performanceBuild &&

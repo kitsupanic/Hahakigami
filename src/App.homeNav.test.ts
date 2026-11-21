@@ -326,7 +326,7 @@ it("says Scanning on the disk while its scan runs", async () => {
   expect(diskRow("Macintosh HD").textContent).not.toContain("Scanned");
 });
 
-it("adds a connected disk and drops an ejected one, keeping the others' ids", async () => {
+it("adds a connected disk and drops an ejected one, taking the ids the backend now holds", async () => {
   const usb: Target = {
     id: "usb-new",
     name: "USB",
@@ -344,13 +344,14 @@ it("adds a connected disk and drops an ejected one, keeping the others' ids", as
   ];
   await refresh();
   expect(diskNames()).toEqual(["Macintosh HD", "Backup", "USB"]);
+  // A remounted disk gets a new id and the backend drops the old one, so a scan must send the new one.
   expect(app().targets.map((t) => t.id)).toEqual([
-    "disk",
-    "backup",
+    "disk-2",
+    "backup-2",
     "home",
     "usb-new",
   ]);
-  expect(app().target).toEqual(disk);
+  expect(app().target).toEqual({ ...disk, id: "disk-2" });
   mounted = ["/", "/Volumes/USB"];
   discovered = [disk, usb, home];
   await refresh();
