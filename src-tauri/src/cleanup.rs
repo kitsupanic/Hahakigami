@@ -107,7 +107,8 @@ fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result
                 &moved,
                 &item.identity,
                 receipt.parent().is_some_and(platform::is_fat_like)
-                    && std::fs::symlink_metadata(receipt).is_ok_and(|m| m.is_file() && m.len() == 0),
+                    && std::fs::symlink_metadata(receipt).is_ok_and(|m| is_empty_file(&m))
+                    && renamed_by_trash(&item.path, receipt),
             ) =>
         {
             Ok(())
@@ -120,6 +121,29 @@ fn confirm_trashed(item: &safety::CheckedItem, receipt: Option<&Path>) -> Result
             "{WENT_TO_TRASH}, but could not be checked there: {e}"
         )),
     }
+}
+
+fn is_empty_file(m: &std::fs::Metadata) -> bool {
+    m.is_file() && m.len() == 0
+}
+/// Whether `receipt` is named like `reviewed`, allowing the number the Trash adds on a name clash: `a.txt` becomes
+/// `a 2.txt`, and `a` becomes `a 2`. FAT birth times are coarse, so two empty files made together share one.
+fn renamed_by_trash(reviewed: &Path, receipt: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let (Some(a), Some(b)) = (reviewed.file_name(), receipt.file_name()) else {
+        return false;
+    };
+    if a == b {
+        return true;
+    }
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    // A leading dot is part of the name, not an extension.
+    let dot = a.iter().rposition(|&c| c == b'.').filter(|&i| i > 0);
+    let (stem, ext) = a.split_at(dot.unwrap_or(a.len()));
+    b.strip_prefix(stem)
+        .and_then(|rest| rest.strip_suffix(ext))
+        .and_then(|rest| rest.strip_prefix(b" "))
+        .is_some_and(|n| !n.is_empty() && n.iter().all(u8::is_ascii_digit))
 }
 
 /// Strict identity, except for an empty file on a FAT-like volume: with no clusters its file id comes from where its
@@ -645,6 +669,33 @@ mod tests {
         assert!(!same_trashed_item(&other_kind, &reviewed, true));
     }
 
+    #[test]
+    fn only_an_empty_file_counts_for_the_fat_receipt_rule() {
+        let (_dir, root) = home_dir();
+        let (empty, full) = (root.join("empty"), root.join("full"));
+        std::fs::write(&empty, b"").unwrap();
+        std::fs::write(&full, b"x").unwrap();
+        let meta = |p: &Path| std::fs::symlink_metadata(p).unwrap();
+        assert!(is_empty_file(&meta(&empty)));
+        assert!(!is_empty_file(&meta(&full)));
+        assert!(!is_empty_file(&meta(&root)));
+    }
+
+    #[test]
+    fn the_receipt_name_is_the_reviewed_name_or_the_trash_collision_rename() {
+        let named = |a: &str, b: &str| renamed_by_trash(Path::new(a), Path::new(b));
+        assert!(named("/v/a.txt", "/t/a.txt"));
+        assert!(named("/v/a.txt", "/t/a 2.txt"));
+        assert!(named("/v/a.txt", "/t/a 13.txt"));
+        assert!(named("/v/a", "/t/a 2"));
+        assert!(named("/v/.a", "/t/.a 2"));
+        assert!(!named("/v/a.txt", "/t/b.txt"));
+        assert!(!named("/v/a.txt", "/t/a 2.md"));
+        assert!(!named("/v/a.txt", "/t/a .txt"));
+        assert!(!named("/v/a.txt", "/t/a x.txt"));
+        assert!(!named("/v/a", "/t/ab"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "Moves only a disposable fixture to native Trash and restores it; run explicitly on macOS"]
@@ -969,6 +1020,39 @@ mod tests {
             (1, vec![items[0].path.clone()])
         );
         assert_eq!(result.failures, [PROTECTED]);
+    }
+
+    #[test]
+    fn an_unreadable_mount_table_before_an_item_fails_it_and_moves_nothing_more() {
+        let (_dir, root) = home_dir();
+        std::fs::create_dir(root.join("folder")).unwrap();
+        std::fs::write(root.join("plain"), b"p").unwrap();
+        let state = AppState::default();
+        let (s, _) = reviewed(&state, &root);
+        let items = s.ticket.lock().unwrap().take().unwrap().items;
+        let host = Host {
+            home: None,
+            data: None,
+            mounts: vec![],
+        };
+        let mut reads = 0;
+        let mut trash = Recording::ok();
+        let (result, _, _, _) = execute(
+            &items,
+            &root,
+            &host,
+            || {
+                reads += 1;
+                (reads == 1).then(Vec::new)
+            },
+            |i| trash.trash(i),
+        )
+        .unwrap();
+        assert_eq!(
+            (result.trashed, trash.calls),
+            (1, vec![items[0].path.clone()])
+        );
+        assert_eq!(result.failures, [MOUNTS_UNREADABLE]);
     }
 
     #[test]

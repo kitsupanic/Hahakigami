@@ -107,6 +107,10 @@ impl Service {
         let (workers, _) = settings::ScanSettings::default()
             .resolve_scan_workers(scope, platform::scheduling_conditions());
         let store = Arc::new(RwLock::new(Snapshot::empty(root.path().to_owned())));
+        // A cancel during setup must not replace the previous results with an empty scan.
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Scan cancelled".into());
+        }
         {
             let mut session = self
                 .session
@@ -435,6 +439,26 @@ mod tests {
         assert!(!service.session.lock().unwrap().active);
         assert_eq!(service.summary().unwrap()["state"], "completed");
         service.scan(root).unwrap();
+    }
+
+    #[test]
+    fn a_scan_cancelled_before_it_starts_keeps_the_previous_results() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let service = Service::new();
+        let first = service.scan(root.clone()).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(true));
+        assert_eq!(
+            service.scan_with(root, cancelled).unwrap_err(),
+            "Scan cancelled"
+        );
+        let session = service.session.lock().unwrap();
+        assert!(!session.active);
+        assert_eq!(json!(session.scan_id), first["scanId"]);
+        drop(session);
+        let status = service.status().unwrap();
+        assert_eq!(status["state"], "completed");
+        assert_eq!(status["scanId"], first["scanId"]);
     }
 
     #[test]

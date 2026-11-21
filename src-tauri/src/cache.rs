@@ -80,11 +80,13 @@ pub fn recent(token: &Token, started_at_ms: u64, now: u64) -> bool {
         && started_at_ms <= now
         && now - token.full_scan_at_ms <= MAX_AGE_MS
 }
-/// Whether a record is invalid or older than an hour. Unlike `!recent`, an entry stamped in the future is not dead:
-/// the clock may have stepped back, and `matches` keeps it from seeding a scan until it catches up.
+/// Whether a record is invalid or older than an hour. Unlike `!recent`, an entry stamped a little in the future is
+/// not dead: the clock may have stepped back, and `matches` keeps it from seeding a scan until it catches up. One
+/// stamped more than an hour ahead would crowd out good entries for longer than any ordinary step back.
 fn dead(token: &Token, started_at_ms: u64, now: u64) -> bool {
     token.full_scan_at_ms == 0
         || token.full_scan_at_ms > started_at_ms
+        || token.full_scan_at_ms > now.saturating_add(MAX_AGE_MS)
         || now
             .checked_sub(token.full_scan_at_ms)
             .is_some_and(|age| age > MAX_AGE_MS)
@@ -1048,6 +1050,17 @@ mod tests {
         assert!(!dead(&token, 10_000, 9_000));
         assert!(dead(&token, 10_000, 10_000 + MAX_AGE_MS + 1));
         assert!(dead(&token, 9_000, 20_000));
+        // Stamped more than an hour ahead: no ordinary clock step back explains it.
+        let ahead = |by| Token {
+            full_scan_at_ms: 10_000 + by,
+            ..token.clone()
+        };
+        assert!(!dead(&ahead(MAX_AGE_MS), 10_000 + MAX_AGE_MS, 10_000));
+        assert!(dead(
+            &ahead(MAX_AGE_MS + 1),
+            10_000 + MAX_AGE_MS + 1,
+            10_000
+        ));
         assert!(dead(
             &Token {
                 full_scan_at_ms: 0,
@@ -1075,6 +1088,23 @@ mod tests {
         for suffix in ["json", "zst", "cursor"] {
             assert!(c.root.join(format!("{id}.{suffix}")).exists(), "{suffix}");
         }
+        let years_ahead = crate::now_ms() + 2 * MAX_AGE_MS;
+        let token = Token {
+            full_scan_at_ms: years_ahead,
+            ..token
+        };
+        let metadata = ScanMetadata {
+            started_at_ms: years_ahead,
+            workers: 1,
+        };
+        let other = fixture(&d.path().join("other"));
+        c.save(&other, &metadata, &token).unwrap();
+        c.maintain().unwrap();
+        assert_eq!(
+            c.store.list().unwrap().len(),
+            1,
+            "the far-future entry is dropped"
+        );
     }
     // An immutable old record cannot be removed (macOS `uchg`), standing in for a failed removal.
     #[cfg(target_os = "macos")]

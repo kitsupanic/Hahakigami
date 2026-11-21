@@ -484,6 +484,18 @@ it("skips a disk that was ejected while its scan was being cancelled", async () 
   expect(startsOf("hd")).toHaveLength(1);
 });
 
+it("scans a disk that was remounted under a new id while its scan was being cancelled", async () => {
+  await scans.start(backup);
+  const done = scans.scanAll(() => listed, { takeView: () => false });
+  await settle();
+  const remounted = { ...backup, id: "backup2" };
+  listed = [hd, remounted];
+  emit(idOf("backup"), "cancelled");
+  expect(await done).toEqual([]);
+  expect(startsOf("backup")).toHaveLength(1);
+  expect(startsOf("backup2")).toHaveLength(1);
+});
+
 it("gives up on a scan that does not stop within 30 seconds and reports it", async () => {
   await scans.start(backup);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
