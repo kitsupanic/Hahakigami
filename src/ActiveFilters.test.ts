@@ -63,7 +63,7 @@ it("labels the size filter On disk and provides exact inclusive byte boundaries"
   };
   await render(value);
   expect(button("Remove size filter: On disk 1–2 GiB").title).toBe(
-    `On disk: ${gib}–${2 * gib} bytes, inclusive`,
+    `On disk: ${gib.toLocaleString()}–${(2 * gib).toLocaleString()} bytes, inclusive`,
   );
 });
 
@@ -87,14 +87,14 @@ it.each([
   [null, 0, "On disk ≤ 0 B"],
   [0, 0, "On disk 0–0 B"],
   [0, gib, "On disk 0–1 GiB"],
-  [1025, null, "On disk ≥ 1025 B"],
-  [null, gib + 1, `On disk ≤ ${gib + 1} B`],
-  [1025, 1026, "On disk 1025–1026 B"],
+  [1025, null, "On disk ≥ 1,025 B"],
+  [null, gib + 1, `On disk ≤ ${(gib + 1).toLocaleString()} B`],
+  [1025, 1026, "On disk 1,025–1,026 B"],
   [Math.round(1.1 * gib), null, "On disk ≥ ≈1.1 GiB"],
   [Math.round(1.1 * gib), 2 * gib, "On disk ≈1.1 GiB–2 GiB"],
   [0, Math.round(1.1 * gib), "On disk 0 B–≈1.1 GiB"],
   [500, Math.round(1.1 * gib), "On disk 500 B–≈1.1 GiB"],
-  [Number.MAX_SAFE_INTEGER, null, `On disk ≥ ${Number.MAX_SAFE_INTEGER} B`],
+  [Number.MAX_SAFE_INTEGER, null, `On disk ≥ ${Number.MAX_SAFE_INTEGER.toLocaleString()} B`],
 ] as const)(
   "keeps byte boundaries exact for %s–%s",
   (minBytes, maxBytes, expected) => {
@@ -106,7 +106,7 @@ it.each([
 it("describes lower and upper bounds as inclusive and has no inactive label", () => {
   expect(
     sizeFilterDescription({ ...emptyFilter, minBytes: 1025 }),
-  ).toBe("On disk: at least 1025 bytes, inclusive");
+  ).toBe("On disk: at least 1,025 bytes, inclusive");
   expect(
     sizeFilterDescription({ ...emptyFilter, maxBytes: 0 }),
   ).toBe("On disk: at most 0 bytes, inclusive");

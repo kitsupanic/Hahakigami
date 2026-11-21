@@ -151,6 +151,18 @@ beforeEach(() => {
         return { items, total: items.length };
       case "list_cleanup_queue":
         return queue;
+      case "add_cleanup_queue":
+        queue = {
+          ...queue,
+          entries: entries(
+            ...queue.entries.map((entry) => entry.path),
+            ...items
+              .filter((item) => args.nodeIds.includes(item.id))
+              .map((item) => item.path),
+          ),
+          revision: queue.revision + 1,
+        };
+        return queue;
       case "remove_cleanup_queue":
         queue = {
           ...queue,
@@ -196,6 +208,19 @@ it("removes a direct entry, updates markers/counts and feedback while preserving
   );
   expect(container.querySelector(".queue-strip")).toBeNull();
   expect(container.querySelector(".queue-count")?.textContent).toBe("0");
+});
+
+it("keeps keyboard focus on the queue control through remove and add", async () => {
+  await mount();
+  await select(1);
+  const focused = () => document.activeElement as HTMLElement;
+  button("Added to cleanup queue. Remove from cleanup queue")!.focus();
+  await click("Added to cleanup queue. Remove from cleanup queue");
+  expect(focused()).toBe(button("Add to cleanup queue"));
+  await click("Add to cleanup queue");
+  expect(focused()).toBe(
+    button("Added to cleanup queue. Remove from cleanup queue"),
+  );
 });
 
 it("keeps failed removal retryable without announcing success", async () => {

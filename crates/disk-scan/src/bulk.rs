@@ -452,9 +452,6 @@ fn recover_listing(
     warnings: &mut Vec<String>,
     fallback: impl FnOnce(&mut Vec<String>) -> io::Result<Vec<io::Result<Entry>>>,
 ) -> io::Result<Vec<io::Result<Entry>>> {
-    if !unsupported && warnings.len() < 32 {
-        warnings.push(format!("clone bulk accounting unavailable: {error}"));
-    }
     // Successful rich records are private and must not survive the restart.
     // Permanent entry failures remain visible even if the baseline later succeeds.
     let mut permanent: Vec<_> = entries
@@ -466,7 +463,9 @@ fn recover_listing(
         .collect();
     match fallback(warnings) {
         Ok(mut baseline) => {
+            // Only a plain listing that worked lost clone evidence; one that fails too is an ordinary scan error.
             if !unsupported {
+                warnings.push(format!("clone bulk accounting unavailable: {error}"));
                 for e in baseline.iter_mut().filter_map(|e| e.as_mut().ok()) {
                     if e.kind == NodeKind::File {
                         e.clone_checked = true;
@@ -1721,7 +1720,7 @@ mod tests {
             Err(io::Error::from_raw_os_error(libc::EACCES))
         });
         assert_eq!(failed.unwrap_err().raw_os_error(), Some(libc::EACCES));
-        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings.len(), 1, "a failed relisting is no accounting gap");
         let permanent = recover_listing(
             vec![Err(io::Error::from_raw_os_error(libc::EIO))],
             invalid(),
@@ -1771,9 +1770,6 @@ mod tests {
         .unwrap();
         assert!(warnings.is_empty());
         assert!(!unsupported[0].as_ref().unwrap().clone_checked);
-        let mut warnings = vec!["existing".into(); 32];
-        recover_listing(vec![], invalid(), false, &mut warnings, |_| Ok(vec![])).unwrap();
-        assert_eq!(warnings.len(), 32);
     }
     #[cfg(target_os = "macos")]
     #[test]

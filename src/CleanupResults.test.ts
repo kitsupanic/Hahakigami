@@ -87,6 +87,13 @@ it("separates moved, failed and all-location queue counts with exact item paths"
   ).toContain("File is in use");
   expect(text()).toContain("Still queued, all locations");
 });
+it("groups thousands in the headline and count table", async () => {
+  await render({ movedCount: 1234, failedCount: 1, remainingQueued: 5678 });
+  expect(text()).toContain("Moved 1,234 of 1,235 items to Trash");
+  expect(
+    [...container.querySelectorAll("dd")].map((node) => node.textContent),
+  ).toEqual(["1,234", "1", "5,678"]);
+});
 it("keeps confirmed moves separate from failed queue bookkeeping", async () => {
   await render({
     persistenceWarning: "Queue could not be saved",

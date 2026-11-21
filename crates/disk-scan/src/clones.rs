@@ -98,9 +98,8 @@ impl ProbeBatch {
             .front()
             .is_some_and(|(ordinal, _)| *ordinal == index)
         {
-            let metadata = self.observations.pop_front().unwrap().1;
-            return (metadata.may_share_blocks || metadata.reference_count > 1)
-                .then_some(Ok(Some(metadata)));
+            // Listings record an observation only for a file that may share blocks.
+            return Some(Ok(Some(self.observations.pop_front().unwrap().1)));
         }
         if self
             .results

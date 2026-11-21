@@ -2132,6 +2132,40 @@ mod tests {
         fs::remove_dir_all(p).unwrap();
     }
     #[test]
+    #[cfg(target_os = "macos")]
+    fn unsearchable_directory_is_no_accounting_gap() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = fixture();
+        let d = p.join("unsearchable");
+        fs::create_dir_all(d.join("sub")).unwrap();
+        fs::write(d.join("file"), b"abc").unwrap();
+        // Readable but not searchable: the clone-aware listing and the plain one fail alike.
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o644)).unwrap();
+        let s = scan(
+            p.clone(),
+            ScanOptions {
+                workers: 2,
+                backend: Backend::Bulk,
+                qos: ScanQos::Automatic,
+                descriptor_limit: None,
+            },
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(s.stats.incomplete);
+            assert!(
+                s.accounting.warnings.is_empty(),
+                "{:?}",
+                s.accounting.warnings
+            );
+            assert!(s.accounting.checks_complete);
+        }
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
     fn dataless_listing_failure_is_recognised() {
         assert!(dataless(&std::io::Error::from_raw_os_error(libc::EDEADLK)));
         assert!(!dataless(&std::io::Error::from_raw_os_error(libc::EACCES)));

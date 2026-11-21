@@ -216,6 +216,15 @@ it.each([0, 2])(
     ).toHaveLength(trashed ? 2 : 1);
   },
 );
+it("disables Move to Trash past the 1,000 item review limit", async () => {
+  app.setSummary(summary);
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, id) => ({ ...items[0], id: id + 1 }));
+  app.setSelection(many(1000));
+  expect(app.can.trash).toBe(true);
+  app.setSelection(many(1001));
+  expect(app.can.trash).toBe(false);
+});
 it("freezes reviewed item metadata and prevents duplicate commits while pending", async () => {
   const commit = deferred<ReturnType<typeof partial>>();
   const standard = mock.invoke.getMockImplementation()!;
@@ -364,9 +373,10 @@ it("marks a thrown command as unknown and never assumes all items failed or retr
     queueState: "confirmed",
   });
   expect(app.cleanupReport?.message).toContain("Connection lost after command");
+  // The command may have moved files before failing, so the results are dropped and rescanned.
   expect(
     mock.invoke.mock.calls.filter(([command]) => command === "start_scan"),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
   expect(
     mock.invoke.mock.calls.filter(([command]) => command === "commit_trash"),
   ).toHaveLength(1);
