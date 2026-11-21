@@ -287,12 +287,13 @@ export function createScanSlots(port: ScanPort, hooks: ScanSlotsHooks) {
                 awaitingRestart = [...awaitingRestart, key];
                 await cancelAndWait(slot);
               }
-              // Ejected while waiting: nothing to scan.
-              if (!disks().some((item) => item.id === disk.id)) return;
+              // Ejected while waiting: nothing to scan. Remounted: scan its current listing.
+              const target = disks().find((item) => slotKey(item) === key);
+              if (!target) return;
               // Already starting on its own: nothing to restart.
               if (unfiled.has(key)) return;
               if (slotBusy(key)) return report("The scan did not stop in time.");
-              await run(disk, { takeView: options.takeView(key), batch: true });
+              await run(target, { takeView: options.takeView(key), batch: true });
             } catch (e) {
               report(e);
             } finally {

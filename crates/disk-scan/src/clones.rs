@@ -704,6 +704,10 @@ mod native {
             Ok(())
         };
         let mut result = read(&mut stats, rich, &mut visit);
+        if result.as_ref().is_err_and(crate::dataless) {
+            // An evicted (dataless) folder lists as empty, as in the walk: saved names then count as deleted.
+            result = Ok(());
+        }
         let bulk_read = result.is_ok();
         if result.as_ref().is_err_and(crate::falls_back_to_readdir) {
             // Records the bulk read cannot parse (or no bulk read at all): the scan lists such a folder plainly, so
@@ -2779,6 +2783,40 @@ mod native {
             assert_eq!(
                 warnings_for(&mut unread, failed),
                 ["a reused folder could not be compared with its saved listing"]
+            );
+            std::fs::remove_dir_all(p).unwrap();
+        }
+        #[test]
+        fn reused_dataless_folder_is_an_empty_listing() {
+            let (p, s, fd) = real_clone_fixture("vouch-dataless");
+            let caps = std::sync::Mutex::new(HashMap::new());
+            let warnings_for = |entries: &mut Vec<io::Result<crate::Entry>>| {
+                let mut observations = std::collections::VecDeque::new();
+                let mut warnings = Vec::new();
+                vouch_reused_with(
+                    entries,
+                    &fd,
+                    &caps,
+                    &AtomicBool::new(false),
+                    &mut observations,
+                    &mut Vec::new(),
+                    &mut warnings,
+                    |_, _, _| Err(io::Error::from_raw_os_error(libc::EDEADLK)),
+                );
+                warnings
+            };
+            // Saved empty, as the walk stores it: nothing to compare, no warning.
+            assert!(warnings_for(&mut Vec::new()).is_empty());
+            // Saved names that an empty listing no longer has were deleted.
+            let mut saved = vec![Ok(crate::descriptor::entry_at(
+                &fd,
+                &s.root,
+                std::ffi::OsStr::new("a"),
+            )
+            .unwrap())];
+            assert_eq!(
+                warnings_for(&mut saved),
+                ["a reused folder differs from its saved listing"]
             );
             std::fs::remove_dir_all(p).unwrap();
         }

@@ -48,7 +48,7 @@ pub(crate) struct Fsevents;
 
 impl Journal for Fsevents {
     fn history(&self, root: &disk_scan::ScanRoot) -> Option<History> {
-        let volume = local_volume(root)?;
+        let volume = local_volume(root).filter(|path| journaled_mount(path))?;
         let epoch = events::boot_session()
             .zip(events::journal_identity(root.path()))
             .map(|(boot, journal)| format!("{boot}:{journal}"))?;
@@ -67,6 +67,15 @@ impl Journal for Fsevents {
     ) -> Result<(T, events::Changes), String> {
         events::replay_with_abortable_load_on_volume(root, &history.volume, since, cancel, load)
     }
+}
+
+/// Whether a mount cannot be unmounted while the system runs. The epoch (boot session and journal UUID)
+/// does not change when another computer edits a removable volume between an unmount and a remount, and
+/// its journal recorded nothing meanwhile, so only the boot volume group is trusted to replay from.
+// shortcut: external disks lose fast rescans; key the epoch to a per-mount value (the DiskArbitration
+// appearance time) to bring them back.
+fn journaled_mount(path: &Path) -> bool {
+    path == Path::new("/") || path.starts_with("/System/Volumes")
 }
 
 #[cfg(target_os = "macos")]
@@ -549,6 +558,21 @@ mod tests {
 
     #[cfg(feature = "performance-benchmark")]
     static NO_TIMING: fn(&'static str, Instant) = |_, _| {};
+
+    #[test]
+    fn only_the_boot_volume_group_is_journaled() {
+        for path in ["/", "/System/Volumes/Data"] {
+            assert!(journaled_mount(Path::new(path)), "{path}");
+        }
+        for path in [
+            "/Volumes/STICK",
+            "/Volumes/Macintosh HD - Data",
+            "/private/var/vm-ish",
+            "/System/VolumesX",
+        ] {
+            assert!(!journaled_mount(Path::new(path)), "{path}");
+        }
+    }
 
     fn history(epoch: &str) -> Option<History> {
         Some(History {

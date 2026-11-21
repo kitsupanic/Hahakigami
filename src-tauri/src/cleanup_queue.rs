@@ -1383,6 +1383,26 @@ mod tests {
         assert!(q.entries.is_empty());
     }
     #[test]
+    fn a_long_error_is_cut_so_it_never_blocks_a_later_queue_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (a, b) = (root.join("a"), root.join("b"));
+        fs::write(&a, []).unwrap();
+        fs::write(&b, []).unwrap();
+        let mut q = Queue::load(root.join("queue"));
+        q.add(vec![candidate(&root, &a)]).unwrap();
+        // The record refuses an error over 32,768 bytes, which would fail every save after this one.
+        let long = "x".repeat(40_000);
+        q.outcomes(&[], &[(candidate(&root, &a).checked(), long)])
+            .unwrap();
+        assert_eq!(
+            q.entries[0].last_error.as_ref().map(String::len),
+            Some(4096)
+        );
+        q.add(vec![candidate(&root, &b)]).unwrap();
+        assert!(!q.blocked && q.entries.len() == 2);
+    }
+    #[test]
     fn load_removes_stale_temp_records_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("queue");
