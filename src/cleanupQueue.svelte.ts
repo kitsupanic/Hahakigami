@@ -282,7 +282,7 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         ? ""
         : "Removing from cleanup queue…"
       : removalFeedback
-        ? removalFeedback.removed === 1
+        ? selection.length === 1
           ? ""
           : `Removed ${countLabel(removalFeedback.removed, "item")} from cleanup queue.`
         : adding

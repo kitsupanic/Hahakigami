@@ -125,7 +125,7 @@ impl Store {
         ))?)
     }
     // The sync-failure warning is dropped: `Cache::maintain` syncs the directory again before every use.
-    fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
+    pub(crate) fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
         atomic(&self.root, path, "", |mut f| {
             serde_json::to_writer(&mut f, value).map_err(err)?;
             f.sync_all().map_err(err)

@@ -128,6 +128,7 @@ pub(crate) fn prepare(
 /// One rich bulk listing of the directory vouches for each file it still describes exactly
 /// (marking it `clone_checked`, with a sparse observation when it shares); anything else stays
 /// unchecked and is probed per file, with the same warnings as before. Call with empty `observations`.
+/// A record the saved listing lacks is a missed journal event: it adds one entry to `warnings`.
 #[cfg(unix)]
 pub(crate) fn vouch_reused(
     entries: &mut [std::io::Result<crate::Entry>],
@@ -136,11 +137,12 @@ pub(crate) fn vouch_reused(
     cancel: &std::sync::atomic::AtomicBool,
     observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
     buffer: &mut Vec<u8>,
+    warnings: &mut Vec<String>,
 ) {
     #[cfg(target_os = "macos")]
-    native::vouch_reused(entries, fd, caps, cancel, observations, buffer);
+    native::vouch_reused(entries, fd, caps, cancel, observations, buffer, warnings);
     #[cfg(not(target_os = "macos"))]
-    let _ = (entries, fd, caps, cancel, observations, buffer);
+    let _ = (entries, fd, caps, cancel, observations, buffer, warnings);
 }
 #[cfg(unix)]
 fn prepare_core(
@@ -293,16 +295,10 @@ mod native {
         if returned != [COMMON, 0, 0, FILE, EXT] {
             return Err(error("missing clone attributes"));
         }
-        if u32at(b, &mut o)? as i32 as u64 != identity.device
-            || u32at(b, &mut o)? != 1
-            || u64at(b, &mut o)? != identity.inode
-        {
-            return Err(error("clone file identity changed"));
-        }
+        let device = u32at(b, &mut o)? as i32 as u64;
+        let kind = u32at(b, &mut o)?;
+        let inode = u64at(b, &mut o)?;
         let links = u32at(b, &mut o)?;
-        if links == 0 || (links > 1) != hard_link {
-            return Err(error("clone link count changed"));
-        }
         let total = size(b, &mut o)?;
         let allocation = size(b, &mut o)?;
         let data_length = size(b, &mut o)?;
@@ -310,21 +306,41 @@ mod native {
         let clone_id = u64at(b, &mut o)?;
         let flags = u64at(b, &mut o)?;
         let reference_count = u32at(b, &mut o)?;
-        if (total != own_length && data_length != own_length)
-            || allocation != own_allocated
-            || data_length > total
-            || data > allocation
+        let record = crate::bulk::Record {
+            name: &[],
+            device,
+            inode,
+            kind,
+            length: total,
+            allocated: allocation,
+            links,
+            clone_metadata: Some(CloneMetadata {
+                clone_id,
+                data_allocated_size: data,
+                data_length,
+                reference_count,
+                may_share_blocks: flags & 1 != 0,
+                verified: false,
+            }),
+            clone_checked: true,
+        };
+        if links == 0
+            || !same_file(
+                &record,
+                identity.device,
+                identity.inode,
+                own_allocated,
+                hard_link,
+            )
         {
+            return Err(error(
+                "clone file identity, link count or allocation changed",
+            ));
+        }
+        if !same_length(&record, own_length) || data_length > total || data > allocation {
             return Err(error("clone file sizes changed"));
         }
-        Ok(CloneMetadata {
-            clone_id,
-            data_allocated_size: data,
-            data_length,
-            reference_count,
-            may_share_blocks: flags & 1 != 0,
-            verified: false,
-        })
+        Ok(record.clone_metadata.unwrap())
     }
     fn parent(s: &Snapshot, id: u32, root: &OwnedFd) -> io::Result<OwnedFd> {
         let (names, root_identity) =
@@ -606,11 +622,15 @@ mod native {
         cancel: &AtomicBool,
         observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
         buffer: &mut Vec<u8>,
+        warnings: &mut Vec<String>,
     ) {
         let mut wanted = HashMap::new();
+        // Every saved name, not just the files to probe: a record outside it is new to the listing.
+        let mut saved = std::collections::HashSet::new();
         let mut device = None;
         for (i, entry) in entries.iter().enumerate() {
             let Ok(e) = entry else { continue };
+            saved.extend(e.path.file_name().map(|name| name.as_bytes()));
             if e.kind == NodeKind::File && !e.clone_checked {
                 let Some(name) = e.path.file_name() else {
                     return;
@@ -628,10 +648,12 @@ mod native {
         }
         let mut matched = vec![false; entries.len()];
         let mut shared = Vec::new();
+        let mut unsaved = false;
         // The worker's bulk buffer is lent for the read so each reused folder avoids a fresh 64 KiB.
         let mut stats = crate::bulk::CloneReadStats::with_buffer(std::mem::take(buffer));
         let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, |r| {
             let Some(&i) = wanted.get(r.name) else {
+                unsaved |= !saved.contains(r.name);
                 return Ok(());
             };
             let e = entries[i].as_ref().unwrap();
@@ -647,7 +669,10 @@ mod native {
             }
             Ok(())
         });
-        drop(wanted);
+        drop((wanted, saved));
+        if unsaved {
+            warnings.push("a reused folder lists an entry its saved listing lacks".into());
+        }
         *buffer = stats.into_buffer();
         // A failed read vouches for nothing: every file keeps its per-file probe.
         if result.is_ok() {
@@ -661,7 +686,7 @@ mod native {
     fn warning(info: &mut crate::AccountingInfo, e: io::Error) {
         info.warn(e.to_string());
     }
-    // One definition of the record facts the vouch and the final validation both check.
+    // One definition of the record facts the vouch, the per-file probe and the final validation check.
     fn same_file(
         r: &crate::bulk::Record,
         device: u64,
@@ -2427,6 +2452,7 @@ mod native {
             gone.path = s.root.join("gone").into();
             let mut entries = vec![Ok(entry("a")), Ok(entry("b")), Ok(stale), Ok(gone)];
             let mut observations = std::collections::VecDeque::new();
+            let mut warnings = Vec::new();
             let caps = std::sync::Mutex::new(HashMap::new());
             vouch_reused(
                 &mut entries,
@@ -2435,6 +2461,7 @@ mod native {
                 &AtomicBool::new(false),
                 &mut observations,
                 &mut Vec::new(),
+                &mut warnings,
             );
             let checked = |entries: &[io::Result<crate::Entry>]| -> Vec<bool> {
                 entries
@@ -2443,6 +2470,8 @@ mod native {
                     .collect()
             };
             assert_eq!(checked(&entries), [true, true, false, false]);
+            // The folder holds "d" but the saved listing names "gone": a missed event, flagged once.
+            assert_eq!(warnings.len(), 1);
             // The sparse observations equal what a per-file probe of the same files reports.
             assert_eq!(
                 observations.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -2479,6 +2508,7 @@ mod native {
                 &AtomicBool::new(true),
                 &mut observations,
                 &mut Vec::new(),
+                &mut warnings,
             );
             assert_eq!(checked(&fresh), [false, false]);
             assert!(observations.is_empty());
@@ -2491,8 +2521,10 @@ mod native {
                 &AtomicBool::new(false),
                 &mut observations,
                 &mut Vec::new(),
+                &mut warnings,
             );
             assert_eq!(checked(&fresh), [false, false]);
+            assert_eq!(warnings.len(), 1);
             std::fs::remove_dir_all(p).unwrap();
         }
         #[test]

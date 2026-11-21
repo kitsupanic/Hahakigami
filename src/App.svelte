@@ -195,12 +195,8 @@
   const queueBusy = $derived(app.queueBusy);
   const clearQueueOpen = $derived(app.clearQueueOpen);
   const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
-  const performanceConfig = $derived(app.performanceConfig);
-  const performanceEventsReady = $derived(app.performanceEventsReady);
-  const performanceMapScan = $derived(app.performanceMapScan);
   const performanceMapReady = $derived(app.performanceMapReady);
   const performanceLayoutPending = app.performanceLayoutPending;
-  const targets = $derived(app.targets);
   const target = $derived(app.target);
   // Home shows the welcome page while the scan stays in memory.
   const summary = $derived(app.shown?.summary ?? null);
@@ -779,7 +775,7 @@
       {#if offset > 0 || page.total > PAGE_SIZE}<footer class="pagination">
           <span>
             {page.total
-              ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, page.total)} of ${page.total.toLocaleString()}`
+              ? `${(offset + 1).toLocaleString()}–${Math.min(offset + PAGE_SIZE, page.total).toLocaleString()} of ${page.total.toLocaleString()}`
               : "0 items"}
           </span>
           <button
@@ -1764,7 +1760,8 @@
       onDismiss={app.dismissCleanupReport}
     />
   {/if}
-  {#if error && !failedScan}
+  <!-- One modal at a time: a rescan refused after cleanup waits until its results are dismissed. -->
+  {#if error && !failedScan && !app.cleanupReport}
     <FailureModal
       title={app.errorContext?.title ?? "Something went wrong"}
       reason={app.errorContext?.reason ??
@@ -1774,7 +1771,7 @@
       onClose={() => setError("")}
     />
   {/if}
-  {#if failedScan}
+  {#if failedScan && !app.cleanupReport}
     <FailureModal
       title="Scan failed"
       reason="The scan stopped before it could finish. Some files or folders could not be read. Scan again to try once more."

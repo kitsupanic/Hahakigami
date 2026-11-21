@@ -961,6 +961,8 @@ export default function createApp() {
         summary = s;
       },
       fetched: (fetched) => {
+        // A start that never took the view (Home or the queue was open) must not replace its summary.
+        if (activeId.current !== fetched.scanId) return;
         summary = fetched;
       },
       failed(e) {
@@ -1841,15 +1843,6 @@ export default function createApp() {
     performanceLayoutPending,
     get performanceMapReady() {
       return performanceMapReady && !performanceMapQueryPending;
-    },
-    get performanceConfig() {
-      return performanceConfig;
-    },
-    get performanceEventsReady() {
-      return performanceEventsReady;
-    },
-    get performanceMapScan() {
-      return performanceMapScan;
     },
     get targets() {
       return targets;
