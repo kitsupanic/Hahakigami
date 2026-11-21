@@ -168,7 +168,8 @@ export async function createAppMenu(commands: MenuCommands): Promise<AppMenu> {
   let queue: Promise<void> = Promise.resolve();
   const sync = (state: MenuState) => {
     latest = state;
-    queue = queue.then(() => apply(state)).catch(console.error);
+    // Apply the newest state when the turn comes: slow native writes must not replay every stale one.
+    queue = queue.then(() => apply(latest!)).catch(console.error);
     return queue;
   };
   const available = (id: CommandId, state: MenuState) =>

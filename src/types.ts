@@ -91,7 +91,7 @@ export interface ScanSummary {
   exclusionsStored?: number;
   message?: string;
 }
-export type ScanIssueKind = "errors" | "restricted" | "other" | "excluded";
+export type ScanIssueKind = "errors" | "restricted" | "other";
 export interface ScanIssuePage {
   scanId: string;
   nodeId: number;
@@ -102,7 +102,7 @@ export interface ScanIssuePage {
   items: {
     path: string;
     message: string;
-    category?: "restrictedSystem" | "other" | "excluded";
+    category?: "restrictedSystem" | "other";
     errorKind?: string | null;
     rawOsError?: number | null;
   }[];

@@ -28,7 +28,7 @@ const detailsProps = {
   description: "",
 };
 const page = (
-  kind: "errors" | "other" | "restricted" | "excluded" = "other",
+  kind: "errors" | "other" | "restricted" = "other",
   offset = 0,
 ): ScanIssuePage => ({
   scanId: "scan-1",

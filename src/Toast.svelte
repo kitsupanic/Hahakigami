@@ -19,6 +19,10 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="toast"
+  {@attach (node) => {
+    // A toast that replaces another under the pointer gets no mouseenter.
+    if (node.matches(":hover")) hovered = true;
+  }}
   onmouseenter={() => (hovered = true)}
   onmouseleave={() => (hovered = false)}
   onfocusin={() => (focused = true)}

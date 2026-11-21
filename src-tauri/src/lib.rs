@@ -164,8 +164,6 @@ struct ScanDetails {
     #[cfg(feature = "performance-benchmark")]
     phase_timings_us: std::collections::BTreeMap<String, u64>,
     #[cfg(feature = "performance-benchmark")]
-    reuse_storage: Option<disk_scan::ReuseStorageStats>,
-    #[cfg(feature = "performance-benchmark")]
     map_sort_scratch: Option<MapSortScratch>,
 }
 impl Default for ScanDetails {
@@ -180,8 +178,6 @@ impl Default for ScanDetails {
             cache_warning: None,
             #[cfg(feature = "performance-benchmark")]
             phase_timings_us: Default::default(),
-            #[cfg(feature = "performance-benchmark")]
-            reuse_storage: None,
             #[cfg(feature = "performance-benchmark")]
             map_sort_scratch: None,
         }
@@ -739,10 +735,6 @@ fn run_scan(
             };
             let mut details = s.scan_details.lock().unwrap();
             details.reused_entries = stats.reused_entries;
-            #[cfg(feature = "performance-benchmark")]
-            {
-                details.reuse_storage = stats.storage;
-            }
             details.rescanned_directories = stats.rescanned_directories;
             if let Some(reason) = stats.fallback_reason {
                 details.mode = "full".into();
@@ -957,7 +949,6 @@ enum IssueKind {
     Errors,
     Restricted,
     Other,
-    Excluded,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1005,18 +996,17 @@ async fn get_scan_issues(
                     .errors
                     .saturating_sub(snapshot.stats.restricted_system_issues),
             ),
-            IssueKind::Excluded => (&snapshot.exclusions, snapshot.stats.excluded),
         };
         let included = |issue: &disk_scan::ScanIssue| match kind {
             IssueKind::Restricted => disk_scan::is_system_restriction(issue),
             IssueKind::Other => !disk_scan::is_system_restriction(issue),
-            _ => true,
+            IssueKind::Errors => true,
         };
         let retained_total = match kind {
             IssueKind::Restricted | IssueKind::Other => {
                 details.iter().filter(|issue| included(issue)).count()
             }
-            _ => details.len(),
+            IssueKind::Errors => details.len(),
         };
         let page = IssuePage {
             scan_id,
@@ -1031,9 +1021,7 @@ async fn get_scan_issues(
                 .skip(offset)
                 .take(limit)
                 .map(|issue| IssueView {
-                    category: if kind == IssueKind::Excluded {
-                        "excluded"
-                    } else if disk_scan::is_system_restriction(issue) {
+                    category: if disk_scan::is_system_restriction(issue) {
                         "restrictedSystem"
                     } else {
                         "other"

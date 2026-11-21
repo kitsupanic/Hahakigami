@@ -18,7 +18,7 @@ pub use tree::{LegacyTreeBuilder, NodeMetadata, NodePathCursor, NodeRef};
 mod incremental;
 pub use incremental::{
     scan_live_incremental_authorized, scan_live_incremental_authorized_with_validation_workers,
-    IncrementalSeed, ReuseStats, ReuseStorageStats,
+    IncrementalSeed, ReuseStats,
 };
 mod restriction;
 mod retry;
@@ -1115,9 +1115,9 @@ fn scan_live_internal_reuse(
                     let listing = match &opened {
                         Ok(opened) => match cached {
                             Some(listing) if !cancel.load(Ordering::Relaxed) => {
-                                let (mut entries, capacity) = listing.materialize_with_storage();
+                                let mut entries = listing.materialize();
                                 if let Some(reuse) = reuse {
-                                    reuse.lock().unwrap().mark_reused(entries.len(), capacity);
+                                    reuse.lock().unwrap().mark_reused(entries.len());
                                 }
                                 clones::vouch_reused(
                                     &mut entries,

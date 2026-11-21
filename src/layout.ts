@@ -26,23 +26,35 @@ function rectangles(
     areas = values.map((v) => (v / total) * w * h),
     result: { x: number; y: number; width: number; height: number }[] = [];
   let index = 0;
-  function worst(row: number[], side: number) {
-    const sum = row.reduce((a, b) => a + b, 0);
+  // The row is described by its running sum, max and min, so testing one more area copies nothing.
+  function worst(sum: number, max: number, min: number, side: number) {
     return Math.max(
-      (side * side * Math.max(...row)) / (sum * sum),
-      (sum * sum) / (side * side * Math.min(...row)),
+      (side * side * max) / (sum * sum),
+      (sum * sum) / (side * side * min),
     );
   }
   while (index < areas.length) {
     const row = [areas[index++]];
     const side = Math.min(w, h);
-    while (
-      index < areas.length &&
-      worst([...row, areas[index]], side) <= worst(row, side)
-    )
-      row.push(areas[index++]);
-    const sum = row.reduce((a, b) => a + b, 0),
-      vertical = w >= h,
+    let sum = row[0],
+      max = row[0],
+      min = row[0];
+    while (index < areas.length) {
+      const next = areas[index];
+      if (
+        !(
+          worst(sum + next, Math.max(max, next), Math.min(min, next), side) <=
+          worst(sum, max, min, side)
+        )
+      )
+        break;
+      row.push(next);
+      sum += next;
+      max = Math.max(max, next);
+      min = Math.min(min, next);
+      index++;
+    }
+    const vertical = w >= h,
       thickness = sum / (vertical ? h : w);
     let cursor = 0;
     for (const a of row) {
