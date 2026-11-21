@@ -28,7 +28,7 @@
       : !report.movedCount
         ? "No items moved to Trash"
         : report.failedCount
-          ? `Moved ${report.movedCount} of ${itemCount(report.movedCount + report.failedCount)} to Trash`
+          ? `Moved ${report.movedCount.toLocaleString()} of ${itemCount(report.movedCount + report.failedCount)} to Trash`
           : `Moved ${itemCount(report.movedCount)} to Trash`,
   );
   // Sizes come from the reviewed scan; they are only known with item-by-item results.
@@ -102,11 +102,11 @@
     {#if showSummary}<dl class="cleanup-result-summary">
       <div>
         <dt>Moved to Trash</dt>
-        <dd>{report.movedCount ?? "Unconfirmed"}</dd>
+        <dd>{report.movedCount?.toLocaleString() ?? "Unconfirmed"}</dd>
       </div>
       <div>
         <dt>Failed to move</dt>
-        <dd>{report.failedCount ?? "Unconfirmed"}</dd>
+        <dd>{report.failedCount?.toLocaleString() ?? "Unconfirmed"}</dd>
       </div>
       <div>
         <dt>Still queued, all locations</dt>
@@ -114,7 +114,7 @@
           {report.queueState === "checking"
             ? "Checking…"
             : report.queueState === "confirmed"
-              ? report.remainingQueued
+              ? report.remainingQueued?.toLocaleString()
               : "Unconfirmed"}
         </dd>
       </div>

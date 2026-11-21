@@ -109,9 +109,16 @@ pub fn read_config() -> Result<Config, String> {
     if config.mode == "changed" && config.scope != "fixture" {
         return Err("Changed mode requires an owned fixture".into());
     }
+    // Refused before it is created, so a rejected config leaves no folder inside the fixture.
+    if config.state_dir.starts_with(&config.root) {
+        return Err("Benchmark state must be separate from source fixture".into());
+    }
     fs::create_dir_all(&config.state_dir).map_err(|e| e.to_string())?;
     let canonical = fs::canonicalize(&config.state_dir).map_err(|e| e.to_string())?;
-    if canonical != config.state_dir || config.root.starts_with(&canonical) {
+    if canonical != config.state_dir
+        || config.root.starts_with(&canonical)
+        || canonical.starts_with(&config.root)
+    {
         return Err(
             "Benchmark state must be separate from source fixture and have no symlink ancestors"
                 .into(),

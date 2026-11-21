@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke, isTauri } from "@tauri-apps/api/core";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import { flushSync, onMount, untrack } from "svelte";
+  import { flushSync, onMount, tick, untrack } from "svelte";
   import type { HoverTarget } from "./hoverContext";
   import type { QueueEntry } from "./cleanupTypes";
   import {
@@ -385,6 +385,7 @@
   const prepareTrash = app.prepareTrash;
   const commitTrash = app.commitTrash;
   let searchInput = $state<HTMLInputElement>();
+  let queueToggle = $state<HTMLButtonElement>();
   function cancelScan() {
     const scan = app.summary;
     if (!scan) return;
@@ -433,6 +434,36 @@
   function showListViewFromMenu(view: typeof listView) {
     listVisible = true;
     showListView(view);
+  }
+  // A queue action can remove or disable the focused control; keep keyboard focus from falling to body.
+  async function keepFocus(
+    event: Event,
+    run: () => unknown,
+    next: () => HTMLElement | null | undefined,
+  ) {
+    const hadFocus = event.currentTarget === document.activeElement;
+    await run();
+    await tick();
+    if (hadFocus && document.activeElement === document.body) next()?.focus();
+  }
+  // After a Remove, focus the next row's Remove, else the one now in its place or before it, else Back.
+  // The next row is found by its key: the list regroups and re-sorts after a removal.
+  function removeFocusTarget(button: HTMLElement) {
+    const all = () => [
+      ...document.querySelectorAll<HTMLElement>(".cleanup-page .cleanup-remove"),
+    ];
+    const before = all();
+    const index = before.indexOf(button);
+    const nextKey = before[index + 1]?.dataset.queueKey;
+    return () => {
+      const left = all();
+      return (
+        left.find((b) => nextKey && b.dataset.queueKey === nextKey) ??
+        left[index] ??
+        left[index - 1] ??
+        document.querySelector<HTMLElement>(".cleanup-back")
+      );
+    };
   }
   function focusSearch() {
     listVisible = true;
@@ -559,10 +590,16 @@
     >
     <button
       class="cleanup-remove"
+      data-queue-key={`entry:${entry.id}`}
       disabled={blocked || queueBusy || queue.blocked}
       title="Remove from the queue only; keep the file in place"
       aria-label={`Remove ${entry.path} from cleanup queue`}
-      onclick={() => void app.removeQueue(entry.id)}
+      onclick={(event) =>
+        void keepFocus(
+          event,
+          () => app.removeQueue(entry.id),
+          removeFocusTarget(event.currentTarget),
+        )}
       ><Icon name="close" size={14} /></button
     >
   </li>
@@ -809,53 +846,62 @@
         </p>
       {/if}
       <div class="details-primary">
-        {#if sq.removing}
-          <button class="primary" disabled aria-busy="true">
-            <Icon name="minus" size={17} /> Removing…
-          </button>
-        {:else if sq.directlyQueued}
-          <button
-            class="primary queue-toggle queue-added"
-            disabled={blocked || queueBusy || queue.blocked}
-            aria-label={`Added to cleanup queue. ${
-              selection.length === 1
-                ? "Remove from cleanup queue"
-                : "Remove selected items from queue"
-            }`}
-            onclick={() => void sq.remove()}
-          >
-            <span class="queue-toggle-labels" aria-hidden="true">
-              <span class="queue-added-label">
-                <Icon name="check" size={17} /> Added to cleanup queue
-              </span>
-              <span class="queue-remove-label">
-                <Icon name="minus" size={17} />
-                {selection.length === 1
-                  ? "Remove from cleanup queue"
-                  : "Remove selected items from queue"}
-              </span>
-            </span>
-          </button>
-        {:else if sq.queued}
+        {#if sq.queued && !sq.directlyQueued && !sq.removing}
           <div class="queue-included">
             <Icon name="check" size={17} /> Added to cleanup queue
           </div>
         {:else}
+          <!-- One button for every state, so focus survives add and remove. -->
+          {@const added = sq.directlyQueued && !sq.removing}
           <button
-            disabled={!app.can.addToQueue}
+            bind:this={queueToggle}
             class="primary"
-            aria-busy={sq.adding}
-            aria-describedby={selection.length > 1
+            class:queue-toggle={added}
+            class:queue-added={added}
+            disabled={sq.removing ||
+              (added
+                ? blocked || queueBusy || queue.blocked
+                : !app.can.addToQueue)}
+            aria-busy={sq.removing || sq.adding}
+            aria-label={added
+              ? `Added to cleanup queue. ${
+                  selection.length === 1
+                    ? "Remove from cleanup queue"
+                    : "Remove selected items from queue"
+                }`
+              : undefined}
+            aria-describedby={!added && selection.length > 1
               ? "selection-action-scope"
               : undefined}
-            onclick={() => void sq.add()}
+            onclick={(event) =>
+              void keepFocus(
+                event,
+                () => (added ? sq.remove() : sq.add()),
+                () => queueToggle,
+              )}
           >
-            <Icon name="queue-add" size={20} />
-            {sq.adding
-              ? "Adding…"
-              : sq.queuedCount > 0
-                ? "Add remaining to cleanup queue"
-                : "Add to cleanup queue"}
+            {#if sq.removing}
+              <Icon name="minus" size={17} /> Removing…
+            {:else if added}
+              <span class="queue-toggle-labels" aria-hidden="true">
+                <span class="queue-added-label">
+                  <Icon name="check" size={17} /> Added to cleanup queue
+                </span>
+                <span class="queue-remove-label">
+                  <Icon name="minus" size={17} />
+                  {selection.length === 1
+                    ? "Remove from cleanup queue"
+                    : "Remove selected items from queue"}
+                </span>
+              </span>
+            {:else}
+              <Icon name="queue-add" size={20} />
+              {sq.adding
+                ? "Adding…"
+                : sq.queuedCount > 0
+                  ? "Add remaining to cleanup queue"
+                  : "Add to cleanup queue"}
+            {/if}
           </button>
         {/if}
         <button
@@ -883,7 +929,8 @@
         <button
           class="queue-remove-partial"
           disabled={blocked || queueBusy || queue.blocked}
-          onclick={() => void sq.remove()}
+          onclick={(event) =>
+            void keepFocus(event, () => sq.remove(), () => queueToggle)}
         >
           <Icon name="minus" size={17} /> Remove {countLabel(sq.entries.length, "queued item")}
         </button>
@@ -1080,8 +1127,8 @@
                     disabled={!app.can.reviewHere}
                     onclick={() => void app.prepareQueue()}
                     >{readyHereEntries.length > group.readyHere
-                      ? `Review all ${readyHereEntries.length} ready`
-                      : `Review ${group.readyHere} ready`}</button
+                      ? `Review all ${readyHereEntries.length.toLocaleString()} ready`
+                      : `Review ${group.readyHere.toLocaleString()} ready`}</button
                   >{/if}
                 {#if group.unreviewable}<button
                     class:primary={!group.readyHere && !group.onlyElsewhere}
@@ -1128,7 +1175,7 @@
                       <Icon name="folder" size={14} />
                       <strong>{item.name}/</strong>
                       <span class="cleanup-folder-count"
-                        >{item.rows.length} items</span
+                        >{countLabel(item.rows.length, "item")}</span
                       >
                       <span
                         class="cleanup-figure"
@@ -1137,12 +1184,18 @@
                       >
                       <button
                         class="cleanup-remove"
+                        data-queue-key={`folder:${item.rows.map((row) => row.entry.id).join(",")}`}
                         disabled={blocked || queueBusy || queue.blocked}
                         title="Remove these items from the queue only; keep the files in place"
-                        aria-label={`Remove ${item.rows.length} items in ${item.name} from cleanup queue`}
-                        onclick={() =>
-                          void app.removeQueues(
-                            item.rows.map((row) => row.entry.id),
+                        aria-label={`Remove ${countLabel(item.rows.length, "item")} in ${item.name} from cleanup queue`}
+                        onclick={(event) =>
+                          void keepFocus(
+                            event,
+                            () =>
+                              app.removeQueues(
+                                item.rows.map((row) => row.entry.id),
+                              ),
+                            removeFocusTarget(event.currentTarget),
                           )}><Icon name="close" size={14} /></button
                       >
                     </div>

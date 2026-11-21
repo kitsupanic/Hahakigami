@@ -242,7 +242,7 @@
           <div class="scan-issue-pagination">
             <span
               >{page.items.length
-                ? `${offset + 1}–${offset + page.items.length} of ${page.retainedTotal.toLocaleString()} retained details`
+                ? `${(offset + 1).toLocaleString()}–${(offset + page.items.length).toLocaleString()} of ${page.retainedTotal.toLocaleString()} retained details`
                 : "0 details"}</span
             ><button
               disabled={loading || offset === 0}

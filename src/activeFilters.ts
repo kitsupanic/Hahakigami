@@ -33,7 +33,7 @@ function exactValue(bytes: number, scale: bigint): string | null {
 }
 
 function exactSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${bytes.toLocaleString()} B`;
   for (const unit of units.slice(0, -1)) {
     if (bytes < Number(unit.scale)) continue;
     const value = exactValue(bytes, unit.scale);
@@ -42,7 +42,7 @@ function exactSize(bytes: number): string {
   // A typed decimal (1.1 GiB) is never exact in bytes; round it. A whole rounded value would pose as exact.
   const fit = units.find((unit) => bytes >= Number(unit.scale))!;
   const rounded = +(bytes / Number(fit.scale)).toFixed(2);
-  return Number.isInteger(rounded) ? `${bytes} B` : `≈${rounded} ${fit.name}`;
+  return Number.isInteger(rounded) ? `${bytes.toLocaleString()} B` : `≈${rounded} ${fit.name}`;
 }
 
 export function sizeFilterLabel(
@@ -66,7 +66,7 @@ export function sizeFilterLabel(
   const upper = exactSize(max);
   // One byte unit for two byte ends; plain bytes too when both round alike, as "≈1 KiB–≈1 KiB" would mislead.
   return lower === upper || (lower.endsWith(" B") && upper.endsWith(" B"))
-    ? `${prefix} ${min}–${max} B`
+    ? `${prefix} ${min.toLocaleString()}–${max.toLocaleString()} B`
     : `${prefix} ${lower}–${upper}`;
 }
 
@@ -76,8 +76,8 @@ export function sizeFilterDescription(
   const prefix = "On disk";
   const { minBytes: min, maxBytes: max } = filter;
   if (min !== null && max !== null)
-    return `${prefix}: ${min}–${max} bytes, inclusive`;
-  if (min !== null) return `${prefix}: at least ${min} bytes, inclusive`;
-  if (max !== null) return `${prefix}: at most ${max} bytes, inclusive`;
+    return `${prefix}: ${min.toLocaleString()}–${max.toLocaleString()} bytes, inclusive`;
+  if (min !== null) return `${prefix}: at least ${min.toLocaleString()} bytes, inclusive`;
+  if (max !== null) return `${prefix}: at most ${max.toLocaleString()} bytes, inclusive`;
   return "";
 }

@@ -219,6 +219,44 @@ it("distinguishes the whole queue from ready items in the current scan", async (
     ),
   ).toBe(false);
 });
+it("moves focus to the next row's Remove, then the previous, then Back, after a removal", async () => {
+  const at = (id: string) => ({
+    ...queue.entries[0],
+    id,
+    name: id,
+    path: `/fixture/${id}`,
+  });
+  queue = { ...queue, entries: ["a", "b", "c"].map(at) };
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command, args) => {
+    if (command === "remove_cleanup_queue") {
+      queue = {
+        ...queue,
+        entries: queue.entries.filter(
+          (entry) => !args.entryIds.includes(entry.id),
+        ),
+        revision: queue.revision + 1,
+      };
+      return queue;
+    }
+    return original(command, args);
+  });
+  await click("Scan location");
+  await click("Cleanup queue · 3");
+  const remove = (id: string) =>
+    container.querySelector<HTMLButtonElement>(
+      `[aria-label="Remove /fixture/${id} from cleanup queue"]`,
+    )!;
+  remove("b").focus();
+  await click("Remove /fixture/b from cleanup queue");
+  expect(document.activeElement).toBe(remove("c"));
+  await click("Remove /fixture/c from cleanup queue");
+  expect(document.activeElement).toBe(remove("a"));
+  await click("Remove /fixture/a from cleanup queue");
+  expect(document.activeElement).toBe(
+    container.querySelector(".cleanup-back"),
+  );
+});
 it("disambiguates same-named queue removals by full path and preserves other candidates", async () => {
   queue = {
     ...queue,
@@ -532,6 +570,10 @@ it.each([
       : reason,
   );
   expect(text).not.toContain(unconfirmed ? "Nothing was moved" : "could not be confirmed");
+  // An unconfirmed commit may have moved files, so it rescans; a plain refusal does not.
+  expect(
+    mock.invoke.mock.calls.filter(([c]) => c === "start_scan"),
+  ).toHaveLength(unconfirmed ? 2 : 1);
 });
 it("opens the cleanup result as a modal that traps focus, closes with Done or Escape and returns focus", async () => {
   let trashed = 0;

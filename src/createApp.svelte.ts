@@ -29,6 +29,8 @@ import {
   type Target,
   PAGE_SIZE,
 } from "./types";
+// Mirrors the backend limit in cleanup.rs ("Select between 1 and 1,000 items.").
+const MAX_TRASH_ITEMS = 1000;
 const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
 declare global {
   interface Window {
@@ -1441,6 +1443,14 @@ export default function createApp() {
     };
     const scanId = review.scanId;
     const rescanTarget = liveTarget;
+    const invalidateAndRescan = () => {
+      clearResultsReturn();
+      clearNavigationHistory();
+      // A cleanup that moved anything invalidates these results before a replacement scan starts.
+      scans.drop(scanId);
+      summary = null;
+      void start(rescanTarget);
+    };
     busy = true;
     try {
       const result = await invoke<{ staleScanIds?: string[] } | null>(
@@ -1467,14 +1477,8 @@ export default function createApp() {
         report.movedCount ||
         report.invalidated ||
         report.state !== "confirmed"
-      ) {
-        clearResultsReturn();
-        clearNavigationHistory();
-        // A cleanup that moved anything invalidates these results before a replacement scan starts.
-        scans.drop(scanId);
-        summary = null;
-        void start(rescanTarget);
-      }
+      )
+        invalidateAndRescan();
     } catch (e) {
       trash = null;
       const base = cleanupResult(
@@ -1484,18 +1488,22 @@ export default function createApp() {
         null,
       );
       // The backend refused before moving anything: a plain failure, not an unconfirmed result.
-      cleanupReport = String(e).startsWith("Nothing was moved: ")
-        ? {
-            ...base,
-            state: "confirmed",
-            movedCount: 0,
-            failedCount: review.items.length,
-            message: String(e),
-          }
-        : {
-            ...base,
-            message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
-          };
+      if (String(e).startsWith("Nothing was moved: ")) {
+        cleanupReport = {
+          ...base,
+          state: "confirmed",
+          movedCount: 0,
+          failedCount: review.items.length,
+          message: String(e),
+        };
+      } else {
+        cleanupReport = {
+          ...base,
+          message: `Cleanup could not be confirmed. ${String(e)} Check the items in Finder before trying again.`,
+        };
+        // A crashed backend task may have moved files before failing, so these results are stale.
+        invalidateAndRescan();
+      }
       void refreshQueue();
     } finally {
       busy = false;
@@ -1586,6 +1594,10 @@ export default function createApp() {
       !sessionBlocked &&
       !selection.some((node) => node.excluded),
   );
+  // The backend refuses to review more than this many items for Trash.
+  const trashActionable = $derived(
+    selectionActionable && selection.length <= MAX_TRASH_ITEMS,
+  );
   const readyHereEntries = $derived(cleanupQueue.readyHere);
   const queueSelection = cleanupQueue.selection;
   /**
@@ -1619,7 +1631,7 @@ export default function createApp() {
       );
     },
     get trash() {
-      return selectionActionable;
+      return trashActionable;
     },
     // The add button only exists for an unqueued selection; the menu item needs that spelled out.
     get addToQueue() {
