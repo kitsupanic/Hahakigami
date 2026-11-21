@@ -373,6 +373,8 @@ it("keeps a newer selection when a pending breadcrumb ancestor completes", async
         })
       : previous(command, args),
   );
+  // With no known chain the walk asks the backend for the root.
+  await act(() => app().setCrumbs([]));
   let navigation!: Promise<void>;
   await act(() => {
     navigation = app().open(folder);
@@ -386,6 +388,32 @@ it("keeps a newer selection when a pending breadcrumb ancestor completes", async
   expect(app().crumbs.map((n) => n.id)).toEqual([0, 1]);
   expect(app().selection.map((n) => n.id)).toEqual([other.id]);
   expect(inspector().hidden).toBe(false);
+});
+
+it("reuses the known breadcrumb chain when opening a child folder", async () => {
+  mock.invoke.mockClear();
+  await act(() => app().open(folder));
+  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1]);
+  // The selection refresh may read the folder itself; nothing reads its parent.
+  expect(
+    mock.invoke.mock.calls.some(
+      ([command, args]) => command === "get_node" && args?.nodeId === 0,
+    ),
+  ).toBe(false);
+});
+
+it("walks to the root when the known chain does not start there", async () => {
+  // A restore can leave only the focus while its own walk is pending.
+  await act(() => app().setCrumbs([folder]));
+  const nested = {
+    ...folder,
+    id: 4,
+    parentId: 1,
+    name: "2026",
+    path: "/fixture/Photos/2026",
+  };
+  await act(() => app().open(nested));
+  expect(app().crumbs.map((n) => n.id)).toEqual([0, 1, 4]);
 });
 
 it("preserves Files & Folders when Space previews a completed live row", async () => {

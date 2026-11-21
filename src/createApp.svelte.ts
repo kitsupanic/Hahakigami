@@ -1273,11 +1273,22 @@ export default function createApp() {
     backHistory = [...backHistory.slice(-99), view];
     forwardHistory = [];
   }
-  async function loadCrumbs(n: NodeView, scanId: string, nav: number) {
+  /** `known` is the current breadcrumb chain of the same scan: the walk up stops at the first folder in it. */
+  async function loadCrumbs(
+    n: NodeView,
+    scanId: string,
+    nav: number,
+    known: readonly NodeView[] = [],
+  ) {
     const chain: NodeView[] = [n];
     let id = n.parentId;
     try {
       while (id !== null) {
+        const at = known.findIndex((crumb) => crumb.id === id);
+        if (at >= 0) {
+          chain.unshift(...known.slice(0, at + 1));
+          break;
+        }
         const parent = await invoke<NodeView>("get_node", {
           scanId,
           nodeId: id,
@@ -1370,7 +1381,14 @@ export default function createApp() {
     filters = { ...emptyFilter };
     ++listRequest.current;
     selection = [n];
-    await loadCrumbs(n, scanId, nav);
+    // Crumbs still hold the previous folder's chain; opening a child (the usual case) needs no backend call.
+    // Only a chain from the root is reused: a restore can leave just the focus while its own walk is pending.
+    await loadCrumbs(
+      n,
+      scanId,
+      nav,
+      crumbs[0]?.parentId === null ? crumbs : [],
+    );
   }
   function returnToResults() {
     const snapshot = resultsReturn;

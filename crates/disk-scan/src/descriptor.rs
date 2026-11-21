@@ -21,10 +21,6 @@ impl ChildName {
     pub(crate) fn as_c_str(&self) -> &CStr {
         &self.0
     }
-    #[cfg(target_os = "macos")]
-    pub(crate) fn storage_bytes(&self) -> usize {
-        self.0.as_bytes_with_nul().len()
-    }
     pub(crate) fn new(name: &std::ffi::OsStr) -> io::Result<Self> {
         if !crate::tree::is_exact_native_component(name) {
             return Err(io::Error::new(
