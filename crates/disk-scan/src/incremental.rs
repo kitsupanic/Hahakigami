@@ -56,6 +56,8 @@ pub(crate) struct Reuse {
     stats: ReuseStats,
     reused_directories: u64,
     pub(crate) new_hardlink: bool,
+    /// A folder served from cache no longer exists: the journal missed an event.
+    pub(crate) stale: bool,
     known_hardlinks: HashSet<(u64, u64)>,
     root_listing: Vec<u32>,
     root_stats: ScanStats,
@@ -307,6 +309,7 @@ impl Reuse {
             stats: ReuseStats::default(),
             reused_directories: 0,
             new_hardlink: false,
+            stale: false,
             known_hardlinks,
             root_listing,
             root_stats,
@@ -569,11 +572,15 @@ pub fn scan_live_incremental_authorized_with_validation_workers(
     );
     let mut reuse = reuse.into_inner().unwrap();
     let stats = if outcome.is_ok()
-        && (reuse.new_hardlink || !candidate.read().unwrap().incremental_accounting_eligible())
+        && (reuse.new_hardlink
+            || reuse.stale
+            || !candidate.read().unwrap().incremental_accounting_eligible())
         && !cancel.load(Ordering::Relaxed)
     {
         let reason = if reuse.new_hardlink {
             "new hard link requires global allocation reconciliation"
+        } else if reuse.stale {
+            "a reused folder changed without a journal event"
         } else {
             "sharing or unresolved accounting requires a full scan"
         };
@@ -1696,18 +1703,42 @@ mod tests {
                 fs::write(f.0.join("clean/deep/outside-marker"), b"x").unwrap();
             }
             let (actual, stats) = f.incremental(seed, vec![]);
-            assert!(actual.stats.errors > 0);
-            assert!(actual.stats.incomplete);
+            assert_eq!(actual.stats.errors, 0);
+            assert!(!actual.stats.incomplete);
+            // The old contents (moved out, or behind the symlink) never come back.
             assert!(!actual
                 .iter_nodes()
                 .map(|n| actual.legacy_node(n.id).unwrap())
-                .any(|n| n.path == f.0.join("clean/deep/kept")
-                    || n.path == f.0.join("clean/deep/outside-marker")));
-            // Other cached listings are accepted; failed leaf contents cannot be counted.
-            assert_eq!(stats.reused_entries, 3);
+                .any(|n| n.path == f.0.join("clean/deep/kept")));
+            // The replaced cached folder is a missed event: a full retry reads what is there now.
+            assert!(stats.fallback_reason.unwrap().contains("journal event"));
+            assert_eq!(stats.reused_entries, 0);
             assert!(original_leaf_entries > 0);
             assert!(!stats.unchanged_metadata);
+            compare(&actual, &f.full());
         }
+    }
+    #[test]
+    fn cached_folder_deleted_without_an_event_retries_fully_without_a_phantom() {
+        let f = Fixture::new();
+        let seed = f.full();
+        fs::remove_dir_all(f.0.join("clean/deep")).unwrap();
+        let (actual, stats) = f.incremental(seed, vec![]);
+        assert!(stats.fallback_reason.unwrap().contains("journal event"));
+        assert_eq!(actual.stats.errors, 0);
+        assert!(!actual.stats.incomplete);
+        compare(&actual, &f.full());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn new_file_in_a_reused_folder_without_an_event_retries_fully() {
+        let f = Fixture::new();
+        let seed = f.full();
+        fs::write(f.0.join("clean/deep/new"), b"new").unwrap();
+        let (actual, stats) = f.incremental(seed, vec![]);
+        assert!(stats.fallback_reason.unwrap().contains("unresolved"));
+        compare(&actual, &f.full());
+        assert!(actual.iter_nodes().any(|n| n.native_name() == "new"));
     }
     #[test]
     fn changed_directory_identity_never_reuses_old_children() {

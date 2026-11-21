@@ -315,6 +315,17 @@ it("tracks adding and removing the selection, with feedback for several items", 
   expect(queue.selection.removalFeedback).toBeNull();
 });
 
+it("confirms removing the one queued item of a larger selection", async () => {
+  const { port } = fakeQueuePort([], [entry("a", "/a")]);
+  const { queue } = setup(port, {
+    selection: [node(1, "/a"), node(2, "/b"), node(3, "/c")],
+  });
+  await settle();
+  await queue.selection.remove();
+  flushSync();
+  expect(queue.selection.feedback).toBe("Removed 1 item from cleanup queue.");
+});
+
 it("removes unique ids in one request and refuses another change meanwhile", async () => {
   const { port } = fakeQueuePort(
     [],

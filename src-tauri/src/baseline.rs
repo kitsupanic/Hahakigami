@@ -413,6 +413,10 @@ impl Ticket<'_> {
             (|| {
                 let cache = self.cache.lock();
                 let cache = cache.as_ref().unwrap();
+                // An expired token seeds nothing: writing it would only push other disks' valid entries out.
+                if !cache::recent(&token, metadata.started_at_ms, now_ms()) {
+                    return Ok(());
+                }
                 if scan.unchanged_metadata {
                     if let Some(previous) = self.prior.as_ref() {
                         if cache.refresh_unchanged(
@@ -1393,6 +1397,24 @@ mod tests {
         assert_eq!(published.unwrap().token.full_scan_at_ms, t3);
         let [third] = rig.archives().try_into().unwrap();
         assert_ne!(third, second);
+    }
+
+    #[test]
+    fn a_rescan_whose_full_scan_time_expired_is_not_written() {
+        let rig = Rig::new();
+        let tree = rig.tree();
+        rig.publish_baseline(&tree, ago(20_000));
+        let [first] = rig.archives().try_into().unwrap();
+        rig.journal.set_cursor(Some(20));
+        let t = ago(10_000);
+        let (start, ticket) = rig.acquire(&open(&tree), None, t);
+        prepared(start);
+        // The hour since the baseline's full scan ran out while this rescan was running.
+        let mut ticket = ticket.unwrap();
+        ticket.token.full_scan_at_ms = ago(2 * 60 * 60 * 1000);
+        let (published, _) = rig.publish(ticket, &tree, false, Scanned::default(), t);
+        assert!(published.unwrap().warning.is_none());
+        assert_eq!(rig.archives(), [first]);
     }
 
     #[test]

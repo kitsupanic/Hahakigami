@@ -1130,6 +1130,7 @@ fn scan_live_internal_reuse(
                                     &cancel,
                                     &mut clone_observations,
                                     &mut bulk_buffer,
+                                    &mut clone_listing_warnings,
                                 );
                                 Ok(entries)
                             }
@@ -1214,7 +1215,12 @@ fn scan_live_internal_reuse(
                             Err(e) if dataless(&e) => {}
                             // The root is held by descriptor; only a child directory can vanish
                             // or be replaced by a new one (not part of what was enumerated).
-                            Err(e) if fresh && id != 0 && (vanished(&e) || replaced(&e)) => {}
+                            Err(e) if id != 0 && (vanished(&e) || replaced(&e)) => {
+                                // Not a race when the cache said the folder was there: rescan fully.
+                                if let Some(reuse) = reuse.filter(|_| !fresh) {
+                                    reuse.lock().unwrap().stale = true;
+                                }
+                            }
                             // `retry::interrupted` reports cancellation as EINTR; that is not a scan error.
                             Err(e)
                                 if e.kind() == std::io::ErrorKind::Interrupted
@@ -2221,10 +2227,11 @@ mod tests {
             (Arc::try_unwrap(store).unwrap().into_inner().unwrap(), stats)
         };
         // A cached listing means the journal reported nothing there: finding that directory
-        // missing is a missed event (stale cache), so it stays an error.
+        // missing is a missed event (stale cache), so the rescan retries in full and finds it gone.
         let (stale, stats) = rescan(seed.clone(), vec![]);
-        assert_eq!(stats.fallback_reason, None);
-        assert!(stale.stats.errors > 0 && stale.stats.incomplete);
+        assert!(stats.fallback_reason.unwrap().contains("journal event"));
+        assert!(stale.stats.errors == 0 && !stale.stats.incomplete);
+        assert_eq!(stale.stats.entries, 4);
         // Its deletion event dirties the parent, so the result is a valid seed that reuses the rest.
         let (reseeded, stats) = rescan(seed, vec![p.join("gone/inner")]);
         assert_eq!(stats.fallback_reason, None);

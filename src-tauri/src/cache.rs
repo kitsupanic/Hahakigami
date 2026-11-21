@@ -1,5 +1,5 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{atomic, open, sync_dir, unusable, ScanMetadata, Store};
+use crate::cache_store::{open, sync_dir, unusable, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -259,12 +259,7 @@ impl Cache {
         }
     }
     fn write_record(&self, id: &str, record: &Record) -> Result<(), String> {
-        // A post-rename directory-sync warning is dropped: `maintain` syncs the directory again before every use.
-        atomic(&self.root, &self.path(id)?, "", |mut file| {
-            serde_json::to_writer(&mut file, record).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())
-        })
-        .map(drop)
+        self.store.write_json(&self.path(id)?, record)
     }
     /// Caller must prove that the freshly scanned tree is semantically unchanged.
     /// Serialized cache operations bind this refresh to the exact previous seed.

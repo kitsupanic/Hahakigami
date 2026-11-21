@@ -649,6 +649,40 @@ it("opens the cleanup result as a modal that traps focus, closes with Done or Es
   await click("Done");
   expect(result()).toBeNull();
 });
+it("shows a refused post-cleanup rescan only after the cleanup result closes", async () => {
+  let scanned = false;
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation(async (command, args) => {
+    if (command === "prepare_trash") return { token: "ticket", items: [file] };
+    if (command === "commit_trash")
+      return {
+        trashed: 1,
+        failures: [],
+        outcomes: [{ reviewIndex: 0, status: "trashed" }],
+      };
+    if (command === "start_scan" && scanned)
+      return Promise.reject("Rescan unavailable");
+    if (command === "start_scan") scanned = true;
+    return original(command, args);
+  });
+  const dialogs = () => container.querySelectorAll('[aria-modal="true"]');
+  await click("Scan location");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 270));
+  });
+  await flush();
+  await act(() => container.querySelector<HTMLElement>(".rows .row")!.click());
+  await act(() => menuItem("trash").click());
+  await flush();
+  await click("Move to Trash");
+  await flush();
+  await flush();
+  expect(dialogs()).toHaveLength(1);
+  expect(dialogs()[0].textContent).toContain("Moved 1 item to Trash");
+  await click("Done");
+  expect(dialogs()).toHaveLength(1);
+  expect(dialogs()[0].textContent).toContain("Rescan unavailable");
+});
 it.each(["ready", "needsScan"] as const)(
   "shows a restored cleanup failure separately from %s readiness",
   async (status) => {
