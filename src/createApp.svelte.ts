@@ -163,6 +163,11 @@ export default function createApp() {
     if (value) {
       homeOpen = false;
       void refreshQueue();
+    } else if (summary && !displayedSlot) {
+      // A rescan replaced these hidden results while Home or the queue was open: their scan is gone.
+      const key = liveTarget && slotKey(liveTarget);
+      if (key && scans.slots[key]) showSlot(key);
+      else resetView(null, null);
     }
   }
   async function addQueue() {
