@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { layout } from "./layout";
+import { layout, tweenShape } from "./layout";
 import { hitShape } from "./hitTest";
 import type { NodeView } from "./types";
 const node = (
@@ -278,4 +278,15 @@ it("reserves no compact directory band when the visible body would be too small"
   );
   expect(shapes[0].headerHeight).toBeUndefined();
   expect(shapes[1].width * shapes[1].height).toBe(7000);
+});
+describe("tweenShape", () => {
+  const to = { id: 1, x: 10, y: 20, width: 40, height: 60, start: 1, end: 2, inner: 5, outer: 9, depth: 1 };
+  it("moves a known tile from its old place and ends exactly on the new one", () => {
+    const from = { ...to, x: 0, width: 20, end: 1.5 };
+    expect(tweenShape(from, to, 0.5)).toMatchObject({ x: 5, width: 30, end: 1.75 });
+    expect(tweenShape(from, to, 1)).toEqual(to);
+  });
+  it("grows a new tile from its centre and start angle", () => {
+    expect(tweenShape(undefined, to, 0)).toMatchObject({ x: 30, y: 50, width: 0, height: 0, end: 1 });
+  });
 });

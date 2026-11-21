@@ -190,3 +190,31 @@ export function layout(
   }
   return out;
 }
+export const MAP_TWEEN_MS = 420;
+const mix = (a: number, b: number, k: number) => a + (b - a) * k;
+/** A frame between two layouts of one tile; a new tile grows from its own centre (treemap) or start angle (sunburst). */
+export function tweenShape(
+  from: Shape | undefined,
+  to: Shape,
+  k: number,
+): Shape {
+  const a = from ?? {
+    ...to,
+    x: to.x + to.width / 2,
+    y: to.y + to.height / 2,
+    width: 0,
+    height: 0,
+    end: to.start,
+  };
+  return {
+    ...to,
+    x: mix(a.x, to.x, k),
+    y: mix(a.y, to.y, k),
+    width: mix(a.width, to.width, k),
+    height: mix(a.height, to.height, k),
+    start: mix(a.start, to.start, k),
+    end: mix(a.end, to.end, k),
+    inner: mix(a.inner, to.inner, k),
+    outer: mix(a.outer, to.outer, k),
+  };
+}
