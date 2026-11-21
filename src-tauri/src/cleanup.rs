@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::SystemTime,
 };
 
@@ -54,10 +54,18 @@ pub(crate) enum TrashOutcomeStatus {
 
 const MOUNTS_UNREADABLE: &str = "Could not read the mounted volumes. Try again.";
 
-/// What the protection rules read from this machine: the home folder and the mount points. Passed in, so tests can
-/// give a folder a mount.
+/// The app's own data folder, set once at startup: the protection rules keep it out of the Trash.
+static APP_DATA: OnceLock<PathBuf> = OnceLock::new();
+pub(crate) fn set_app_data(dir: &Path) {
+    // Canonical like scan paths. Set at startup, so a repeat (nothing calls twice) keeps the first.
+    let _ = APP_DATA.set(std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
+}
+
+/// What the protection rules read from this machine: the home folder, the app data folder and the mount points.
+/// Passed in, so tests can give a folder a mount.
 pub(crate) struct Host {
     pub(crate) home: Option<PathBuf>,
+    pub(crate) data: Option<PathBuf>,
     pub(crate) mounts: Vec<PathBuf>,
 }
 impl Host {
@@ -67,6 +75,7 @@ impl Host {
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .map(|h| std::fs::canonicalize(&h).unwrap_or(h)),
+            data: APP_DATA.get().cloned(),
             mounts: platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?,
         })
     }
@@ -295,7 +304,7 @@ fn spend(
         s.invalidate();
         result.invalidated = true;
         // Every reviewed path counts, moved or not: over-invalidating is safe, a stale scan is not.
-        result.stale_scan_ids = invalidate_overlapping(s, others, &ticket.items);
+        result.stale_scan_ids = invalidate_overlapping(s, others, &ticket.items, moved_unconfirmed);
     }
     let mut queue = queue.lock().unwrap();
     result.persistence_warning = queue
@@ -306,22 +315,27 @@ fn spend(
 }
 /// Invalidates the completed, valid scans among `others` that a reviewed item overlaps (the scan holds the item, or
 /// the scan's root lies in a moved folder) and returns their ids. A path prefix alone is not enough: the `/` scan
-/// never walks into `/Volumes/Backup` or another mount, so it holds no item trashed there.
+/// never walks into `/Volumes/Backup` or another mount, so it holds no item trashed there. After an
+/// `unconfirmed_move` (an item left its place with no confirmed receipt) another item than the reviewed ones may
+/// have gone to the Trash, from anywhere: every one of them is stale.
 // shortcut: a scan still running, finishing or with a busy store is skipped, so it keeps results that miss the
 // move until the user rescans it. Upgrade by invalidating it too once a running scan can be told apart.
 fn invalidate_overlapping(
     s: &Session,
     others: &[Arc<Session>],
     items: &[safety::CheckedItem],
+    unconfirmed_move: bool,
 ) -> Vec<String> {
     let mut stale = vec![];
     for other in others.iter().filter(|o| o.id != s.id) {
         let Some(snapshot) = other.try_peek_completed() else {
             continue;
         };
-        if items.iter().any(|i| {
-            snapshot.root.starts_with(&i.path) || safety::node_at(&snapshot, &i.path).is_some()
-        }) {
+        if unconfirmed_move
+            || items.iter().any(|i| {
+                snapshot.root.starts_with(&i.path) || safety::node_at(&snapshot, &i.path).is_some()
+            })
+        {
             other.invalidate();
             stale.push(other.id.clone());
         }
@@ -340,10 +354,10 @@ fn execute(
     host: &Host,
     mut trash: impl FnMut(&safety::CheckedItem) -> Result<(), String>,
 ) -> Result<Execution, String> {
-    let (home, mounts) = (host.home.as_deref(), &host.mounts);
+    let (home, data, mounts) = (host.home.as_deref(), host.data.as_deref(), &host.mounts);
     // Verify all first, so a stale ticket moves nothing; then again just before each item's move.
     for item in items {
-        safety::verify(item, root, home, mounts)?;
+        safety::verify(item, root, home, data, mounts)?;
     }
     let mut result = TrashResult {
         trashed: 0,
@@ -357,7 +371,7 @@ fn execute(
     let mut failures = vec![];
     let mut moved_unconfirmed = false;
     for (review_index, item) in items.iter().enumerate() {
-        let step = safety::verify(item, root, home, mounts).and_then(|_| {
+        let step = safety::verify(item, root, home, data, mounts).and_then(|_| {
             trash(item).inspect_err(|_| {
                 // The reviewed item is no longer where it was: the failed step moved something.
                 moved_unconfirmed |=
@@ -471,7 +485,13 @@ pub(crate) fn selection(
     for item in &mut items {
         // Read before `verify`, so a file replaced in between fails it.
         item.pin_birth();
-        safety::verify(item, &snapshot.root, host.home.as_deref(), &host.mounts)?;
+        safety::verify(
+            item,
+            &snapshot.root,
+            host.home.as_deref(),
+            host.data.as_deref(),
+            &host.mounts,
+        )?;
     }
     Ok(items)
 }
@@ -501,7 +521,13 @@ fn statuses(
     }
     let host = Host::read()?;
     Ok(with_usable_scans(scans, |scans| {
-        cleanup_queue::statuses(queue, scans, host.home.as_deref(), &host.mounts)
+        cleanup_queue::statuses(
+            queue,
+            scans,
+            host.home.as_deref(),
+            host.data.as_deref(),
+            &host.mounts,
+        )
     }))
 }
 
@@ -516,7 +542,13 @@ mod tests {
     const PROTECTED: &str = "This location is protected from cleanup.";
     const QUEUE_CHANGED: &str = "Cleanup queue changed. Review ready items again.";
     fn host(home: Option<PathBuf>, mounts: Vec<PathBuf>) -> impl FnOnce() -> Result<Host, String> {
-        move || Ok(Host { home, mounts })
+        move || {
+            Ok(Host {
+                home,
+                data: None,
+                mounts,
+            })
+        }
     }
 
     fn home_dir() -> (tempfile::TempDir, PathBuf) {
@@ -747,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn a_review_refuses_a_folder_that_holds_a_mount_or_is_home() {
+    fn a_review_refuses_a_folder_that_holds_a_mount_or_is_home_or_app_data() {
         let (_dir, root) = home_dir();
         let folder = root.join("folder");
         std::fs::create_dir(&folder).unwrap();
@@ -768,6 +800,7 @@ mod tests {
         };
         let none = || Host {
             home: None,
+            data: None,
             mounts: vec![],
         };
         assert_eq!(select(none()), None);
@@ -781,6 +814,12 @@ mod tests {
             ..none()
         };
         assert_eq!(select(home).as_deref(), Some(PROTECTED));
+        // The app's own data folder, or a folder holding it: trashing it would free the instance lock.
+        let data = Host {
+            data: Some(folder.join("data")),
+            ..none()
+        };
+        assert_eq!(select(data).as_deref(), Some(PROTECTED));
     }
 
     /// A queued file `a` of a completed scan, with the queue and the scans to review it against.

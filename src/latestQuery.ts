@@ -11,7 +11,11 @@ export function latestOnly() {
         while (pending) {
           const next = pending;
           pending = null;
-          await next();
+          try {
+            await next();
+          } catch (error) {
+            console.error(error);
+          }
         }
       } finally {
         running = false;

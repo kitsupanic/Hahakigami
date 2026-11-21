@@ -294,7 +294,8 @@ impl Cache {
             return Err("This result cannot seed incremental scans".into());
         }
         self.maintain()?;
-        let row = self.store.save(s, m)?;
+        // The archive stops growing at the budget, so an oversized one is never written out and synced.
+        let row = self.store.with_file_limit(self.bytes_limit).save(s, m)?;
         if let Err(e) = self.write_record(
             &row.id,
             &Record {
@@ -308,10 +309,6 @@ impl Cache {
         ) {
             let _ = self.remove(&row.id);
             return Err(e);
-        }
-        if row.file_bytes > self.bytes_limit {
-            self.remove(&row.id)?;
-            return Err("Rescan cache exceeds its storage budget".into());
         }
         let mut count = 0usize;
         let mut bytes = 0u64;

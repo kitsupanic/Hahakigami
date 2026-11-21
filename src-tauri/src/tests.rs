@@ -4303,6 +4303,42 @@ fn trashing_a_folder_also_invalidates_a_scan_rooted_inside_it() {
     });
 }
 
+#[test]
+fn a_move_the_trash_could_not_confirm_invalidates_every_completed_scan() {
+    tauri::async_runtime::block_on(async {
+        let app = app(AppState::default());
+        let state = app.state::<AppState>();
+        let (_dir, disk) = disk_root();
+        std::fs::write(disk.join("big"), b"big").unwrap();
+        let (_other_dir, other_root) = disk_root();
+        let scan = snapshot(disk.clone());
+        let id = node_of(&scan, &disk.join("big"));
+        let disk_scan = install_in(&state, Slot::Disk(disk.clone()), "disk", scan);
+        // Holds nothing the reviewed item touches.
+        let unrelated = install_in(&state, Slot::Folder, "other", snapshot(other_root));
+        let review = prepare_trash(app.state(), "disk".into(), vec![id])
+            .await
+            .unwrap();
+        let others: Vec<_> = state.scans.sessions().into_iter().map(|(_, s)| s).collect();
+        // The item left its place, but the Trash call did not confirm what it moved: another item may have gone.
+        let result = cleanup::commit(
+            &disk_scan,
+            &state.cleanup_queue,
+            &review.token,
+            false,
+            &others,
+            |i| {
+                std::fs::rename(&i.path, i.path.with_extension("moved")).unwrap();
+                Err("A different item than the reviewed one went to the Trash.".into())
+            },
+        )
+        .unwrap();
+        assert_eq!(result.trashed, 0);
+        assert_eq!(result.stale_scan_ids, vec!["other".to_string()]);
+        assert!(!unrelated.is_valid());
+    });
+}
+
 // A folder `D/sub` with one file `D/sub/file`, inside a "disk" `D`, plus an unrelated folder to replace the folder slot with.
 struct Nested {
     _dirs: Vec<tempfile::TempDir>,
@@ -4395,7 +4431,7 @@ fn queue_nodes(queue: &mut cleanup_queue::Queue, from: &Held, paths: &[&std::pat
         .unwrap();
 }
 fn entries(queue: &cleanup_queue::Queue, against: &[&Held]) -> Vec<cleanup_queue::EntryView> {
-    let statuses = cleanup_queue::statuses(queue, &scans(against), None, &[]);
+    let statuses = cleanup_queue::statuses(queue, &scans(against), None, None, &[]);
     cleanup_queue::view(queue, &statuses).entries
 }
 /// The first entry's status and the scan it is matched to.
@@ -4408,7 +4444,7 @@ fn is(status: &str, scan: Option<&str>) -> (String, Option<String>) {
 }
 /// The nodes a review of scan `id` holds.
 fn review_of(queue: &cleanup_queue::Queue, against: &[&Held], id: &str) -> Vec<u32> {
-    let statuses = cleanup_queue::statuses(queue, &scans(against), None, &[]);
+    let statuses = cleanup_queue::statuses(queue, &scans(against), None, None, &[]);
     cleanup_queue::ready_nodes(queue, &statuses, id)
 }
 fn queue_of(storage: &tempfile::TempDir) -> cleanup_queue::Queue {

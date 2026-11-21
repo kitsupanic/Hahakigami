@@ -252,14 +252,33 @@ pub fn ancestors(path: &Path) -> Result<Vec<(PathBuf, Identity)>, String> {
         .collect()
 }
 
-pub fn protected(path: &Path, root: &Path, home: Option<&Path>, mounts: &[PathBuf]) -> bool {
+/// Whether `path` may never go to the Trash. `data` is the app's own data folder (it holds the instance lock, the
+/// cleanup queue and the rescan cache).
+pub fn protected(
+    path: &Path,
+    root: &Path,
+    home: Option<&Path>,
+    data: Option<&Path>,
+    mounts: &[PathBuf],
+) -> bool {
     // A mount point, or a folder with a mount anywhere inside it: Trash would leave that volume mounted.
     if path == root
         || path == Path::new("/")
         // The home folder and every folder above it.
         || home.is_some_and(|h| h.starts_with(path))
+        // The app data folder, what is inside it and every folder above it.
+        || data.is_some_and(|d| d.starts_with(path) || path.starts_with(d))
         || mounts.iter().any(|p| p.starts_with(path))
     {
+        return true;
+    }
+    // A volume's own folders (Spotlight, FSEvents, its Trash) at its top level, and what is inside them.
+    let top = |dir: &Path| dir == Path::new("/") || mounts.iter().any(|m| m == dir);
+    if path.ancestors().any(|a| {
+        a.file_name()
+            .is_some_and(|n| disk_scan::VOLUME_METADATA_NAMES.iter().any(|m| n == *m))
+            && a.parent().is_some_and(top)
+    }) {
         return true;
     }
     if [
@@ -284,9 +303,10 @@ pub fn verify(
     item: &CheckedItem,
     root: &Path,
     home: Option<&Path>,
+    data: Option<&Path>,
     mounts: &[PathBuf],
 ) -> Result<(), String> {
-    verify_paths(item, root, home, mounts)?;
+    verify_paths(item, root, home, data, mounts)?;
     match &item.volume {
         Some(volume) if Volume::read(&item.path)? == *volume => Ok(()),
         _ => Err("The volume at this location changed. Rescan before cleanup.".into()),
@@ -298,9 +318,10 @@ pub fn verify_paths(
     item: &CheckedItem,
     root: &Path,
     home: Option<&Path>,
+    data: Option<&Path>,
     mounts: &[PathBuf],
 ) -> Result<(), String> {
-    if !item.path.starts_with(root) || protected(&item.path, root, home, mounts) {
+    if !item.path.starts_with(root) || protected(&item.path, root, home, data, mounts) {
         return Err("This location is protected from cleanup.".into());
     }
     // Canonicalize the parent, not the item: recycling a symlink must recycle the link itself.
@@ -416,7 +437,7 @@ mod tests {
         let home = Path::new("/Users/test");
         let root = Path::new("/Users/test/proj");
         // No mounts here: a mount below a path would protect it too and hide a deleted rule.
-        let blocked = |path: &str| protected(Path::new(path), root, Some(home), &[]);
+        let blocked = |path: &str| protected(Path::new(path), root, Some(home), None, &[]);
         // Each of these is refused by one rule of `protected` alone.
         assert!(blocked("/Users/test/proj"), "the scan root");
         assert!(blocked("/"), "/");
@@ -448,6 +469,7 @@ mod tests {
                 Path::new(path),
                 Path::new("/Volumes/Ext/proj"),
                 Some(home),
+                None,
                 &[],
             )
         };
@@ -458,10 +480,11 @@ mod tests {
         );
         assert!(!off("/Volumes/Ext/Users/other") && !off("/Volumes/Ext/Users/me/Downloads"));
         // Without a home folder, its two rules do not apply.
-        assert!(!protected(Path::new("/Users/test"), root, None, &[]));
+        assert!(!protected(Path::new("/Users/test"), root, None, None, &[]));
         assert!(!protected(
             Path::new("/Users/test/Library"),
             root,
+            None,
             None,
             &[]
         ));
@@ -474,7 +497,7 @@ mod tests {
             PathBuf::from("/Users/test/dev/vm/mnt"),
             PathBuf::from("/Volumes/Ext"),
         ];
-        let blocked = |path: &str| protected(Path::new(path), root, Some(home), &mounts);
+        let blocked = |path: &str| protected(Path::new(path), root, Some(home), None, &mounts);
         assert!(blocked("/Users/test/dev/vm/mnt"), "a mount point");
         assert!(blocked("/Volumes/Ext"), "a volume's mount point");
         assert!(blocked("/Users/test/dev/vm"), "the parent of a mount point");
@@ -497,8 +520,52 @@ mod tests {
             Path::new("/Users/test/Downloads/x"),
             root,
             Some(home),
+            None,
             &with_root_mount
         ));
+    }
+    #[test]
+    fn protects_a_volumes_own_folders_at_its_top_level_only() {
+        let root = Path::new("/Users/test/proj");
+        let mounts = [PathBuf::from("/Volumes/USB")];
+        let blocked = |path: &str| protected(Path::new(path), root, None, None, &mounts);
+        for name in disk_scan::VOLUME_METADATA_NAMES {
+            assert!(blocked(&format!("/Volumes/USB/{name}")), "{name}");
+            assert!(
+                blocked(&format!("/Volumes/USB/{name}/inner")),
+                "{name}/inner"
+            );
+            assert!(blocked(&format!("/{name}")), "/{name}");
+            assert!(!blocked(&format!("/Volumes/USB/foo/{name}")), "foo/{name}");
+            assert!(
+                !blocked(&format!("/Volumes/USB/{name}-copy")),
+                "{name}-copy"
+            );
+            // Not a mount point, so not the top level of a volume.
+            assert!(!blocked(&format!("/Volumes/Other/{name}")), "Other/{name}");
+        }
+    }
+    #[test]
+    fn protects_the_app_data_folder_what_is_inside_it_and_every_folder_above_it() {
+        let root = Path::new("/Users/test/proj");
+        let data = Path::new("/Users/test/Library/Application Support/app.example");
+        let blocked = |path: &str| protected(Path::new(path), root, None, Some(data), &[]);
+        for path in [
+            "/Users/test/Library/Application Support/app.example",
+            "/Users/test/Library/Application Support/app.example/instance.lock",
+            "/Users/test/Library/Application Support/app.example/cleanup-queue",
+            "/Users/test/Library/Application Support",
+        ] {
+            assert!(blocked(path), "{path}");
+        }
+        for path in [
+            "/Users/test/Library/Application Support/other.app",
+            "/Users/test/Library/Application Support/app.example2",
+        ] {
+            assert!(!blocked(path), "{path}");
+        }
+        // Without a data folder (tests, a failed lookup) these are ordinary paths.
+        assert!(!protected(data, root, None, None, &[]));
     }
     #[test]
     fn collapses_overlapping_selection() {
@@ -559,10 +626,10 @@ mod tests {
             ancestors: ancestors(&p).unwrap(),
             volume: Some(Volume::read(&root).unwrap()),
         };
-        assert!(verify(&item, &root, None, &[]).is_ok());
+        assert!(verify(&item, &root, None, None, &[]).is_ok());
         std::fs::rename(&p, root.join("old")).unwrap();
         std::fs::write(&p, []).unwrap();
-        assert!(verify(&item, &root, None, &[]).is_err());
+        assert!(verify(&item, &root, None, None, &[]).is_err());
     }
     #[cfg(unix)]
     #[test]
@@ -581,7 +648,7 @@ mod tests {
         };
         std::fs::rename(&p, root.join("old")).unwrap();
         std::os::unix::fs::symlink(root.join("old"), &p).unwrap();
-        assert!(verify(&item, &root, None, &[]).is_err());
+        assert!(verify(&item, &root, None, None, &[]).is_err());
     }
     #[test]
     fn another_birth_time_is_another_item_but_an_unknown_one_matches_as_before() {
@@ -628,13 +695,13 @@ mod tests {
             volume: None,
         };
         let (secs, nanos) = item.identity.birth.expect("macOS reports a birth time");
-        assert!(verify_paths(&item, &root, None, &[]).is_ok());
+        assert!(verify_paths(&item, &root, None, None, &[]).is_ok());
         // What FAT inode reuse looks like: same device and inode, a file born at another time.
         item.identity.birth = Some((secs - 1, nanos));
-        assert!(verify_paths(&item, &root, None, &[]).is_err());
+        assert!(verify_paths(&item, &root, None, None, &[]).is_err());
         // An item with no recorded birth time is checked as before, until `pin_birth` records it.
         item.identity.birth = None;
-        assert!(verify_paths(&item, &root, None, &[]).is_ok());
+        assert!(verify_paths(&item, &root, None, None, &[]).is_ok());
         item.pin_birth();
         assert_eq!(item.identity.birth, Some((secs, nanos)));
     }
@@ -654,10 +721,10 @@ mod tests {
             volume: Some(Volume::read(&top).unwrap()),
         };
         // Sound in every other way: under a root that holds it, it passes.
-        assert!(verify(&item, &top, None, &[]).is_ok());
+        assert!(verify(&item, &top, None, None, &[]).is_ok());
         for check in [verify, verify_paths] {
             assert_eq!(
-                check(&item, &scanned, None, &[]),
+                check(&item, &scanned, None, None, &[]),
                 Err("This location is protected from cleanup.".into())
             );
         }
@@ -674,14 +741,14 @@ mod tests {
             ancestors: ancestors(&p).unwrap(),
             volume: Some(Volume::read(&root).unwrap()),
         };
-        assert!(verify(&item, &root, None, &[]).is_ok());
+        assert!(verify(&item, &root, None, None, &[]).is_ok());
         // Same path and identities, but recorded on another (reformatted) volume.
         item.volume = Some(Volume::Uuid(uuid::Uuid::new_v4().to_string()));
-        assert!(verify_paths(&item, &root, None, &[]).is_ok());
-        assert!(verify(&item, &root, None, &[]).is_err());
+        assert!(verify_paths(&item, &root, None, None, &[]).is_ok());
+        assert!(verify(&item, &root, None, None, &[]).is_err());
         item.volume = Some(Volume::NoUuid);
-        assert!(verify(&item, &root, None, &[]).is_err());
+        assert!(verify(&item, &root, None, None, &[]).is_err());
         item.volume = None;
-        assert!(verify(&item, &root, None, &[]).is_err());
+        assert!(verify(&item, &root, None, None, &[]).is_err());
     }
 }

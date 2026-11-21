@@ -620,11 +620,12 @@ pub(crate) struct EntryStatus {
 ///
 /// An entry with no scan has no status, which `view` shows as "needs scan". The item is verified through the
 /// matched scan itself in both cases: same identity and ancestor chain as recorded, then `safety::verify_paths`
-/// against that scan's root. `home` and `mounts` feed its protection rules.
+/// against that scan's root. `home`, `data` (the app's data folder) and `mounts` feed its protection rules.
 pub(crate) fn statuses(
     queue: &Queue,
     scans: &[Scan],
     home: Option<&Path>,
+    data: Option<&Path>,
     mounts: &[PathBuf],
 ) -> HashMap<String, EntryStatus> {
     let mut statuses = HashMap::new();
@@ -725,7 +726,7 @@ pub(crate) fn statuses(
                 // no match. A match that fails the on-disk check stays "blocked".
                 match found.filter(|&id| snapshot.node(id).is_some_and(|n| !n.excluded)) {
                     None => continue,
-                    Some(id) => match item_status(scan, c, id, home, mounts) {
+                    Some(id) => match item_status(scan, c, id, home, data, mounts) {
                         ("changed", ..) => continue,
                         status => status,
                     },
@@ -733,7 +734,7 @@ pub(crate) fn statuses(
             } else if root_changed(c) {
                 ("changed", Some("Original scan location or its ancestors changed. Remove this entry and deliberately add it again.".into()), None)
             } else if let Some(id) = found {
-                item_status(scan, c, id, home, mounts)
+                item_status(scan, c, id, home, data, mounts)
             } else {
                 (
                     "missing",
@@ -763,6 +764,7 @@ fn item_status(
     c: &Candidate,
     id: u32,
     home: Option<&Path>,
+    data: Option<&Path>,
     mounts: &[PathBuf],
 ) -> (&'static str, Option<String>, Option<u32>) {
     let current = match safety::checked_item(scan, id) {
@@ -788,7 +790,7 @@ fn item_status(
             None,
         );
     }
-    match safety::verify_paths(&saved, &scan.snapshot.root, home, mounts) {
+    match safety::verify_paths(&saved, &scan.snapshot.root, home, data, mounts) {
         Ok(()) => ("ready", None, Some(id)),
         Err(error) => ("blocked", Some(error), None),
     }
@@ -1016,7 +1018,7 @@ mod tests {
         let old = &queue.entries[0];
         assert_eq!(old.item.identity.birth, None);
         assert_eq!(old.item.identity, entry.item.identity);
-        assert!(safety::verify_paths(&old.checked(), &root, None, &[]).is_ok());
+        assert!(safety::verify_paths(&old.checked(), &root, None, None, &[]).is_ok());
     }
     #[test]
     fn restart_preserves_native_bytes_private_modes_and_overlap_semantics() {

@@ -1,6 +1,13 @@
 //! Presentation classification only: no filesystem queries, coverage changes, or omitted errors.
 use crate::ScanIssue;
 use std::{io, path::Path};
+/// The folders macOS keeps at the top of every volume for its own bookkeeping.
+pub const VOLUME_METADATA_NAMES: [&str; 4] = [
+    ".DocumentRevisions-V100",
+    ".fseventsd",
+    ".Spotlight-V100",
+    ".Trashes",
+];
 pub fn is_system_restriction(issue: &ScanIssue) -> bool {
     metadata(
         &issue.path,
@@ -70,15 +77,10 @@ fn system_path(path: &Path) -> bool {
         [b"Volumes", _, rest @ ..] => rest,
         _ => parts,
     };
-    if volume_parts.first().is_some_and(|name| {
-        [
-            b".DocumentRevisions-V100".as_slice(),
-            b".fseventsd",
-            b".Spotlight-V100",
-            b".Trashes",
-        ]
-        .contains(name)
-    }) {
+    if volume_parts
+        .first()
+        .is_some_and(|name| VOLUME_METADATA_NAMES.iter().any(|n| n.as_bytes() == *name))
+    {
         return true;
     }
     if prefixes.iter().any(|prefix| parts.starts_with(prefix)) {

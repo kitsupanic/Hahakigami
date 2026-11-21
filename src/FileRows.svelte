@@ -8,7 +8,7 @@
     normalizePath,
     type QueuePath,
   } from "./queueMarkers";
-  import { compactBytes, countLabel, usageColor } from "./uiFormat";
+  import { compactBytes, countLabel, percent, usageColor } from "./uiFormat";
   import {
     createHoverTarget,
     findHoverMatch,
@@ -538,7 +538,7 @@
           ><span class="file-relative"
             >{#if !n.excluded}
               {scanBytes > 0
-                ? `${((n.allocatedBytes / scanBytes) * 100).toFixed(1)}%`
+                ? percent(n.allocatedBytes, scanBytes)
                 : "—"}{/if}</span
           ><span
             class="file-size"

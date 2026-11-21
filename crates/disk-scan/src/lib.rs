@@ -23,7 +23,7 @@ pub use incremental::{
 mod restriction;
 mod retry;
 pub use firmlinks::public_paths as firmlink_paths;
-pub use restriction::is_system_restriction;
+pub use restriction::{is_system_restriction, VOLUME_METADATA_NAMES};
 mod diagnostics;
 pub use diagnostics::WorkerStats;
 mod storage;

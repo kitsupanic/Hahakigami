@@ -615,10 +615,8 @@ export default function createApp() {
       return;
     choosingFolder = true;
     const request = ++folderRequest;
-    const previousTarget = target;
     // Another scan may take the view while the dialog is open; the chosen folder still counts.
-    const current = () =>
-      !disposed && request === folderRequest && target === previousTarget;
+    const current = () => !disposed && request === folderRequest;
     quickLook.dismiss();
     try {
       const chosen = await invoke<Target | null>("choose_folder");
@@ -1698,8 +1696,7 @@ export default function createApp() {
     /** Review the ready entries matched to the scan on screen. */
     get reviewHere() {
       return (
-        !queueBusy &&
-        !blocked &&
+        !sessionBlocked &&
         !queue.blocked &&
         shown?.summary.state === "completed" &&
         readyHereEntries.length > 0

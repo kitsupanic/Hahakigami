@@ -190,6 +190,28 @@ it.each([
     )!.value,
   ).toBe(text);
 });
+it("accepts a comma as the decimal separator only where the locale uses one", async () => {
+  await choose("Size range", "custom");
+  await choose("Size unit", "GiB");
+  await fill("Minimum size", "1,000");
+  await click("Apply range");
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  expect(applied).not.toHaveBeenCalled();
+  const parts = vi
+    .spyOn(Intl.NumberFormat.prototype, "formatToParts")
+    .mockReturnValue([
+      { type: "integer", value: "1" },
+      { type: "decimal", value: "," },
+      { type: "fraction", value: "1" },
+    ]);
+  try {
+    await fill("Minimum size", "1,5");
+    await click("Apply range");
+    expect(applied.mock.lastCall?.[0].minBytes).toBe(1.5 * 1024 ** 3);
+  } finally {
+    parts.mockRestore();
+  }
+});
 it("remounts in the largest unit that holds the applied size exactly", async () => {
   await act(async () => root.unmount());
   root = createRoot(container);
