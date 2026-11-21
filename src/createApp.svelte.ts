@@ -71,6 +71,8 @@ export default function createApp() {
   let focus = $state.raw<NodeView | null>(null);
   let crumbs = $state.raw<NodeView[]>([]);
   let page = $state.raw<Page>({ items: [], total: 0 });
+  // The rows of `page` were read from a finished scan, so they cannot change.
+  let pageSettled = false;
   let map = $state.raw<NodeView[]>([]);
   let mapColorMode = $state<"folder" | "fileType">("folder");
   const queryFileTypeMap = latestOnly();
@@ -213,6 +215,20 @@ export default function createApp() {
         ];
       target = disk ?? location;
       queueOpen = false;
+      // Entries already ready in a completed scan of this slot: open it, a rescan would drop them to "Needs scan".
+      const key = slotKey(location);
+      const done = scans.slots[key];
+      const group = cleanupQueue.groups.find((g) =>
+        g.entries.some((entry) => entry.id === entryId),
+      );
+      if (
+        done?.summary?.state === "completed" &&
+        group?.entries.every(
+          (entry) =>
+            entry.status === "ready" && entry.matchedScanId === done.scanId,
+        )
+      )
+        return showSlot(key);
       // Not awaited: a sleeping disk must not hold the queue busy.
       void start(location);
     });
@@ -1083,9 +1099,17 @@ export default function createApp() {
         revision === version &&
         selectionIdentity === ids;
       // A running scan ticks every second: refresh only the newest picks, the rest at the final state.
+      // A finished scan's loaded rows are already current: refetch only the picks outside them.
+      const loaded =
+        summary.state !== "running" && pageSettled
+          ? new Set(page.items)
+          : null;
       const nodeIds = (
         summary.state === "running" ? selection.slice(-20) : selection
-      ).map(({ id }) => id);
+      )
+        .filter((node) => !loaded?.has(node))
+        .map(({ id }) => id);
+      if (!nodeIds.length) return;
       queryRefresh(() =>
         Promise.all(
           nodeIds.map((id) =>
@@ -1206,6 +1230,7 @@ export default function createApp() {
       if (query !== debouncedQuery) return;
       let ignore = false;
       const scanId = summary.scanId;
+      const settled = summary.state !== "running";
       const current = () =>
         !ignore &&
         request === listRequest.current &&
@@ -1242,6 +1267,7 @@ export default function createApp() {
               return;
             }
             page = result;
+            pageSettled = settled;
           })
           .catch((failure) => {
             if (current()) fail(failure);

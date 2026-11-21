@@ -501,6 +501,22 @@ it("refreshes every selected file before calculating completed selection totals"
   );
 });
 
+it("does not refetch selected rows that a finished scan already loaded", async () => {
+  const nodeCalls = () =>
+    mock.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === "get_node" && [folder.id, other.id].includes(args.nodeId),
+    );
+  await select(folder);
+  await select(other, true);
+  expect(app().selection.map((n) => n.id)).toEqual([folder.id, other.id]);
+  expect(nodeCalls()).toHaveLength(0);
+  // A selection restored from a snapshot is not one of the loaded rows: it is read again.
+  await act(() => app().setSelection([{ ...folder }]));
+  await flush();
+  expect(nodeCalls()).toHaveLength(1);
+});
+
 it.each(["selection", "scan", "revision"])(
   "ignores a pending selection refresh after the %s changes",
   async (change) => {
@@ -513,7 +529,9 @@ it.each(["selection", "scan", "revision"])(
           })
         : standard(command, args),
     );
-    await select(folder);
+    // A copy outside the loaded rows is the one kind a finished scan still refetches.
+    await act(() => app().setSelection([{ ...folder }]));
+    await flush();
     const stale = finish;
     expect(stale).toBeTypeOf("function");
     mock.invoke.mockImplementation(standard);

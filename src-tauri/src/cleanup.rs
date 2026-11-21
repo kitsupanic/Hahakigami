@@ -63,7 +63,10 @@ pub(crate) struct Host {
 impl Host {
     pub(crate) fn read() -> Result<Self, String> {
         Ok(Self {
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            // Canonical like scan paths, so a symlinked or off-/Users home is still matched.
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| std::fs::canonicalize(&h).unwrap_or(h)),
             mounts: platform::mounted_paths().ok_or(MOUNTS_UNREADABLE)?,
         })
     }

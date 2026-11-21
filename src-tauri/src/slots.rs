@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, TryLockError,
+        Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, TryLockError, Weak,
     },
 };
 
@@ -176,6 +176,10 @@ impl Session {
             .then_some(snapshot)
     }
     fn completed(&self) -> Result<RwLockReadGuard<'_, Snapshot>, String> {
+        // A finalizing scan holds the store's write lock: answer without waiting for it.
+        if self.finishing.load(Ordering::Acquire) {
+            return Err(NOT_COMPLETED.into());
+        }
         // Quick Look's authority callback reaches this, where unwinding aborts the process: an error, never a panic.
         let snapshot = self.store.read().map_err(|_| UNAVAILABLE)?;
         if self.finishing.load(Ordering::Acquire) || snapshot.state != ScanState::Completed {
@@ -223,7 +227,7 @@ impl Session {
 #[derive(Default)]
 struct LiveSlots {
     slots: HashMap<Slot, Arc<Session>>,
-    draining: Vec<Arc<Session>>,
+    draining: Vec<Weak<Session>>,
 }
 
 impl LiveSlots {
@@ -231,7 +235,9 @@ impl LiveSlots {
         self.slots.values().find(|s| s.id == id).cloned()
     }
     fn release_ended(&mut self) {
-        self.draining.retain(|s| session_running(s));
+        // The scan thread holds the strong reference: a discarded scan's results are freed when it ends.
+        self.draining
+            .retain(|w| w.upgrade().is_some_and(|s| session_running(&s)));
     }
     /// Whether any scan runs, a draining one included: restart cannot overlap a scan at all. Drained scans
     /// that ended are released here.
@@ -360,7 +366,7 @@ impl Slots {
         s.cancel.store(true, Ordering::Relaxed);
         s.invalidate();
         if session_running(&s) {
-            live.draining.push(s);
+            live.draining.push(Arc::downgrade(&s));
         }
     }
 }
@@ -840,6 +846,10 @@ mod tests {
         s.finishing.store(true, Ordering::Release);
         assert_eq!(s.hold(Need::LiveCompleted).err().unwrap(), NOT_COMPLETED);
         assert_eq!(s.peek_completed().err().unwrap(), NOT_COMPLETED);
+        // It answers without waiting for the write lock a finalizing scan holds (this would deadlock otherwise).
+        let writing = s.store.write().unwrap();
+        assert_eq!(s.peek_completed().err().unwrap(), NOT_COMPLETED);
+        drop(writing);
         s.finishing.store(false, Ordering::Release);
         assert!(s
             .hold(Need::LiveCompleted)

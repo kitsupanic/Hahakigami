@@ -640,6 +640,8 @@ fn open_from_root(
 }
 struct Work {
     id: u32,
+    /// The listing that queued this folder came from the saved cache, not from the disk.
+    parent_reused: bool,
     #[cfg(unix)]
     parent: Option<Arc<descriptor::Lease>>,
     #[cfg(unix)]
@@ -984,6 +986,7 @@ fn scan_live_internal_reuse(
     ready.push(
         Work {
             id: 0,
+            parent_reused: false,
             #[cfg(unix)]
             parent: root_parent.clone(),
             #[cfg(unix)]
@@ -1216,8 +1219,10 @@ fn scan_live_internal_reuse(
                             // The root is held by descriptor; only a child directory can vanish
                             // or be replaced by a new one (not part of what was enumerated).
                             Err(e) if id != 0 && (vanished(&e) || replaced(&e)) => {
-                                // Not a race when the cache said the folder was there: rescan fully.
-                                if let Some(reuse) = reuse.filter(|_| !fresh) {
+                                // Not a race when the cache said the folder was there, and a cached
+                                // parent listed it: rescan fully. A parent read from disk can lose it.
+                                if let Some(reuse) = reuse.filter(|_| !fresh && work.parent_reused)
+                                {
                                     reuse.lock().unwrap().stale = true;
                                 }
                             }
@@ -1324,6 +1329,7 @@ fn scan_live_internal_reuse(
                                                 pending.push((
                                                     Work {
                                                         id: nid,
+                                                        parent_reused: !fresh,
                                                         #[cfg(unix)]
                                                         parent: parent_lease.clone(),
                                                         #[cfg(unix)]
@@ -1599,6 +1605,7 @@ mod tests {
     fn queued_work(id: u32) -> Work {
         Work {
             id,
+            parent_reused: false,
             #[cfg(unix)]
             parent: None,
             #[cfg(unix)]

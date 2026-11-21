@@ -128,7 +128,9 @@ pub(crate) fn prepare(
 /// One rich bulk listing of the directory vouches for each file it still describes exactly
 /// (marking it `clone_checked`, with a sparse observation when it shares); anything else stays
 /// unchecked and is probed per file, with the same warnings as before. Call with empty `observations`.
-/// A record the saved listing lacks is a missed journal event: it adds one entry to `warnings`.
+/// The folder is always read, even with no file to vouch for or on a volume without clone fields: a
+/// record the saved listing lacks, or a file that differs from it, is a missed journal event and
+/// adds one entry to `warnings`.
 #[cfg(unix)]
 pub(crate) fn vouch_reused(
     entries: &mut [std::io::Result<crate::Entry>],
@@ -641,27 +643,28 @@ mod native {
                 device = Some(e.device);
             }
         }
-        // No files to probe, or a volume that already answered "unsupported" (one cheap probe each).
-        let Some(device) = device else { return };
-        if caps.lock().unwrap().get(&device) == Some(&false) {
-            return;
-        }
+        // Clone fields only where a file needs vouching and the volume has not answered "unsupported".
+        let rich = device.is_some_and(|d| caps.lock().unwrap().get(&d) != Some(&false));
         let mut matched = vec![false; entries.len()];
         let mut shared = Vec::new();
-        let mut unsaved = false;
+        let mut changed = false;
         // The worker's bulk buffer is lent for the read so each reused folder avoids a fresh 64 KiB.
         let mut stats = crate::bulk::CloneReadStats::with_buffer(std::mem::take(buffer));
-        let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, |r| {
+        // Saved names the disk still lists: fewer than saved means one was deleted.
+        let mut still = 0usize;
+        let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, rich, |r| {
+            let known = saved.contains(r.name);
+            still += usize::from(known);
             let Some(&i) = wanted.get(r.name) else {
-                unsaved |= !saved.contains(r.name);
+                changed |= !known;
                 return Ok(());
             };
             let e = entries[i].as_ref().unwrap();
             // The same facts the per-file probe and final validation insist on.
-            if r.clone_checked
-                && same_file(r, e.device, e.inode, e.allocated, e.hard_link)
-                && same_length(r, e.length)
-            {
+            let same = same_file(r, e.device, e.inode, e.allocated, e.hard_link)
+                && same_length(r, e.length);
+            changed |= !same;
+            if rich && r.clone_checked && same {
                 if std::mem::replace(&mut matched[i], true) {
                     return Err(error("duplicate clone record in reused directory"));
                 }
@@ -669,9 +672,10 @@ mod native {
             }
             Ok(())
         });
+        changed |= result.is_ok() && still < saved.len();
         drop((wanted, saved));
-        if unsaved {
-            warnings.push("a reused folder lists an entry its saved listing lacks".into());
+        if changed {
+            warnings.push("a reused folder differs from its saved listing".into());
         }
         *buffer = stats.into_buffer();
         // A failed read vouches for nothing: every file keeps its per-file probe.
@@ -769,7 +773,7 @@ mod native {
         stats: &mut crate::bulk::CloneReadStats,
         visitor: &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
     ) -> io::Result<()> {
-        crate::bulk::visit_clone_records(fd, cancel, stats, visitor)
+        crate::bulk::visit_clone_records(fd, cancel, stats, true, visitor)
     }
     #[derive(Clone, Copy)]
     struct ValidationStrategy {
@@ -2512,11 +2516,14 @@ mod native {
             );
             assert_eq!(checked(&fresh), [false, false]);
             assert!(observations.is_empty());
-            // So does a device already known to lack clone fields.
+            // The listing above read this folder to its end, so each read below takes a new descriptor.
+            let reopen = || crate::descriptor::open(&s.root, &s.node(0).unwrap().identity).unwrap();
+            // So does a device already known to lack clone fields, but its folder is still read:
+            // "c" and "d" are new to the saved listing.
             caps.lock().unwrap().insert(entry("a").device, false);
             vouch_reused(
                 &mut fresh,
-                &fd,
+                &reopen(),
                 &caps,
                 &AtomicBool::new(false),
                 &mut observations,
@@ -2524,7 +2531,54 @@ mod native {
                 &mut warnings,
             );
             assert_eq!(checked(&fresh), [false, false]);
-            assert_eq!(warnings.len(), 1);
+            assert!(observations.is_empty());
+            assert_eq!(warnings.len(), 2);
+            // A folder with only unchanged files and no clone fields stays quiet.
+            let mut same = vec![
+                Ok(entry("a")),
+                Ok(entry("b")),
+                Ok(entry("c")),
+                Ok(entry("d")),
+            ];
+            vouch_reused(
+                &mut same,
+                &reopen(),
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+                &mut Vec::new(),
+                &mut warnings,
+            );
+            assert_eq!(warnings.len(), 2);
+            // A saved file whose size differs from the disk is a missed event even without clone fields.
+            let mut grown = entry("a");
+            grown.length += 1;
+            same[0] = Ok(grown);
+            vouch_reused(
+                &mut same,
+                &reopen(),
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+                &mut Vec::new(),
+                &mut warnings,
+            );
+            assert_eq!(warnings.len(), 3);
+            // A saved file no longer on disk is a missed event too.
+            let mut deleted = entry("a");
+            deleted.path = s.root.join("deleted").into();
+            same[0] = Ok(entry("a"));
+            same.push(Ok(deleted));
+            vouch_reused(
+                &mut same,
+                &reopen(),
+                &caps,
+                &AtomicBool::new(false),
+                &mut observations,
+                &mut Vec::new(),
+                &mut warnings,
+            );
+            assert_eq!(warnings.len(), 4);
             std::fs::remove_dir_all(p).unwrap();
         }
         #[test]

@@ -1740,6 +1740,18 @@ mod tests {
         compare(&actual, &f.full());
         assert!(actual.iter_nodes().any(|n| n.native_name() == "new"));
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn new_file_in_a_reused_folder_holding_only_a_subfolder_retries_fully() {
+        let f = Fixture::new();
+        let seed = f.full();
+        // `clean` saved no file, so nothing in it needed a clone probe.
+        fs::write(f.0.join("clean/big.iso"), b"new").unwrap();
+        let (actual, stats) = f.incremental(seed, vec![]);
+        assert!(stats.fallback_reason.unwrap().contains("unresolved"));
+        compare(&actual, &f.full());
+        assert!(actual.iter_nodes().any(|n| n.native_name() == "big.iso"));
+    }
     #[test]
     fn changed_directory_identity_never_reuses_old_children() {
         let f = Fixture::new();
