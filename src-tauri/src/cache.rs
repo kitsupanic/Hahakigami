@@ -211,11 +211,12 @@ impl Cache {
         Ok(file.metadata().map_err(|e| e.to_string())?.len())
     }
     pub(crate) fn maintain(&self) -> Result<(), String> {
-        let entries = self.store.list()?;
+        let (entries, mut skipped) = self.store.rows()?;
         let now = crate::now_ms();
         // An entry `recent` refuses or whose record is missing or invalid can never seed a scan again: keep
         // only the others, so the sweep below deletes the rest (row, record and archive share the ID's stem).
-        // A record that merely failed to read (EMFILE, EIO) is not dead: stop and delete nothing.
+        // A file that merely failed to read (EMFILE, EIO) is not dead: delete nothing this pass, but do not fail
+        // either, or one bad block would turn off the cache for good.
         let mut ids = std::collections::HashSet::new();
         for row in &entries {
             match self.read_record(&row.id) {
@@ -223,9 +224,11 @@ impl Cache {
                     ids.insert(row.id.as_str());
                 }
                 Ok(_) => (),
-                Err(e) if unusable(&e) => (),
-                Err(e) => return Err(e.to_string()),
+                Err(e) => skipped |= !unusable(&e),
             }
+        }
+        if skipped {
+            return Ok(());
         }
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -972,6 +975,56 @@ mod tests {
         for suffix in ["json", "zst", "cursor"] {
             assert!(!c.root.join(format!("{id}.{suffix}")).exists());
         }
+    }
+    // Runs itself in a child process, whose open-file limit is lowered so every cache file read fails with EMFILE.
+    #[test]
+    fn a_file_that_fails_to_read_neither_breaks_the_cache_nor_is_deleted() {
+        const DIRECTORY: &str = "HAHAKIGAMI_TEST_CACHE_EMFILE";
+        let Some(dir) = std::env::var_os(DIRECTORY) else {
+            let d = tempfile::tempdir().unwrap();
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cache::tests::a_file_that_fails_to_read_neither_breaks_the_cache_nor_is_deleted",
+                ])
+                .env(DIRECTORY, d.path())
+                .output()
+                .unwrap();
+            assert!(child.status.success(), "{child:?}");
+            assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let c = Cache::new(dir.join("cache"));
+        let s = fixture(&dir.join("source"));
+        let token = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: crate::now_ms(),
+        };
+        c.save(&s, &metadata(), &token).unwrap();
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        // Descriptors are handed out lowest first: the listing gets `lowest`, the next open fails.
+        let lowest = std::os::fd::AsRawFd::as_raw_fd(&fs::File::open("/dev/null").unwrap());
+        let low = libc::rlimit {
+            rlim_cur: lowest as libc::rlim_t + 1,
+            ..limit
+        };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+        let maintained = c.maintain();
+        let rows = c.store.rows();
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        maintained.unwrap();
+        let (rows, skipped) = rows.unwrap();
+        assert!(rows.is_empty() && skipped);
+        assert_eq!(c.store.list().unwrap().len(), 1);
     }
     // An immutable old record cannot be removed (macOS `uchg`), standing in for a failed removal.
     #[cfg(target_os = "macos")]

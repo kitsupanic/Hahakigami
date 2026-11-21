@@ -141,18 +141,25 @@ impl Store {
         })
         .map(drop)
     }
-    /// The entries with a readable row and archive, newest first. A file that cannot be read this time
-    /// (not one that is missing or malformed) fails the listing instead of dropping its entry.
+    /// The entries with a readable row and archive, newest first.
     pub fn list(&self) -> Result<Vec<Row>, String> {
+        self.rows().map(|(rows, _)| rows)
+    }
+    /// `list`, and whether a file that failed to read this time (not one that is missing or malformed) was
+    /// skipped. One such file (EIO on a bad block) must not fail every listing, but its entry is not dead either.
+    pub(crate) fn rows(&self) -> Result<(Vec<Row>, bool), String> {
         self.prepare()?;
         let mut entries = Vec::new();
+        let mut skipped = false;
         for entry in fs::read_dir(&self.root).map_err(err)? {
             let path = entry.map_err(err)?.path();
             if path.extension().is_some_and(|s| s == "json") {
                 let row = match self.json::<Row>(&path) {
                     Ok(row) => row,
-                    Err(e) if unusable(&e) => continue,
-                    Err(e) => return Err(err(e)),
+                    Err(e) => {
+                        skipped |= !unusable(&e);
+                        continue;
+                    }
                 };
                 if !self.path(&row.id, "json").is_ok_and(|p| p == path) {
                     continue;
@@ -162,8 +169,7 @@ impl Store {
                 };
                 match open(&archive) {
                     Ok(_) => entries.push(row),
-                    Err(e) if unusable(&e) => (),
-                    Err(e) => return Err(err(e)),
+                    Err(e) => skipped |= !unusable(&e),
                 }
             }
         }
@@ -172,7 +178,7 @@ impl Store {
                 .cmp(&a.used_at_ms)
                 .then_with(|| b.id.cmp(&a.id))
         });
-        Ok(entries)
+        Ok((entries, skipped))
     }
     pub fn save(&self, s: &Snapshot, m: &ScanMetadata) -> Result<Row, String> {
         self.prepare()?;
