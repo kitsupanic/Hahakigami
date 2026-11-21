@@ -132,11 +132,11 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
                 .map(|&id| {
                     (
                         id,
-                        snapshot
-                            .node(id)
-                            .expect("checked sort id")
-                            .display_name()
-                            .to_lowercase(),
+                        // shortcut: byte order after NFC folding, so accented letters sort after "z"; upgrade to
+                        // locale collation if users ask for dictionary order.
+                        crate::filters::folded(
+                            &snapshot.node(id).expect("checked sort id").display_name(),
+                        ),
                     )
                 })
                 .collect();
@@ -401,6 +401,22 @@ mod tests {
             sort_ids(&s, &mut ids, order).unwrap();
             assert_eq!(ids, vec![4, 11]);
         }
+    }
+    #[test]
+    fn name_order_matches_composed_and_decomposed_spellings() {
+        let mut s = fixture();
+        for (id, name) in [(11, "zebra"), (12, "E\u{301}clair"), (13, "\u{c9}cran")] {
+            let mut node = s.legacy_node(3).unwrap();
+            node.id = id;
+            node.name = name.into();
+            node.path = s.root.join(name);
+            s.append_legacy_node(node).unwrap();
+        }
+        s.set_children(0, &[11, 12, 13]).unwrap();
+        let mut ids = vec![11, 13, 12];
+        sort_ids(&s, &mut ids, Order::NameAscending).unwrap();
+        // Both spellings sort together; before NFC folding the decomposed one sorted before "zebra".
+        assert_eq!(ids, vec![11, 12, 13]);
     }
     #[test]
     fn folder_pages_cap_output_without_cloning_full_list() {

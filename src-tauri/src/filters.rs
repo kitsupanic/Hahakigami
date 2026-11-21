@@ -7,7 +7,7 @@ use icu_normalizer::ComposingNormalizerBorrowed;
 use std::os::unix::ffi::OsStrExt;
 
 /// macOS can return decomposed (NFD) names while people type composed (NFC) text.
-fn folded(text: &str) -> String {
+pub(crate) fn folded(text: &str) -> String {
     ComposingNormalizerBorrowed::new_nfc()
         .normalize(text)
         .to_lowercase()

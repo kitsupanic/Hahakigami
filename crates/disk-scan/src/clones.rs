@@ -626,6 +626,35 @@ mod native {
         buffer: &mut Vec<u8>,
         warnings: &mut Vec<String>,
     ) {
+        vouch_reused_with(
+            entries,
+            fd,
+            caps,
+            cancel,
+            observations,
+            buffer,
+            warnings,
+            |stats, rich, visitor| {
+                crate::bulk::visit_clone_records(fd, cancel, stats, rich, visitor)
+            },
+        );
+    }
+    // `read` is the bulk read of `fd` (the seam for a volume whose records fail to parse).
+    #[allow(clippy::too_many_arguments)]
+    fn vouch_reused_with(
+        entries: &mut [io::Result<crate::Entry>],
+        fd: &OwnedFd,
+        caps: &std::sync::Mutex<HashMap<u64, bool>>,
+        cancel: &AtomicBool,
+        observations: &mut std::collections::VecDeque<(usize, CloneMetadata)>,
+        buffer: &mut Vec<u8>,
+        warnings: &mut Vec<String>,
+        read: impl FnOnce(
+            &mut crate::bulk::CloneReadStats,
+            bool,
+            &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
+        ) -> io::Result<()>,
+    ) {
         let mut wanted = HashMap::new();
         // Every saved name and kind, not just the files to probe: a record outside it is new to the listing.
         let mut saved = HashMap::new();
@@ -652,7 +681,7 @@ mod native {
         let mut stats = crate::bulk::CloneReadStats::with_buffer(std::mem::take(buffer));
         // Saved names the disk still lists: fewer than saved means one was deleted.
         let mut still = 0usize;
-        let result = crate::bulk::visit_clone_records(fd, cancel, &mut stats, rich, |r| {
+        let mut visit = |r: &crate::bulk::Record| {
             let known = saved.get(r.name);
             still += usize::from(known.is_some());
             let Some(&i) = wanted.get(r.name) else {
@@ -673,8 +702,16 @@ mod native {
                 shared.extend(r.clone_metadata.clone().map(|m| (i, m)));
             }
             Ok(())
-        });
-        changed |= result.is_ok() && still < saved.len();
+        };
+        let mut result = read(&mut stats, rich, &mut visit);
+        let bulk_read = result.is_ok();
+        if result.as_ref().is_err_and(crate::falls_back_to_readdir) {
+            // Records the bulk read cannot parse (or no bulk read at all): the scan lists such a folder plainly, so
+            // compare with that listing. It has no clone fields, so nothing is vouched and every file keeps its probe.
+            result = plain_differs(fd, cancel, &saved, &wanted, entries)
+                .map(|differs| changed = differs);
+        }
+        changed |= bulk_read && still < saved.len();
         drop((wanted, saved));
         if changed {
             warnings.push("a reused folder differs from its saved listing".into());
@@ -684,13 +721,53 @@ mod native {
         }
         *buffer = stats.into_buffer();
         // A failed read vouches for nothing: every file keeps its per-file probe.
-        if result.is_ok() {
+        if bulk_read {
             for (entry, _) in entries.iter_mut().zip(&matched).filter(|(_, m)| **m) {
                 entry.as_mut().unwrap().clone_checked = true;
             }
             shared.sort_unstable_by_key(|(i, _)| *i);
             observations.extend(shared);
         }
+    }
+    /// Whether the folder's plain listing differs from the saved one, by the rules `vouch_reused` applies to bulk
+    /// records. Any failure, or a cancel, is an error: nothing was compared.
+    fn plain_differs(
+        fd: &OwnedFd,
+        cancel: &AtomicBool,
+        saved: &HashMap<&[u8], NodeKind>,
+        wanted: &HashMap<&[u8], usize>,
+        entries: &[io::Result<crate::Entry>],
+    ) -> io::Result<bool> {
+        // A bulk read moves the descriptor's offset, so list from a fresh cursor.
+        let fresh = crate::descriptor::reopen(fd, &crate::descriptor::identity_fd(fd)?)?;
+        let listed = crate::descriptor::enumerate(&fresh, std::path::Path::new(""), cancel)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::from_raw_os_error(libc::EINTR));
+        }
+        let (mut changed, mut still) = (false, 0usize);
+        for listed in listed {
+            let n = listed?;
+            let name = n
+                .path
+                .file_name()
+                .ok_or_else(|| error("missing basename"))?
+                .as_bytes();
+            let known = saved.get(name);
+            still += usize::from(known.is_some());
+            let Some(&i) = wanted.get(name) else {
+                changed |= known != Some(&n.kind);
+                continue;
+            };
+            let e = entries[i].as_ref().unwrap();
+            // The facts `same_file` and `same_length` check on a bulk record.
+            changed |= !(n.kind == NodeKind::File
+                && n.device == e.device
+                && n.inode == e.inode
+                && n.allocated == e.allocated
+                && n.hard_link == e.hard_link
+                && n.length == e.length);
+        }
+        Ok(changed || still < saved.len())
     }
     fn warning(info: &mut crate::AccountingInfo, e: io::Error) {
         info.warn(e.to_string());
@@ -2619,6 +2696,90 @@ mod native {
                 &mut warnings,
             );
             assert_eq!(warnings.len(), 6);
+            std::fs::remove_dir_all(p).unwrap();
+        }
+        #[test]
+        fn reused_folder_with_unparsable_bulk_records_is_compared_on_the_plain_listing() {
+            type Reader = fn(
+                &mut crate::bulk::CloneReadStats,
+                bool,
+                &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
+            ) -> io::Result<()>;
+            fn malformed(
+                _: &mut crate::bulk::CloneReadStats,
+                _: bool,
+                _: &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
+            ) -> io::Result<()> {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "malformed getattrlistbulk record",
+                ))
+            }
+            fn failed(
+                _: &mut crate::bulk::CloneReadStats,
+                _: bool,
+                _: &mut dyn FnMut(&crate::bulk::Record) -> io::Result<()>,
+            ) -> io::Result<()> {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            }
+            let (p, s, fd) = real_clone_fixture("vouch-plain");
+            let entry = |name: &str| {
+                crate::descriptor::entry_at(&fd, &s.root, std::ffi::OsStr::new(name)).unwrap()
+            };
+            let caps = std::sync::Mutex::new(HashMap::new());
+            let warnings_for = |entries: &mut Vec<io::Result<crate::Entry>>, read: Reader| {
+                let mut observations = std::collections::VecDeque::new();
+                let mut warnings = Vec::new();
+                vouch_reused_with(
+                    entries,
+                    &fd,
+                    &caps,
+                    &AtomicBool::new(false),
+                    &mut observations,
+                    &mut Vec::new(),
+                    &mut warnings,
+                    read,
+                );
+                assert!(observations.is_empty());
+                warnings
+            };
+            let all = || -> Vec<io::Result<crate::Entry>> {
+                ["a", "b", "c", "d"]
+                    .into_iter()
+                    .map(|name| Ok(entry(name)))
+                    .collect()
+            };
+            // Unchanged on the plain listing: no warning, and nothing is vouched (each file keeps its probe).
+            let mut same = all();
+            assert!(warnings_for(&mut same, malformed).is_empty());
+            assert!(same.iter().all(|e| !e.as_ref().unwrap().clone_checked));
+            // A grown file differs from the saved listing.
+            let mut grown = all();
+            grown[0].as_mut().unwrap().length += 1;
+            assert_eq!(
+                warnings_for(&mut grown, malformed),
+                ["a reused folder differs from its saved listing"]
+            );
+            // So does a file whose saved allocation or name no longer matches the disk.
+            let mut stale = all();
+            stale[1].as_mut().unwrap().allocated += 4096;
+            assert_eq!(warnings_for(&mut stale, malformed).len(), 1);
+            let mut gone = all();
+            gone.push(Ok({
+                let mut deleted = entry("a");
+                deleted.path = s.root.join("deleted").into();
+                deleted
+            }));
+            assert_eq!(warnings_for(&mut gone, malformed).len(), 1);
+            let mut missing = all();
+            missing.pop();
+            assert_eq!(warnings_for(&mut missing, malformed).len(), 1);
+            // An error a plain listing cannot answer is still "could not be compared".
+            let mut unread = all();
+            assert_eq!(
+                warnings_for(&mut unread, failed),
+                ["a reused folder could not be compared with its saved listing"]
+            );
             std::fs::remove_dir_all(p).unwrap();
         }
         #[test]

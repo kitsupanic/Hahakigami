@@ -223,6 +223,26 @@ it("stops a running scan from the menu while the welcome page is shown", async (
   expect(calls("cancel_scan")).toHaveLength(1);
 });
 
+it("does not refresh the hidden explorer while a scan runs behind the welcome page", async () => {
+  state = "running";
+  await click(scanButton());
+  await click(diskRow("Backup"));
+  await settle();
+  const before = mock.invoke.mock.calls.length;
+  await act(() => mock.channels.at(-1)!.onmessage({ ...summary(), elapsedMs: 5000 }));
+  await settle();
+  const later = mock.invoke.mock.calls.slice(before).map(([command]) => command);
+  expect(later).not.toContain("get_map");
+  expect(later).not.toContain("get_children");
+  expect(later).not.toContain("get_node");
+  await click(diskRow("Macintosh HD"));
+  await settle();
+  expect(app().homeOpen).toBe(false);
+  const back = mock.invoke.mock.calls.slice(before).map(([command]) => command);
+  expect(back).toContain("get_map");
+  expect(back).toContain("get_children");
+});
+
 it("names the scan in the cancelled toast while the welcome page is shown", async () => {
   state = "running";
   await click(scanButton());
