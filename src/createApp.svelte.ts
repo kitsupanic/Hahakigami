@@ -339,29 +339,31 @@ export default function createApp() {
     const epoch = ++sortEpoch.current,
       choice = sortChoice.current;
     let cancelled = false;
-    const current = () =>
-      !cancelled &&
-      sortEpoch.current === epoch &&
-      sortChoice.current === choice;
+    const live = () => !cancelled && sortEpoch.current === epoch;
     if (!isTauri()) {
       sortReady = true;
       return;
     }
+    // A sort choice made meanwhile (a restored view) keeps its order, but the list must still unlock.
+    const current = () => sortChoice.current === choice;
     invoke<ExplorerPreferences>("get_explorer_preferences")
       .then((preferences) => {
-        if (!current()) return;
-        if (!preferences || !isSortOrder(preferences.sort)) {
-          sortWarning =
-            "Could not load the saved sort order. Using largest first.";
-        } else {
-          sort = preferences.sort;
-          sortWarning = preferences.warning ?? null;
+        if (!live()) return;
+        if (current()) {
+          if (!preferences || !isSortOrder(preferences.sort)) {
+            sortWarning =
+              "Could not load the saved sort order. Using largest first.";
+          } else {
+            sort = preferences.sort;
+            sortWarning = preferences.warning ?? null;
+          }
         }
         sortReady = true;
       })
       .catch((failure) => {
-        if (!current()) return;
-        sortWarning = `Could not load the saved sort order. Using largest first. ${String(failure)}`;
+        if (!live()) return;
+        if (current())
+          sortWarning = `Could not load the saved sort order. Using largest first. ${String(failure)}`;
         sortReady = true;
       });
     return () => {

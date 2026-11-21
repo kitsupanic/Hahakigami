@@ -4,7 +4,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import type { NodeView, Page, ScanSummary } from "./types";
 import type { ExplorerPreferences } from "./sortTypes";
-const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
+import type createApp from "./createApp.svelte";
+const mock = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  app: null as ReturnType<typeof createApp> | null,
+}));
+vi.mock("./createApp.svelte", async (original) => {
+  const module = await original<typeof import("./createApp.svelte")>();
+  return { default: () => (mock.app = module.default()) };
+});
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   invoke: mock.invoke,
@@ -351,6 +359,30 @@ it("ignores old list results after a sort change", async () => {
   expect(container.textContent).not.toContain("stale.jpg");
   expect(container.textContent).toContain("image.jpg");
 });
+it("unlocks the list when Back restores a view before the saved preferences arrive", async () => {
+  const previous = mock.invoke.getMockImplementation()!;
+  let restore!: (value: ExplorerPreferences) => void;
+  mock.invoke.mockImplementation(
+    (command: string, args: Record<string, unknown>) =>
+      command === "get_explorer_preferences"
+        ? new Promise<ExplorerPreferences>((resolve) => {
+            restore = resolve;
+          })
+        : previous(command, args),
+  );
+  await mount();
+  await act(() => mock.app!.open(folder));
+  await flush();
+  await act(() => mock.app!.goBack());
+  await flush();
+  expect(calls("get_children")).toHaveLength(0);
+  await act(async () => restore({ sort: "nameAscending", warning: null }));
+  await flush();
+  expect(mock.app!.sortReady).toBe(true);
+  expect(calls("get_children").at(-1)?.[1].sort).toBe("sizeDescending");
+  expect(sortOrder()).toBe("sizeDescending");
+});
+
 it("Unmounted stale preference response cannot overwrite a later choice or pending save", async () => {
   const previous = mock.invoke.getMockImplementation()!;
   const restore: ((value: ExplorerPreferences) => void)[] = [];

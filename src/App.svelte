@@ -140,6 +140,9 @@
     get enabled() {
       return app.can.explore && listView === "fileTypes";
     },
+    get visible() {
+      return app.can.explore;
+    },
   });
   function showListView(view: "files" | "fileTypes") {
     if (view === "fileTypes") fileTypesMounted = true;

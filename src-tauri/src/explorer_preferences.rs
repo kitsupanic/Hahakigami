@@ -1,5 +1,5 @@
 //! Small, independent explorer preferences; never changes scan settings.
-use crate::cache_store::{atomic, open, sync_dir};
+use crate::cache_store::{atomic, open};
 use crate::sorting::Order;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -92,10 +92,7 @@ impl Preferences {
         self.warning = atomic(directory, record, "explorer-", |mut file| {
             serde_json::to_writer(&mut file, &Record { version: 1, sort })
                 .map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
-            // Sync the directory before publication as well; a failure leaves the
-            // previous preference untouched. Atomic rename is the commit point.
-            sync_dir(directory).map_err(|e| e.to_string())
+            file.sync_all().map_err(|e| e.to_string())
         })?
         // Publication succeeded. A directory-sync failure is a durability
         // warning rather than a failed write which could falsely promise rollback.
