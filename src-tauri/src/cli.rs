@@ -2,7 +2,15 @@
 use crate::automation::Service;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    io::Write,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 #[derive(Parser)]
 #[command(
@@ -27,12 +35,15 @@ async fn execute(command: Command, service: Arc<Service>) -> Result<(i32, Option
     let result = match command {
         Command::Scan { path } => {
             let scanner = service.clone();
-            let mut task = tokio::task::spawn_blocking(move || scanner.scan(path));
+            // Our own flag, so a Ctrl-C before the scan has registered still stops it.
+            let cancel = Arc::new(AtomicBool::new(false));
+            let flag = cancel.clone();
+            let mut task = tokio::task::spawn_blocking(move || scanner.scan_with(path, flag));
             tokio::select! {
                 result = &mut task => result.map_err(|error| error.to_string())??,
                 signal = tokio::signal::ctrl_c() => {
                     signal.map_err(|error| error.to_string())?;
-                    service.cancel()?;
+                    cancel.store(true, Ordering::Relaxed);
                     // Let the scanner see the flag so the status shows the cancelled partial result, not "running".
                     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
                     return Ok((130, Some(service.status()?)));

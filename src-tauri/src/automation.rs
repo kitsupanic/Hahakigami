@@ -67,6 +67,7 @@ impl Service {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn scan(&self, path: PathBuf) -> Result<Value, String> {
         self.scan_with(path, Arc::new(AtomicBool::new(false)))
     }
@@ -234,7 +235,7 @@ impl Service {
             )
         };
         if scan_id.is_some_and(|id| id != current) {
-            return Err("This scan_id belongs to an earlier scan. Call summary again.".into());
+            return Err("This scan_id is not the current scan's. Call summary again.".into());
         }
         let snapshot = store
             .read()
@@ -469,7 +470,7 @@ mod tests {
             service.search("x", id, 0, 1),
             service.issues(id, 0, 1),
         ] {
-            assert!(result.unwrap_err().contains("earlier scan"));
+            assert!(result.unwrap_err().contains("not the current scan"));
         }
         assert!(service.node(0, second).is_ok());
         assert!(service.node(0, None).is_ok());
