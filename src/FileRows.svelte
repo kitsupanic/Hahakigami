@@ -211,6 +211,20 @@
     append(items, 0);
     return result;
   });
+  // Rows a running scan adds since the last update fade in; a new list context
+  // (another folder, search or sort) resets the baseline so nothing fades.
+  let knownIds = new Set<number>();
+  let knownContext: number | null | undefined;
+  const arrivingIds = $derived.by(() => {
+    const context = items[0]?.parentId;
+    const arriving = new Set<number>();
+    const baseline = running && context === knownContext && knownIds.size > 0;
+    for (const { node, more } of rows)
+      if (!more && baseline && !knownIds.has(node.id)) arriving.add(node.id);
+    knownIds = new Set(rows.map((row) => row.node.id));
+    knownContext = context;
+    return arriving;
+  });
   // A selection made on the map brings its row into view, opening the folders
   // above it when they are collapsed. Clicks and arrow keys select rows that are
   // already visible, so this does nothing for them.
@@ -386,6 +400,7 @@
   bind:this={container}
   class="rows"
   class:has-parent-paths={showParentPaths}
+  class:scanning={running}
   role="tree"
   aria-label="Folders and files"
   aria-multiselectable="true"
@@ -434,6 +449,7 @@
           tabindex={tabStop === n.id ? 0 : -1}
           class={`row ${selection.includes(n.id) ? "selected" : ""} ${queueState === "queued" ? "queued" : ""}`}
           class:linked-hover={hoveredId === n.id}
+          class:arriving={arrivingIds.has(n.id)}
           style:height={rowHeight + "px"}
           style:position={"absolute"}
           style:top={(start + i) * rowHeight + "px"}
@@ -560,6 +576,29 @@
 </div>
 
 <style>
+  /* While a scan reorders rows by size, each row glides to its new place. */
+  .rows.scanning .row {
+    transition: top 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .row.arriving {
+    animation: row-arrive 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes row-arrive {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rows.scanning .row {
+      transition: none;
+    }
+    @keyframes row-arrive {
+      from {
+        opacity: 0;
+      }
+    }
+  }
   .row.linked-hover {
     outline: 2px solid var(--warning-mark);
     outline-offset: -2px;

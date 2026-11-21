@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { NodeView } from "./types";
   import { fileExtension, fileTypeColor, fileTypeLabel } from "./fileTypes";
-  import type { Shape } from "./layout";
+  import { MAP_TWEEN_MS, tweenShape, type Shape } from "./layout";
   import { createQueueMarker, type QueuePath } from "./queueMarkers";
   import {
     createHoverTarget,
@@ -70,6 +70,9 @@
   let paintVersion = $state.raw(0);
   let dimensions = $state.raw({ width: 600, height: 400 });
   let shapes: Shape[] = $state.raw([]);
+  // What the canvas shows: equal to shapes, or a frame of the tween towards them.
+  let drawn: Shape[] = $state.raw([]);
+  let tweenFrame = 0;
   let hover: NodeView | null = $state.raw(null);
   let previousHoverEpoch: number | undefined;
   $effect(() => {
@@ -370,6 +373,31 @@
         announcement = `Opened ${centerNode?.name ?? "folder"}`;
     });
   });
+  let tweenScanId: string | undefined;
+  // A scan update in the same view grows tiles from their last place to the new
+  // one, so the map fills in instead of jumping each tick. Other changes snap.
+  function tweenTo(target: Shape[], sameView: boolean) {
+    cancelAnimationFrame(tweenFrame);
+    const from = new Map(drawn.map((s) => [s.id, s]));
+    const animate =
+      sameView &&
+      from.size > 0 &&
+      !!window.matchMedia?.("(prefers-reduced-motion: no-preference)").matches;
+    if (!animate) {
+      drawn = target;
+      return;
+    }
+    const startedAt = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - startedAt) / MAP_TWEEN_MS);
+      const k = 1 - (1 - t) ** 4;
+      drawn =
+        t >= 1 ? target : target.map((s) => tweenShape(from.get(s.id), s, k));
+      if (t < 1) tweenFrame = requestAnimationFrame(step);
+    };
+    tweenFrame = requestAnimationFrame(step);
+  }
+  onDestroy(() => cancelAnimationFrame(tweenFrame));
   onMount(() => {
     const w = new Worker(new URL("./layout.worker.ts", import.meta.url), {
       type: "module",
@@ -377,9 +405,21 @@
     worker = w;
     w.onmessage = (e) => {
       if (e.data.requestId === version) {
+        const before = completedLayout;
         shapes = e.data.shapes;
         paintVersion = e.data.requestId;
         completedLayout = previousLayout ?? null;
+        const sameView =
+          !!before &&
+          !!completedLayout &&
+          tweenScanId === scanId &&
+          before.rootId === completedLayout.rootId &&
+          before.mode === completedLayout.mode &&
+          before.colorMode === completedLayout.colorMode &&
+          before.width === completedLayout.width &&
+          before.height === completedLayout.height;
+        tweenScanId = scanId;
+        tweenTo(shapes, sameView);
       }
     };
     return () => {
@@ -456,10 +496,10 @@
   $effect(() => {
     const el = canvas!;
     // After a mode switch the shapes are the other mode's until the worker replies; keep the last frame.
-    if (shapes.length && completedLayout?.mode !== mode) return;
+    if (drawn.length && completedLayout?.mode !== mode) return;
     // Empty layouts need neither a context nor a high-resolution backing store.
     // Resetting dimensions also clears any image from the previous layout.
-    if (!shapes.length) {
+    if (!drawn.length) {
       if (el.width !== 0) el.width = 0;
       if (el.height !== 0) el.height = 0;
       if (layoutCurrent && paintVersion === version)
@@ -491,7 +531,7 @@
               ? "#e8e7e3"
               : "#e2e7ef"
           : (branchPalette.get(s.groupId ?? s.id) ?? neutralColor());
-    for (const s of shapes) {
+    for (const s of drawn) {
       const n = byId.get(s.id);
       const baseColor = tileColor(s, n);
       ctx.globalAlpha =
@@ -554,7 +594,7 @@
     // Type outlines apply only to matching files and exact extension groups.
     // Painting never changes layout, pointer regions, or selection.
     if (highlightActive) {
-      for (const s of shapes) {
+      for (const s of drawn) {
         const n = byId.get(s.id);
         if (
           !n ||
@@ -598,7 +638,7 @@
       ctx.setLineDash([]);
     }
     // Labels and selection outlines sit above every descendant tile.
-    for (const s of shapes) {
+    for (const s of drawn) {
       const n = byId.get(s.id);
       if (mode === "sunburst" && s.depth === 0 && n && !queueMarks.get(s.id)) {
         const span = s.end - s.start;
@@ -742,7 +782,7 @@
       }
     }
     // Queue overlays are painted after all fills so parent markers stay visible.
-    for (const s of shapes) {
+    for (const s of drawn) {
       const mark = queueMarks.get(s.id);
       if (!mark) continue;
       ctx.strokeStyle = "#8edbb2";
@@ -814,7 +854,7 @@
     // The canvas CSS sets accent-color to the person's accent; canvas cannot read var().
     const accent = getComputedStyle(el).accentColor;
     const selectionColor = accent && accent !== "auto" ? accent : "#246fde";
-    for (const s of shapes) {
+    for (const s of drawn) {
       if (!selectedIds.has(s.id)) continue;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 5;
@@ -824,7 +864,7 @@
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-    if (layoutCurrent && paintVersion === version)
+    if (layoutCurrent && paintVersion === version && drawn === shapes)
       untrack(() => onRendered?.(nodes));
   });
   // The hover outline has its own canvas so moving the pointer doesn't repaint the map.
