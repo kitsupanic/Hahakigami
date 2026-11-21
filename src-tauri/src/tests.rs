@@ -1314,7 +1314,7 @@ fn cleanup_reviews_collapse_selection_and_reject_stale_or_expired_tickets() {
         assert_eq!(review.items[0].id, dir_id);
         let mut trash = Recording::ok();
         s.ticket.lock().unwrap().as_mut().unwrap().created =
-            Instant::now() - Duration::from_secs(121);
+            std::time::SystemTime::now() - Duration::from_secs(121);
         assert_eq!(
             commit_recorded(
                 &app.state::<AppState>(),
@@ -3108,7 +3108,7 @@ fn cleanup_queue_revision_replay_and_scan_switch_guard_review_without_side_effec
             .unwrap()
             .as_mut()
             .unwrap()
-            .created = Instant::now() - Duration::from_secs(121);
+            .created = std::time::SystemTime::now() - Duration::from_secs(121);
         assert_eq!(
             commit_recorded(&state, "fixture", &review.token, true, &mut trash).err(),
             Some("Cleanup review expired. Review the selection again.".into())

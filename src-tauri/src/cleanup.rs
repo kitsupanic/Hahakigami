@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::SystemTime,
 };
 
 #[derive(Serialize)]
@@ -143,7 +143,7 @@ pub(crate) fn review(s: &Session, pick: Pick) -> Result<Review, String> {
                 queue.require_mutable()?;
                 queue.clone()
             };
-            let statuses = statuses(&queue, scans);
+            let statuses = statuses(&queue, scans)?;
             let ids = cleanup_queue::ready_nodes(&queue, &statuses, &s.id);
             if ids.is_empty() {
                 return Err("No queued items are ready in the current live scan.".into());
@@ -197,7 +197,7 @@ fn issue(
     let token = uuid::Uuid::new_v4().to_string();
     *s.ticket.lock().unwrap() = Some(safety::Ticket {
         token: token.clone(),
-        created: Instant::now(),
+        created: SystemTime::now(),
         items,
         queue_revision,
     });
@@ -382,7 +382,7 @@ pub(crate) fn queue_view(
 ) -> cleanup_queue::View {
     // The disk is checked on a copy, never under the queue lock: a hung share must not stall every queue command.
     let copy = queue.lock().unwrap().clone();
-    let view = cleanup_queue::view(&copy, &statuses(&copy, scans));
+    let view = view_of(&copy, scans);
     // An edit that landed meanwhile makes the view stale: compute it once more from the newer queue.
     let newer = {
         let queue = queue.lock().unwrap();
@@ -390,7 +390,17 @@ pub(crate) fn queue_view(
     };
     match newer {
         None => view,
-        Some(copy) => cleanup_queue::view(&copy, &statuses(&copy, scans)),
+        Some(copy) => view_of(&copy, scans),
+    }
+}
+fn view_of(queue: &Queue, scans: &[(Slot, Arc<Session>)]) -> cleanup_queue::View {
+    match statuses(queue, scans) {
+        Ok(statuses) => cleanup_queue::view(queue, &statuses),
+        Err(e) => {
+            let mut view = cleanup_queue::view(queue, &HashMap::new());
+            view.warning.get_or_insert(e);
+            view
+        }
     }
 }
 
@@ -455,20 +465,18 @@ fn with_usable_scans<R>(scans: &[(Slot, Arc<Session>)], f: impl FnOnce(&[safety:
         .collect();
     f(&usable)
 }
+/// Unreadable mount table: an error, never "nothing ready", so the UI says why instead of asking for a rescan.
 fn statuses(
     queue: &Queue,
     scans: &[(Slot, Arc<Session>)],
-) -> HashMap<String, cleanup_queue::EntryStatus> {
+) -> Result<HashMap<String, cleanup_queue::EntryStatus>, String> {
     if !queue.matchable() {
-        return HashMap::new();
+        return Ok(HashMap::new());
     }
-    // Unreadable mount table: report nothing ready rather than check folders with no mounts to protect.
-    let Ok(host) = Host::read() else {
-        return HashMap::new();
-    };
-    with_usable_scans(scans, |scans| {
+    let host = Host::read()?;
+    Ok(with_usable_scans(scans, |scans| {
         cleanup_queue::statuses(queue, scans, host.home.as_deref(), &host.mounts)
-    })
+    }))
 }
 
 #[cfg(test)]

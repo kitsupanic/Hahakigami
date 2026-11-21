@@ -171,12 +171,16 @@
   function toggle(node: NodeView) {
     if (!onLoadChildren || node.excluded) return;
     if (expanded.has(node.id)) {
-      expanded.delete(node.id);
-      branches = ((old) => {
-        const next = { ...old };
-        delete next[node.id];
-        return next;
-      })(branches);
+      // Folders opened inside it close too: hidden rows must not be reloaded on every revision.
+      const next = { ...branches };
+      const closing = [node.id];
+      for (let id; (id = closing.pop()) !== undefined; ) {
+        expanded.delete(id);
+        for (const child of next[id]?.items ?? [])
+          if (expanded.has(child.id)) closing.push(child.id);
+        delete next[id];
+      }
+      branches = next;
     } else {
       expanded.add(node.id);
       branches = ((old) => ({

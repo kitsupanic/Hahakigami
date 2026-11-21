@@ -237,11 +237,7 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
   const selection = $derived(hooks.selection());
   let addingPaths = $state.raw<string[] | null>(null);
   let removingPaths = $state.raw<string[] | null>(null);
-  let removal = $state.raw<{
-    paths: string[];
-    removed: number;
-    attempted: number;
-  } | null>(null);
+  let removal = $state.raw<{ paths: string[]; removed: number } | null>(null);
   const marker = $derived(createQueueMarker(view.entries));
   const selectedPaths = $derived(
     new Set(selection.map((node) => normalizeQueuePath(queuePathKey(node)))),
@@ -286,11 +282,9 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         ? ""
         : "Removing from cleanup queue…"
       : removalFeedback
-        ? removalFeedback.removed < removalFeedback.attempted
-          ? `Removed ${removalFeedback.removed.toLocaleString()} of ${removalFeedback.attempted.toLocaleString()} queued items.`
-          : removalFeedback.removed === 1
-            ? ""
-            : `Removed ${countLabel(removalFeedback.removed, "item")} from cleanup queue.`
+        ? removalFeedback.removed === 1
+          ? ""
+          : `Removed ${countLabel(removalFeedback.removed, "item")} from cleanup queue.`
         : adding
           ? selection.length === 1
             ? ""
@@ -396,7 +390,7 @@ export function createCleanupQueue(port: QueuePort, hooks: CleanupQueueHooks) {
         removingPaths = paths;
         try {
           const removed = await remove(ids);
-          if (removed > 0) removal = { paths, removed, attempted: ids.length };
+          if (removed > 0) removal = { paths, removed };
         } finally {
           removingPaths = null;
         }

@@ -254,9 +254,9 @@ pub(crate) struct Started {
 }
 
 impl Started {
-    /// The replaced scan's results as the rescan baseline, when they can be one. It does not wait for a read of
-    /// the old results: while one runs there is no baseline. Call it before the scan thread starts, so the
-    /// baseline is taken before the new scan reads it.
+    /// The replaced scan's results as the rescan baseline, when they can be one. It waits at most `BASELINE_WAIT`
+    /// for a read of the old results to end, then gives up: there is no baseline. Call it before the scan thread
+    /// starts, so the baseline is taken before the new scan reads it.
     pub(crate) fn take_previous(&mut self) -> Option<baseline::Taken> {
         let (old, root) = self.replaced.take()?;
         old.take_baseline(&root)
@@ -308,7 +308,7 @@ impl Slots {
     /// Puts a new scan in `key`'s slot. Refuses, changing nothing, while that slot's own scan runs or the
     /// budget has nothing left. Otherwise takes the budget grant, invalidates the old scan (waiting for any
     /// command holding it) and installs the new session, which counts as running from then on. The old results
-    /// are taken later, by `Started::take_previous`, which gives up instead of waiting behind a read of them, so
+    /// are taken later, by `Started::take_previous`, which waits at most `BASELINE_WAIT` behind a read of them, so
     /// neither the slot table nor the caller's locks are held for it. Other slots are never touched.
     pub(crate) fn replace(&self, key: Slot, mut request: Request) -> Result<Started, String> {
         let mut live = self.lock();
