@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { compactBytes, countLabel } from "./uiFormat";
+  import { compactBytes, countLabel, percent } from "./uiFormat";
   import type { FileTypeScope } from "./createFileTypes.svelte";
   import {
     fileTypeColor,
@@ -159,8 +159,7 @@
   const selected = $derived(
     stats?.items.find((item) => item.extension === selectedExtension),
   );
-  const share = (value: number) =>
-    `${(total > 0 ? (value / total) * 100 : 0).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+  const share = (value: number) => (total > 0 ? percent(value, total) : percent(0, 1));
 </script>
 
 <section class="file-types" aria-label="File type statistics">

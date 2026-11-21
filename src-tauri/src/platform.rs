@@ -220,6 +220,23 @@ pub(crate) fn folder_name(path: &Path) -> String {
         .into_owned()
 }
 
+/// `statfs` of `path`: the volume it is on.
+#[cfg(target_os = "macos")]
+pub(crate) fn statfs_of(path: &Path) -> std::io::Result<libc::statfs> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "The path contains a NUL byte.",
+        )
+    })?;
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.assume_init() })
+}
+
 /// A mount point and whether `info`'s mount is backed by a local device.
 #[cfg(target_os = "macos")]
 pub(crate) fn mount_of(info: &libc::statfs) -> (PathBuf, bool) {
@@ -244,17 +261,10 @@ fn is_local_path(path: &Path, mounts: &[(PathBuf, bool)]) -> bool {
 /// Refuses a path on a network share: `statfs` on the path itself, so it also covers folders below a mount point.
 #[cfg(target_os = "macos")]
 pub fn ensure_local_volume(path: &Path) -> Result<(), String> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "The path contains a NUL byte.".to_string())?;
-    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
-        return Err(format!(
-            "Can't read the volume: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let info = unsafe { info.assume_init() };
+    let info = statfs_of(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::InvalidInput => e.to_string(),
+        _ => format!("Can't read the volume: {e}"),
+    })?;
     if mount_of(&info).1 {
         Ok(())
     } else {
@@ -269,15 +279,9 @@ pub fn ensure_local_volume(_path: &Path) -> Result<(), String> {
 /// Whether `dir` is on an msdos or exfat volume, where the file id follows the on-disk location. False when unreadable.
 #[cfg(target_os = "macos")]
 pub(crate) fn is_fat_like(dir: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+    let Ok(info) = statfs_of(dir) else {
         return false;
     };
-    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
-        return false;
-    }
-    let info = unsafe { info.assume_init() };
     let name = unsafe { std::ffi::CStr::from_ptr(info.f_fstypename.as_ptr()) };
     matches!(name.to_bytes(), b"msdos" | b"exfat")
 }

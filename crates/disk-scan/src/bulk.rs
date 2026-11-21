@@ -46,6 +46,15 @@ pub(crate) struct ParsedRecord<N> {
     pub(crate) clone_checked: bool,
 }
 pub(crate) type Record<'a> = ParsedRecord<&'a [u8]>;
+/// The node kind of a record's vnode type (VREG, VDIR, VLNK).
+pub(crate) fn node_kind(vtype: u32) -> NodeKind {
+    match vtype {
+        1 => NodeKind::File,
+        2 => NodeKind::Directory,
+        5 => NodeKind::Symlink,
+        _ => NodeKind::Other,
+    }
+}
 #[cfg(any(target_os = "macos", test))]
 type BufferedRecord = ParsedRecord<Range<usize>>;
 #[cfg(test)]
@@ -394,12 +403,7 @@ fn enumerate_using(
         let base = entries.len();
         reserve_listing_batch(&mut entries, records.len());
         entries.extend(records.iter().enumerate().map(|(index, r)| {
-            let kind = match r.kind {
-                1 => NodeKind::File,
-                2 => NodeKind::Directory,
-                5 => NodeKind::Symlink,
-                _ => NodeKind::Other,
-            };
+            let kind = node_kind(r.kind);
             let name = std::ffi::OsStr::from_bytes(&buffer[r.name.clone()]);
             // Bulk IDs at firmlinks/mount points can describe the covered namespace inode.
             // Resolve directory metadata relative to the held descriptor before queueing it.
@@ -1208,12 +1212,7 @@ mod tests {
             }
             original_reserve_listing_batch(&mut entries, records.len());
             for r in records {
-                let kind = match r.kind {
-                    1 => NodeKind::File,
-                    2 => NodeKind::Directory,
-                    5 => NodeKind::Symlink,
-                    _ => NodeKind::Other,
-                };
+                let kind = node_kind(r.kind);
                 let name = std::ffi::OsStr::from_bytes(r.name);
                 // Bulk IDs at firmlinks/mount points can describe the covered namespace inode.
                 // Resolve directory metadata relative to the held descriptor before queueing it.
