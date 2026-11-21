@@ -4,7 +4,6 @@ use crate::NodePathCursor;
 use crate::{AccountingModel, NodeKind, Snapshot};
 use std::{
     collections::HashMap,
-    mem::size_of,
     path::{Path, PathBuf},
 };
 
@@ -13,9 +12,6 @@ pub struct AllocationPlan {
     pub values: Vec<u64>,
     pub clone_deduction_bytes: u64,
     pub clone_attributions: Vec<(u32, (bool, u64))>,
-    /// Peak requested buffer payload capacity; excludes hash control bytes,
-    /// reusable path scratch, and allocator overhead.
-    pub scratch_bytes: usize,
 }
 
 #[cfg(test)]
@@ -47,7 +43,6 @@ impl AllocationChange {
 pub(crate) struct InternalAllocationPlan {
     pub clone_deduction_bytes: u64,
     pub clone_attributions: Vec<(u32, (bool, u64))>,
-    pub scratch_bytes: usize,
     aliases: Vec<u32>,
 }
 struct AllocationCursor<'a> {
@@ -84,13 +79,8 @@ impl InternalAllocationPlan {
         let mut cursor = AllocationCursor::new(self);
         s.reset_aggregate_sizes(|id, raw| cursor.value(id, raw));
     }
-    fn materialize(mut self, s: &Snapshot) -> AllocationPlan {
+    fn materialize(self, s: &Snapshot) -> AllocationPlan {
         let mut values: Vec<_> = s.iter_nodes().map(|n| n.own_allocated_size).collect();
-        self.scratch_bytes = self.scratch_bytes.max(
-            values.capacity() * size_of::<u64>()
-                + self.aliases.capacity() * size_of::<u32>()
-                + self.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>(),
-        );
         let mut cursor = AllocationCursor::new(&self);
         for (id, value) in values.iter_mut().enumerate() {
             *value = cursor.value(id as u32, *value);
@@ -99,7 +89,6 @@ impl InternalAllocationPlan {
             values,
             clone_deduction_bytes: self.clone_deduction_bytes,
             clone_attributions: self.clone_attributions,
-            scratch_bytes: self.scratch_bytes,
         }
     }
 }
@@ -262,13 +251,10 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         aliases: Vec::new(),
         clone_deduction_bytes: 0,
         clone_attributions: Vec::new(),
-        scratch_bytes: 0,
     };
     let mut paths = [OwnerPathScratch::new(s), OwnerPathScratch::new(s)];
     let mut inodes = HashMap::new();
     collect_hardlinks(s, &mut plan, &mut inodes, &mut paths)?;
-    plan.scratch_bytes = plan.aliases.capacity() * size_of::<u32>()
-        + inodes.capacity() * size_of::<((u64, u64), u32)>();
     if !clones {
         return Ok(plan);
     }
@@ -311,9 +297,7 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
         }
     }
     // Alias consistency is established before grouping. Release its map so
-    // these two sparse indexes never overlap in the requested payload peak.
-    let base_scratch = plan.scratch_bytes;
-    plan.scratch_bytes += aliases.capacity() * size_of::<((u64, u64), usize)>();
+    // these two sparse indexes never overlap.
     drop(aliases);
     let mut groups: HashMap<(u64, u64), Group> = HashMap::new();
     for (id, m) in &s.tree.clones {
@@ -372,11 +356,6 @@ fn allocations(s: &Snapshot, clones: bool) -> Result<InternalAllocationPlan, Str
             ));
         }
     }
-    plan.scratch_bytes = plan.scratch_bytes.max(
-        base_scratch
-            + groups.capacity() * size_of::<((u64, u64), Group)>()
-            + plan.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>(),
-    );
     Ok(plan)
 }
 
@@ -395,7 +374,6 @@ mod tests {
     }
     fn reference_aggregate_two_pass(s: &mut Snapshot) {
         let plan = allocations_two_pass_original(s, true).unwrap();
-        s.accounting.grouping_peak_bytes = s.accounting.grouping_peak_bytes.max(plan.scratch_bytes);
         s.accounting.deduction_bytes = plan.clone_deduction_bytes;
         let mut cursor = AllocationCursor::new(&plan);
         for id in 0..s.node_count() {
@@ -463,7 +441,6 @@ mod tests {
             aliases: Vec::new(),
             clone_deduction_bytes: 0,
             clone_attributions: Vec::new(),
-            scratch_bytes: 0,
         }
     }
 
@@ -493,18 +470,9 @@ mod tests {
         if got.is_ok() {
             assert_eq!(actual.aliases, expected.aliases);
             assert_eq!(actual.aliases.capacity(), expected.aliases.capacity());
-            let scratch = |p: &InternalAllocationPlan, owners: &HashMap<(u64, u64), u32>| {
-                p.aliases.capacity() * size_of::<u32>()
-                    + owners.capacity() * size_of::<((u64, u64), u32)>()
-            };
-            assert_eq!(
-                scratch(&actual, &actual_owners),
-                scratch(&expected, &expected_owners)
-            );
             let actual = actual.materialize(s);
             let expected = expected.materialize(s);
             assert_eq!(actual.values, expected.values);
-            assert_eq!(actual.scratch_bytes, expected.scratch_bytes);
         } else {
             // The original second pass has not begun. The new private plan can
             // contain earlier loser commands, but Err drops it before publication.
@@ -575,7 +543,7 @@ mod tests {
 
     #[test]
     fn onepass_complete_plans_match_frozen_original_with_sparse_claims() {
-        type MaterializedPlan = (Vec<u64>, Vec<(u32, (bool, u64))>, u64, usize);
+        type MaterializedPlan = (Vec<u64>, Vec<(u32, (bool, u64))>, u64);
         fn observed(
             s: &Snapshot,
             original: bool,
@@ -589,12 +557,7 @@ mod tests {
                 };
                 plan.map(|p| {
                     let p = p.materialize(s);
-                    (
-                        p.values,
-                        p.clone_attributions,
-                        p.clone_deduction_bytes,
-                        p.scratch_bytes,
-                    )
+                    (p.values, p.clone_attributions, p.clone_deduction_bytes)
                 })
             })
             .ok()
@@ -670,7 +633,6 @@ mod tests {
             aliases: Vec::new(),
             clone_deduction_bytes: 0,
             clone_attributions: Vec::new(),
-            scratch_bytes: 0,
         };
         let mut paths = [OwnerPathScratch::new(s), OwnerPathScratch::new(s)];
         let mut inodes = HashMap::new();
@@ -687,8 +649,6 @@ mod tests {
                 plan.aliases.push(n.id);
             }
         }
-        plan.scratch_bytes = plan.aliases.capacity() * size_of::<u32>()
-            + inodes.capacity() * size_of::<((u64, u64), u32)>();
         if !clones {
             return Ok(plan);
         }
@@ -734,9 +694,7 @@ mod tests {
             }
         }
         // Alias consistency is established before grouping. Release its map so
-        // these two sparse indexes never overlap in the requested payload peak.
-        let base_scratch = plan.scratch_bytes;
-        plan.scratch_bytes += aliases.capacity() * size_of::<((u64, u64), usize)>();
+        // these two sparse indexes never overlap.
         drop(aliases);
         let mut groups: HashMap<(u64, u64), Group> = HashMap::new();
         for (id, m) in &s.tree.clones {
@@ -796,11 +754,6 @@ mod tests {
                 ));
             }
         }
-        plan.scratch_bytes = plan.scratch_bytes.max(
-            base_scratch
-                + groups.capacity() * size_of::<((u64, u64), Group)>()
-                + plan.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>(),
-        );
         Ok(plan)
     }
 
@@ -863,7 +816,6 @@ mod tests {
                 aliases,
                 clone_attributions: attributions,
                 clone_deduction_bytes: 9,
-                scratch_bytes: 0,
             };
             let mut expected = vec![20; 10];
             for id in &plan.aliases {
@@ -887,7 +839,6 @@ mod tests {
     // the size-only writes, including the compatibility allocation strategy.
     fn reference_aggregate(s: &mut Snapshot) {
         let plan = internal_allocation_plan(s).unwrap();
-        s.accounting.grouping_peak_bytes = s.accounting.grouping_peak_bytes.max(plan.scratch_bytes);
         s.accounting.deduction_bytes = plan.clone_deduction_bytes;
         let mut cursor = AllocationCursor::new(&plan);
         for id in 0..s.node_count() {
@@ -1029,7 +980,6 @@ mod tests {
         }
         let sparse = internal_allocation_plan(&s).unwrap();
         assert!(sparse.aliases.is_empty());
-        assert_eq!(sparse.scratch_bytes, 0);
     }
 
     #[test]
@@ -1149,11 +1099,6 @@ mod tests {
         assert_eq!(
             p.clone_attributions,
             vec![(1, (false, 0)), (2, (true, 0)), (3, (false, 100))]
-        );
-        assert!(
-            p.scratch_bytes
-                >= p.values.capacity() * size_of::<u64>()
-                    + p.clone_attributions.capacity() * size_of::<(u32, (bool, u64))>()
         );
     }
 

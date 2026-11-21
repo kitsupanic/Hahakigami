@@ -50,17 +50,16 @@ pub(crate) type Record<'a> = ParsedRecord<&'a [u8]>;
 type BufferedRecord = ParsedRecord<Range<usize>>;
 #[cfg(test)]
 fn parse(b: &[u8], count: usize, rich: bool) -> io::Result<Vec<Record<'_>>> {
-    parse_with_payload(b, count, rich, &mut 0, &mut 0)
+    parse_with_payload(b, count, rich, &mut 0)
 }
 fn parse_with_payload<'a>(
     b: &'a [u8],
     count: usize,
     rich: bool,
-    peak: &mut usize,
     used: &mut usize,
 ) -> io::Result<Vec<Record<'a>>> {
     let mut out = Vec::new();
-    parse_into(b, count, rich, peak, used, &mut out, |name, _| name)?;
+    parse_into(b, count, rich, used, &mut out, |name, _| name)?;
     Ok(out)
 }
 #[cfg(any(target_os = "macos", test))]
@@ -68,17 +67,15 @@ fn parse_offsets_with_payload(
     b: &[u8],
     count: usize,
     rich: bool,
-    peak: &mut usize,
     used: &mut usize,
     out: &mut Vec<BufferedRecord>,
 ) -> io::Result<()> {
-    parse_into(b, count, rich, peak, used, out, |_, range| range)
+    parse_into(b, count, rich, used, out, |_, range| range)
 }
 fn parse_into<'a, N>(
     b: &'a [u8],
     count: usize,
     rich: bool,
-    peak: &mut usize,
     used: &mut usize,
     out: &mut Vec<ParsedRecord<N>>,
     mut map_name: impl FnMut(&'a [u8], Range<usize>) -> N,
@@ -91,8 +88,6 @@ fn parse_into<'a, N>(
     if count > out.capacity() {
         out.reserve_exact(count);
     }
-    let payload = out.capacity() * std::mem::size_of::<ParsedRecord<N>>();
-    *peak = (*peak).max(payload);
     let parsed = (|| {
         let mut start = 0;
         for _ in 0..count {
@@ -354,9 +349,7 @@ fn enumerate_using(
         }
         let mut used = 0;
         let parsed = match reader(fd, buffer, rich) {
-            Ok(count) => {
-                parse_offsets_with_payload(buffer, count, rich, &mut 0, &mut used, &mut records)
-            }
+            Ok(count) => parse_offsets_with_payload(buffer, count, rich, &mut used, &mut records),
             Err(error) => {
                 records.clear();
                 Err(error)
@@ -495,7 +488,6 @@ fn recover_listing(
 #[derive(Default)]
 pub(crate) struct CloneReadStats {
     pub queries: u64,
-    pub peak_bytes: usize,
     buffer: Vec<u8>,
 }
 #[cfg(target_os = "macos")]
@@ -509,9 +501,6 @@ impl CloneReadStats {
     }
     pub(crate) fn into_buffer(self) -> Vec<u8> {
         self.buffer
-    }
-    pub(crate) fn workspace_bytes(&self) -> usize {
-        self.buffer.capacity()
     }
 }
 #[cfg(target_os = "macos")]
@@ -537,7 +526,6 @@ fn visit_with_reader(
 ) -> io::Result<()> {
     let mut buffer = std::mem::take(&mut stats.buffer);
     buffer.resize(BULK_BUFFER_BYTES, 0);
-    stats.peak_bytes = stats.peak_bytes.max(buffer.capacity());
     let result = (|| loop {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::from_raw_os_error(libc::EINTR));
@@ -549,11 +537,8 @@ fn visit_with_reader(
         if count == 0 {
             return Ok(());
         }
-        let mut parsed_payload = 0;
         let mut used = 0;
-        let parsed = parse_with_payload(&buffer, count, true, &mut parsed_payload, &mut used);
-        stats.peak_bytes = stats.peak_bytes.max(buffer.capacity() + parsed_payload);
-        let records = parsed?;
+        let records = parse_with_payload(&buffer, count, true, &mut used)?;
         for record in &records {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(io::Error::from_raw_os_error(libc::EINTR));
@@ -562,7 +547,6 @@ fn visit_with_reader(
         }
         drop(records);
         grow_packed_buffer(&mut buffer, used);
-        stats.peak_bytes = stats.peak_bytes.max(buffer.capacity());
     })();
     stats.buffer = buffer;
     result
@@ -585,22 +569,14 @@ mod tests {
         })
     }
     fn assert_parser_matches_original(bytes: &[u8], count: usize, rich: bool) {
-        let (mut old_peak, mut new_peak, mut offset_peak) = (17, 17, 17);
         let (mut old_used, mut new_used, mut offset_used) = (99, 99, 99);
-        let original =
-            parse_with_payload_original(bytes, count, rich, &mut old_peak, &mut old_used);
-        let borrowed = parse_with_payload(bytes, count, rich, &mut new_peak, &mut new_used);
+        let original = parse_with_payload_original(bytes, count, rich, &mut old_used);
+        let borrowed = parse_with_payload(bytes, count, rich, &mut new_used);
         let mut offsets = Vec::new();
-        let buffered = parse_offsets_with_payload(
-            bytes,
-            count,
-            rich,
-            &mut offset_peak,
-            &mut offset_used,
-            &mut offsets,
-        );
-        assert_eq!((old_peak, old_used), (new_peak, new_used));
-        assert_eq!((old_peak, old_used), (offset_peak, offset_used));
+        let buffered =
+            parse_offsets_with_payload(bytes, count, rich, &mut offset_used, &mut offsets);
+        assert_eq!(old_used, new_used);
+        assert_eq!(old_used, offset_used);
         match (original, borrowed, buffered) {
             (Ok(original), Ok(borrowed), Ok(())) => {
                 assert_eq!(original.len(), offsets.len());
@@ -725,7 +701,6 @@ mod tests {
     fn offset_scratch_reuses_capacity_across_buffer_replacement_growth_errors_and_eof() {
         let mut scratch = Vec::new();
         let mut buffer = Vec::new();
-        let (mut actual_peak, mut original_peak) = (0, 0);
         let mut growths = 0;
         for (round, count) in [0, 1, 10, 600, 3, 0, 2184, 1, 0, 2].into_iter().enumerate() {
             let mut replacement = Vec::new();
@@ -749,24 +724,10 @@ mod tests {
                 growths += 1;
             }
             let (mut used, mut original_used) = (99, 99);
-            parse_offsets_with_payload(
-                &buffer,
-                count,
-                true,
-                &mut actual_peak,
-                &mut used,
-                &mut scratch,
-            )
-            .unwrap();
-            let original = parse_with_payload_original(
-                &buffer,
-                count,
-                true,
-                &mut original_peak,
-                &mut original_used,
-            )
-            .unwrap();
-            assert_eq!((used, actual_peak), (original_used, original_peak));
+            parse_offsets_with_payload(&buffer, count, true, &mut used, &mut scratch).unwrap();
+            let original =
+                parse_with_payload_original(&buffer, count, true, &mut original_used).unwrap();
+            assert_eq!(used, original_used);
             assert_eq!(scratch.len(), count);
             if count <= old_capacity {
                 assert_eq!(scratch.capacity(), old_capacity);
@@ -784,26 +745,19 @@ mod tests {
             buffer.fill(0xff);
             let pointer = scratch.as_ptr();
             let capacity = scratch.capacity();
-            assert!(parse_offsets_with_payload(
-                &buffer,
-                usize::MAX,
-                true,
-                &mut actual_peak,
-                &mut used,
-                &mut scratch
-            )
-            .is_err());
+            assert!(
+                parse_offsets_with_payload(&buffer, usize::MAX, true, &mut used, &mut scratch)
+                    .is_err()
+            );
             assert!(scratch.is_empty());
             assert_eq!(used, 0);
             assert_eq!((scratch.as_ptr(), scratch.capacity()), (pointer, capacity));
-            parse_offsets_with_payload(&buffer, 0, true, &mut actual_peak, &mut used, &mut scratch)
-                .unwrap();
+            parse_offsets_with_payload(&buffer, 0, true, &mut used, &mut scratch).unwrap();
             assert!(scratch.is_empty());
             assert_eq!((scratch.as_ptr(), scratch.capacity()), (pointer, capacity));
         }
         assert_eq!(growths, 4);
         assert_eq!(scratch.capacity(), 2184);
-        assert!(actual_peak <= 2184 * 96);
         assert!(std::mem::size_of::<Record<'_>>() <= 96);
         assert!(std::mem::size_of::<BufferedRecord>() <= 96);
         assert!(std::mem::size_of::<crate::tree::Record>() <= 72);
@@ -814,7 +768,6 @@ mod tests {
         b: &'a [u8],
         count: usize,
         rich: bool,
-        peak: &mut usize,
         used: &mut usize,
     ) -> io::Result<Vec<Record<'a>>> {
         *used = 0;
@@ -822,8 +775,6 @@ mod tests {
             return Err(invalid());
         }
         let mut out = Vec::with_capacity(count);
-        let payload = out.capacity() * std::mem::size_of::<Record>();
-        *peak = (*peak).max(payload);
         let mut start = 0;
         for _ in 0..count {
             let len = u32_at(b, start)? as usize;
@@ -1214,9 +1165,8 @@ mod tests {
                 break;
             }
             let mut used = 0;
-            let records = reader(fd, buffer, rich).and_then(|count| {
-                parse_with_payload_original(buffer, count, rich, &mut 0, &mut used)
-            });
+            let records = reader(fd, buffer, rich)
+                .and_then(|count| parse_with_payload_original(buffer, count, rich, &mut used));
             let records = match records {
                 Ok(records) => records,
                 Err(error) if rich => {
@@ -1604,7 +1554,6 @@ mod tests {
         .unwrap();
         assert_eq!(visited, 4);
         assert!(stats.queries >= 2);
-        assert!(stats.peak_bytes > BULK_BUFFER_BYTES);
         // Basic bulk fallback keeps basenames too. Clone probes must still
         // validate exact identity/sizes through the held parent descriptor.
         let fresh = crate::descriptor::reopen(&fd, &expected).unwrap();
@@ -1908,7 +1857,6 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
         assert_eq!(visited, 1);
         assert_eq!(stats.queries, 2);
-        assert!(stats.peak_bytes > BULK_BUFFER_BYTES);
         let mut stats = CloneReadStats::default();
         let result = visit_with_reader(
             &cancel,
@@ -1944,7 +1892,6 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
         assert_eq!(stats.queries, 1);
-        assert_eq!(stats.peak_bytes, BULK_BUFFER_BYTES);
     }
     #[cfg(target_os = "macos")]
     #[test]
@@ -2008,7 +1955,6 @@ mod tests {
         .unwrap();
         assert_eq!((reads, visited), (3, 2));
         let capacity = stats.buffer.capacity();
-        assert!(stats.peak_bytes >= capacity);
         visit_with_reader(
             &cancel,
             &mut stats,
@@ -2063,7 +2009,6 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
         assert_eq!(stats.buffer.len(), LARGE_BULK_BUFFER_BYTES);
-        assert!(stats.peak_bytes >= stats.buffer.capacity());
     }
     #[cfg(target_os = "macos")]
     #[test]
@@ -2098,7 +2043,6 @@ mod tests {
         assert_eq!(stats.buffer.as_ptr(), pointer);
         assert_eq!(stats.buffer.len(), BULK_BUFFER_BYTES);
         assert_eq!(stats.buffer.capacity(), retained_capacity);
-        assert!(stats.peak_bytes >= retained_capacity);
     }
     #[cfg(target_os = "macos")]
     #[test]

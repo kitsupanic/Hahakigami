@@ -306,6 +306,8 @@ it("ignores delayed folder rows and breadcrumb failures after returning", async 
     }
     return previous(command, args);
   });
+  // With no known chain the walk asks the backend for the root.
+  await act(() => app().setCrumbs([]));
   let opening!: Promise<void>;
   await act(() => {
     opening = app().open(folder);

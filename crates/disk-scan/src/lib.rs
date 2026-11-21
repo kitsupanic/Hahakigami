@@ -105,7 +105,6 @@ pub struct AccountingInfo {
     pub checks_complete: bool,
     pub shared: bool,
     pub deduction_bytes: u64,
-    pub grouping_peak_bytes: usize,
     pub metadata_queries: u64,
     pub revalidation_queries: u64,
     pub metadata_us: u64,
@@ -617,10 +616,15 @@ fn enumerate_once(
     let _ = (accounting_warnings, clone_observations, bulk_buffer);
     descriptor::enumerate(fd, path, cancel)
 }
-/// The volume cannot do bulk listing, so the portable listing takes over.
+/// The volume cannot do bulk listing, or returned a record without an attribute we asked for (some third-party
+/// filesystems omit one per entry), so the portable listing takes over. It rewinds and lists the folder again.
+// shortcut: a listing that already holds a failed entry (one that vanished or was refused) keeps the malformed
+// record as an issue and is not relisted (`retry::terminal_listing`). Upgrade if such volumes show partial folders.
 #[cfg(target_os = "macos")]
 fn falls_back_to_readdir(error: &std::io::Error) -> bool {
-    bulk::is_unsupported(error) || error.raw_os_error() == Some(libc::ENOSYS)
+    bulk::is_unsupported(error)
+        || error.raw_os_error() == Some(libc::ENOSYS)
+        || error.kind() == std::io::ErrorKind::InvalidData
 }
 /// Reopens a directory by walking recorded child names down from the held root. A renamed root
 /// or ancestor cannot hide the subtree, which an absolute-path walk from `/` would.
@@ -1511,7 +1515,6 @@ pub fn aggregate(s: &mut Snapshot) {
             clones::internal_allocation_plan(s).expect("scanner hardlinks")
         }
     };
-    s.accounting.grouping_peak_bytes = s.accounting.grouping_peak_bytes.max(plan.scratch_bytes);
     s.accounting.deduction_bytes = plan.clone_deduction_bytes;
     plan.apply_to(s);
     s.tree.clone_attributions = plan.clone_attributions;
@@ -1527,7 +1530,7 @@ pub fn aggregate(s: &mut Snapshot) {
 mod tests {
     #[cfg(target_os = "macos")]
     #[test]
-    fn bulk_listing_falls_back_for_every_unsupported_error_only() {
+    fn bulk_listing_falls_back_for_unsupported_and_malformed_records_only() {
         let falls = |code| super::falls_back_to_readdir(&std::io::Error::from_raw_os_error(code));
         for code in [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL, libc::ENOSYS] {
             assert!(falls(code), "errno {code}");
@@ -1535,6 +1538,11 @@ mod tests {
         for code in [libc::EIO, libc::EACCES] {
             assert!(!falls(code), "errno {code}");
         }
+        // A record missing an attribute: listing the folder plainly beats losing all of it.
+        assert!(super::falls_back_to_readdir(&std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "malformed getattrlistbulk record"
+        )));
     }
     #[test]
     fn listing_entries_keep_clone_observations_sparse() {

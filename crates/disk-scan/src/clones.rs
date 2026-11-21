@@ -345,7 +345,6 @@ mod native {
         fallback: Option<OwnedFd>,
         current: Option<u32>,
         limit: usize,
-        peak_bytes: usize,
     }
     impl ParentCache {
         #[cfg(test)]
@@ -360,24 +359,9 @@ mod native {
                 fallback: None,
                 current: None,
                 limit,
-                peak_bytes: 0,
             }
         }
-        fn observe_storage(&mut self) {
-            self.peak_bytes = self.peak_bytes.max(
-                self.chain.capacity() * std::mem::size_of::<CachedDirectory>()
-                    + self.spare.capacity() * std::mem::size_of::<CachedDirectory>()
-                    + self.ancestors.capacity() * std::mem::size_of::<u32>()
-                    + self
-                        .chain
-                        .iter()
-                        .chain(&self.spare)
-                        .map(|c| c.name.storage_bytes())
-                        .sum::<usize>(),
-            );
-        }
         fn clear(&mut self) {
-            self.observe_storage();
             self.chain.clear();
             self.spare.clear();
             self.fallback = None;
@@ -392,7 +376,6 @@ mod native {
                     self.spare.push(cached);
                 }
             }
-            self.observe_storage();
         }
         fn ensure(&mut self, s: &Snapshot, id: u32, root: &OwnedFd) -> io::Result<()> {
             self.prepare(s, id, root, false)
@@ -448,7 +431,6 @@ mod native {
                 next = s.node(id).unwrap().parent;
             }
             self.ancestors.reverse();
-            self.observe_storage();
             if self.ancestors.len() > self.limit {
                 self.chain.clear();
                 self.spare.clear();
@@ -506,7 +488,6 @@ mod native {
                             ));
                         }
                         self.chain.push(cached);
-                        self.observe_storage();
                         continue;
                     }
                 } else {
@@ -520,7 +501,6 @@ mod native {
                 let parent = self.chain.last().map_or(root, |cached| &cached.fd);
                 let fd = crate::descriptor::open_child_name(parent, &name, &n.identity)?;
                 self.chain.push(CachedDirectory { id, name, fd });
-                self.observe_storage();
             }
             Ok(())
         }
@@ -815,7 +795,6 @@ mod native {
         info: crate::AccountingInfo,
         parents: ParentCache,
         read_stats: crate::bulk::CloneReadStats,
-        peak: usize,
         active: Vec<usize>,
         seen: Vec<bool>,
         fallback: Vec<usize>,
@@ -834,7 +813,6 @@ mod native {
                 },
                 parents: ParentCache::with_limit(cache_limit),
                 read_stats: Default::default(),
-                peak: 0,
                 active: Vec::new(),
                 seen: Vec::new(),
                 fallback: Vec::new(),
@@ -940,7 +918,6 @@ mod native {
             info,
             parents,
             read_stats,
-            peak: member_peak,
             active,
             seen,
             fallback,
@@ -964,13 +941,6 @@ mod native {
                     ClaimStatus::Unverified | ClaimStatus::Verified
                 )
             }));
-            *member_peak = (*member_peak).max(
-                active.capacity() * std::mem::size_of::<usize>()
-                    + seen.capacity() * std::mem::size_of::<bool>()
-                    + fallback.capacity() * std::mem::size_of::<usize>()
-                    + read_stats.workspace_bytes()
-                    + parents.peak_bytes,
-            );
             if active.is_empty() {
                 start = end;
                 continue;
@@ -993,7 +963,6 @@ mod native {
                 parents.ensure(s, id, root)
             };
             let mut direct = !batch;
-            let mut local_peak = 0;
             let parent_valid = result.is_ok();
             if let Err(e) = result {
                 warning(info, e);
@@ -1009,7 +978,6 @@ mod native {
                 }
                 seen.resize(end - start, false);
                 let queries_before = read_stats.queries;
-                read_stats.peak_bytes = 0;
                 let result = if duplicate {
                     Err(error("duplicate clone basename in one directory"))
                 } else {
@@ -1053,10 +1021,6 @@ mod native {
                     })
                 };
                 info.revalidation_bulk_queries += read_stats.queries - queries_before;
-                local_peak += wanted.capacity() * std::mem::size_of::<(&[u8], usize)>()
-                    + read_stats
-                        .peak_bytes
-                        .saturating_sub(read_stats.workspace_bytes());
                 match result {
                     Ok(()) => {}
                     Err(e) => {
@@ -1103,12 +1067,6 @@ mod native {
             info.revalidation_us = info
                 .revalidation_us
                 .saturating_add(started.elapsed().as_micros() as u64);
-            // Retained workspace is live even in a later direct/failing parent.
-            local_peak += read_stats.workspace_bytes()
-                + active.capacity() * std::mem::size_of::<usize>()
-                + seen.capacity() * std::mem::size_of::<bool>()
-                + fallback.capacity() * std::mem::size_of::<usize>();
-            *member_peak = (*member_peak).max(local_peak + parents.peak_bytes);
             start = end;
         }
     }
@@ -1119,7 +1077,7 @@ mod native {
         s: &Snapshot,
         claims: &[(u32, CloneMetadata)],
         statuses: &mut [ClaimStatus],
-    ) -> usize {
+    ) {
         let mut groups: HashMap<(u64, u64), (u64, bool)> = HashMap::new();
         for (index, (id, metadata)) in claims.iter().enumerate() {
             if statuses[index] == ClaimStatus::Drop {
@@ -1138,7 +1096,6 @@ mod native {
                 statuses[index] = ClaimStatus::Raw;
             }
         }
-        groups.capacity() * std::mem::size_of::<((u64, u64), (u64, bool))>()
     }
     fn validate_core(
         s: &Snapshot,
@@ -1189,16 +1146,12 @@ mod native {
                 error("clone inode aliases changed during enumeration"),
             );
         }
-        let status_bytes = statuses.capacity() * std::mem::size_of::<ClaimStatus>();
-        let alias_peak = status_bytes
-            + aliases.capacity() * std::mem::size_of::<((u64, u64), (u32, &CloneMetadata))>()
-            + conflicting.capacity() * std::mem::size_of::<(u64, u64)>();
         drop(aliases);
         drop(conflicting);
         // Alias conflicts must be established first. A singleton has no second
         // in-scope inode to deduct from, including when its other clones are
         // outside this root. Keep its observation unverified and retain raw.
-        let singleton_peak = status_bytes + retain_singleton_allocation(s, claims, &mut statuses);
+        retain_singleton_allocation(s, claims, &mut statuses);
         // Each worker owns disjoint status slots and directory caches. No tree
         // mutation occurs until all workers join and whole-group rejection runs.
         let available = s.descriptor_limit.unwrap_or(1).saturating_sub(1);
@@ -1211,12 +1164,9 @@ mod native {
             strategy,
             cache_limit,
         };
-        // Sum of worker peak requested payloads is a conservative bound; their
-        // individual peaks need not occur at the same instant.
-        let mut member_peak = 0;
         info.revalidation_workers = workers as u32;
         let validating = std::time::Instant::now();
-        let mut merge = |part: crate::AccountingInfo, peak| {
+        let mut merge = |part: crate::AccountingInfo| {
             info.checks_complete &= part.checks_complete;
             info.revalidation_queries += part.revalidation_queries;
             info.revalidation_parent_walks += part.revalidation_parent_walks;
@@ -1226,9 +1176,7 @@ mod native {
             let remaining = 32usize.saturating_sub(info.warnings.len());
             info.warnings
                 .extend(part.warnings.into_iter().take(remaining));
-            member_peak += peak;
         };
-        let mut scheduler_bytes = 0;
         if workers == 1 {
             // Thread-scoped I/O policies must not stick to the caller (a reused pool thread).
             let worker = std::thread::scope(|scope| {
@@ -1249,21 +1197,11 @@ mod native {
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
             });
-            merge(worker.info, worker.peak);
+            merge(worker.info);
         } else {
             // A task is an entire contiguous parent range. No split can turn a
             // dense parent into repeated bulk enumerations or sparse probes.
             let tasks = parent_tasks(s, claims, &statuses, strategy);
-            scheduler_bytes = tasks.capacity() * std::mem::size_of::<ParentTask>()
-                + tasks
-                    .iter()
-                    .map(|task| {
-                        task.statuses.lock().unwrap().capacity()
-                            * std::mem::size_of::<ClaimStatus>()
-                    })
-                    .sum::<usize>()
-                + workers * std::mem::size_of::<std::thread::ScopedJoinHandle<'_, MemberWorker>>()
-                + std::mem::size_of::<std::sync::atomic::AtomicUsize>();
             let next = std::sync::atomic::AtomicUsize::new(0);
             std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..workers)
@@ -1296,7 +1234,7 @@ mod native {
                     .collect();
                 for handle in handles {
                     let worker = handle.join().expect("clone validation worker");
-                    merge(worker.info, worker.peak);
+                    merge(worker.info);
                 }
             });
             // Publication remains serial and private until every worker exits.
@@ -1304,7 +1242,6 @@ mod native {
                 statuses[task.range].copy_from_slice(&task.statuses.into_inner().unwrap());
             }
         }
-        member_peak += status_bytes + scheduler_bytes;
         info.revalidation_wall_us = validating.elapsed().as_micros() as u64;
         if cancel.load(Ordering::Relaxed) {
             for status in &mut statuses {
@@ -1347,15 +1284,6 @@ mod native {
                 statuses[index] = ClaimStatus::Unverified;
             }
         }
-        let group_peak = status_bytes
-            + invalid.capacity() * std::mem::size_of::<(u64, u64)>()
-            + group_evidence.capacity() * std::mem::size_of::<((u64, u64), (u64, u64))>();
-        info.grouping_peak_bytes = info.grouping_peak_bytes.max(
-            alias_peak
-                .max(singleton_peak)
-                .max(member_peak)
-                .max(group_peak),
-        );
         Validation {
             statuses,
             accounting: info,
@@ -1769,10 +1697,6 @@ mod native {
             let normal = run(true, read_bulk);
             assert_eq!(normal.accounting.revalidation_direct_queries, 0);
             assert_eq!(normal.accounting.revalidation_bulk_queries, 2);
-            assert!(
-                normal.accounting.grouping_peak_bytes >= crate::bulk::BULK_BUFFER_BYTES,
-                "retained real read workspace must be counted"
-            );
             let mut automatic = original.clone();
             automatic.accounting.revalidation_direct_queries = 0;
             automatic.accounting.revalidation_bulk_queries = 0;
@@ -1833,8 +1757,7 @@ mod native {
                 }
                 let expected = attributed_own_allocations(&s).unwrap();
                 let mut statuses = vec![ClaimStatus::Unverified; s.tree.clones.len()];
-                let bytes = retain_singleton_allocation(&s, &s.tree.clones, &mut statuses);
-                assert!(bytes > 0);
+                retain_singleton_allocation(&s, &s.tree.clones, &mut statuses);
                 assert!(statuses.iter().all(|status| *status == ClaimStatus::Raw));
                 Validation {
                     statuses,
@@ -2779,11 +2702,6 @@ mod native {
             );
             assert!(worker.seen.is_empty());
             assert!(worker.fallback.is_empty());
-            assert!(
-                worker.peak
-                    >= retained.0 * std::mem::size_of::<usize>()
-                        + retained.1 * std::mem::size_of::<bool>()
-            );
             assert_eq!(worker.info.revalidation_parent_walks, 2);
             std::fs::remove_dir_all(p).unwrap();
         }
