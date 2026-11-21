@@ -138,11 +138,9 @@ async function scanDisk(name: string) {
 }
 async function scanFolder(folder: Target) {
   chosen = folder;
-  await act(() => app().showHome());
   await click(
-    container.querySelector<HTMLButtonElement>("button.welcome-target")!,
+    container.querySelector<HTMLButtonElement>("button.scan-folder-nav")!,
   );
-  await click(scanButton());
 }
 const progress = (scanId: string, change: Partial<ScanSummary>) =>
   act(() => {
@@ -616,12 +614,8 @@ it("lets a second disk be scanned while the first is still running, from either 
   await click(diskRow("Backup"));
   expect(scanButton().disabled).toBe(false);
   expect(app().can.rescan).toBe(true);
-  // The scanning disk's own welcome page keeps Scan off.
-  await act(() => {
-    app().setTarget(disk);
-    app().showHome();
-  });
-  expect(scanButton().disabled).toBe(true);
+  // The scanning disk keeps Scan off.
+  await click(diskRow("Macintosh HD"));
   expect(app().can.rescan).toBe(false);
   await act(() => app().start(disk));
   await settle();

@@ -664,6 +664,53 @@ mod tests {
         assert_eq!(confirmed, Ok(()));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "Needs hdiutil to mount a disposable FAT disk image and moves one empty file on it to native Trash; run explicitly on macOS"]
+    fn an_empty_file_on_a_fat_volume_passes_the_receipt_check() {
+        use std::process::Command;
+        // Detaches in every case, a failed assert included.
+        struct Mounted(PathBuf);
+        impl Drop for Mounted {
+            fn drop(&mut self) {
+                let _ = Command::new("hdiutil")
+                    .args(["detach", "-force"])
+                    .arg(&self.0)
+                    .output();
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("fat.dmg");
+        let created = Command::new("hdiutil")
+            .args([
+                "create", "-size", "8m", "-fs", "MS-DOS", "-volname", "HKTEST",
+            ])
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(created.status.success(), "{created:?}");
+        // A private mount point: an existing /Volumes/HKTEST must never be written to or detached.
+        let volume = dir.path().join("mount");
+        std::fs::create_dir(&volume).unwrap();
+        let attached = Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-mountpoint"])
+            .arg(&volume)
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(attached.status.success(), "{attached:?}");
+        let _mounted = Mounted(volume.clone());
+        let file = volume.join("empty");
+        std::fs::write(&file, b"").unwrap();
+        let item = safety::CheckedItem {
+            path: file.clone(),
+            identity: safety::Identity::read(&file).unwrap(),
+            ancestors: vec![],
+            volume: None,
+        };
+        assert_eq!(native_trash(&item), Ok(()));
+    }
+
     #[test]
     fn an_item_that_fails_the_receipt_check_is_a_failure_not_a_trashed_item() {
         let (_dir, root) = home_dir();
@@ -714,6 +761,34 @@ mod tests {
             false,
             std::slice::from_ref(&elsewhere),
             |item| confirm_trashed(item, Some(&other)),
+        )
+        .unwrap();
+        assert_eq!(result.trashed, 0);
+        assert!(result.invalidated && !s.is_valid());
+        assert_eq!(result.stale_scan_ids, std::slice::from_ref(&elsewhere.id));
+        assert!(!elsewhere.is_valid());
+    }
+
+    #[test]
+    fn a_plain_trash_error_after_the_item_moved_invalidates_every_scan() {
+        let (_dir, root) = home_dir();
+        std::fs::write(root.join("a"), b"a").unwrap();
+        let (_other_dir, other_root) = home_dir();
+        let state = AppState::default();
+        let (s, token) = reviewed(&state, &root);
+        let elsewhere = install_in(&state, Slot::Folder, "elsewhere", snapshot(other_root));
+        let queue = Mutex::new(Queue::default());
+        // The item left its path, but the error is a native one with no receipt prefix: only the identity shows it.
+        let result = commit(
+            &s,
+            &queue,
+            &token,
+            false,
+            std::slice::from_ref(&elsewhere),
+            |item| {
+                std::fs::rename(&item.path, item.path.with_extension("moved")).unwrap();
+                Err("The operation couldn't be completed.".into())
+            },
         )
         .unwrap();
         assert_eq!(result.trashed, 0);

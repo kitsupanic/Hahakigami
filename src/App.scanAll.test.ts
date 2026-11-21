@@ -179,7 +179,7 @@ it("starts exactly the disks and leaves the folder slot alone", async () => {
   await click(container.querySelector<HTMLButtonElement>("button.welcome-scan")!);
   const folderScan = app().scanSlots.folder.scanId;
   await report(folderScan, "completed");
-  await act(() => app().showHome());
+  await act(() => app().openDisk(hd));
   await click(welcomeButton());
   expect(calls("start_scan").map(([, args]) => args.targetId).sort()).toEqual([
     "backup",

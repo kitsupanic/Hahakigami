@@ -608,56 +608,72 @@ fn grow_packed_buffer(buffer: &mut Vec<u8>, used: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn record_view<N>(record: &ParsedRecord<N>, name: &[u8]) -> serde_json::Value {
-        serde_json::json!({
-            "name": name, "device": record.device, "inode": record.inode,
-            "kind": record.kind, "length": record.length, "allocated": record.allocated,
-            "links": record.links, "clone_metadata": record.clone_metadata,
-            "clone_checked": record.clone_checked,
-        })
+    fn record_view<N: std::fmt::Debug>(record: &ParsedRecord<N>, name: &[u8]) -> String {
+        format!(
+            "{:?}",
+            (
+                name,
+                record.device,
+                record.inode,
+                record.kind,
+                record.length,
+                record.allocated,
+                record.links,
+                &record.clone_metadata,
+                record.clone_checked,
+            )
+        )
     }
-    fn assert_parser_matches_original(bytes: &[u8], count: usize, rich: bool) {
-        let (mut old_used, mut new_used, mut offset_used) = (99, 99, 99);
-        let original = parse_with_payload_original(bytes, count, rich, &mut old_used);
+    /// Both parsers must agree on every byte; returns the shared outcome for golden comparison.
+    fn parse_outcome(bytes: &[u8], count: usize, rich: bool) -> String {
+        let (mut new_used, mut offset_used) = (99, 99);
         let borrowed = parse_with_payload(bytes, count, rich, &mut new_used);
         let mut offsets = Vec::new();
         let buffered =
             parse_offsets_with_payload(bytes, count, rich, &mut offset_used, &mut offsets);
-        assert_eq!(old_used, new_used);
-        assert_eq!(old_used, offset_used);
-        match (original, borrowed, buffered) {
-            (Ok(original), Ok(borrowed), Ok(())) => {
-                assert_eq!(original.len(), offsets.len());
-                for ((old, new), offset) in original.iter().zip(&borrowed).zip(&offsets) {
+        assert_eq!(new_used, offset_used);
+        match (borrowed, buffered) {
+            (Ok(borrowed), Ok(())) => {
+                assert_eq!(borrowed.len(), offsets.len());
+                let mut views = Vec::new();
+                for (new, offset) in borrowed.iter().zip(&offsets) {
                     let current_name = bytes
                         .get(offset.name.clone())
                         .expect("checked absolute name range");
-                    assert_eq!(record_view(old, old.name), record_view(new, new.name));
                     assert_eq!(
-                        record_view(old, old.name),
+                        record_view(new, new.name),
                         record_view(offset, current_name)
                     );
-                    assert_eq!(old.name.as_ptr(), new.name.as_ptr());
-                    assert_eq!(old.name.as_ptr(), current_name.as_ptr());
+                    assert_eq!(new.name.as_ptr(), current_name.as_ptr());
+                    views.push(record_view(new, new.name));
                 }
+                format!("ok {new_used} {views:?}")
             }
-            (Err(old), Err(new), Err(buffered)) => {
-                assert_eq!((old.kind(), old.to_string()), (new.kind(), new.to_string()));
+            (Err(new), Err(buffered)) => {
                 assert_eq!(
-                    (old.kind(), old.to_string()),
+                    (new.kind(), new.to_string()),
                     (buffered.kind(), buffered.to_string())
                 );
                 assert!(
                     offsets.is_empty(),
                     "failed parse retained stale or partial ranges"
                 );
+                format!("err {new_used} {:?} {new}", new.kind())
             }
-            _ => panic!("borrowed/offset parser acceptance differs from frozen original"),
+            _ => panic!("borrowed and offset parser acceptance differs"),
         }
     }
 
     #[test]
-    fn borrowed_and_offset_parsers_match_frozen_original_bytes_and_diagnostics() {
+    fn parsers_agree_and_reproduce_golden_bytes_and_diagnostics() {
+        // Captured from the byte-exact reference parser that the shared generic parser replaced.
+        let (mut digest, mut total, mut accepted) = (crate::DIGEST_START, 0, 0);
+        let mut check = |bytes: &[u8], count: usize, rich: bool| {
+            let outcome = parse_outcome(bytes, count, rich);
+            total += 1;
+            accepted += usize::from(outcome.starts_with("ok"));
+            crate::fold_digest(&mut digest, &outcome);
+        };
         let files = [
             0,
             1,
@@ -693,7 +709,7 @@ mod tests {
                 for file in files {
                     for ext in extended {
                         let record = rich_record(file, ext, kind);
-                        assert_parser_matches_original(&record, 1, rich);
+                        check(&record, 1, rich);
                     }
                 }
             }
@@ -705,13 +721,13 @@ mod tests {
                 1,
             );
             for end in 0..=original.len() {
-                assert_parser_matches_original(&original[..end], 1, rich);
+                check(&original[..end], 1, rich);
             }
             for at in 0..original.len() {
                 for value in [0, 1, 0x7f, 0x80, 0xff] {
                     let mut changed = original.clone();
                     changed[at] = value;
-                    assert_parser_matches_original(&changed, 1, rich);
+                    check(&changed, 1, rich);
                 }
             }
             for position in 0..3 {
@@ -719,7 +735,7 @@ mod tests {
                     let mut changed = original.clone();
                     let index = changed.len() - 4 + position;
                     changed[index] = byte;
-                    assert_parser_matches_original(&changed, 1, rich);
+                    check(&changed, 1, rich);
                 }
             }
             for name in [
@@ -733,16 +749,20 @@ mod tests {
                 let start = changed.len() - 4;
                 changed[28..32].copy_from_slice(&(name.len() as u32).to_ne_bytes());
                 changed[start..start + name.len()].copy_from_slice(name);
-                assert_parser_matches_original(&changed, 1, rich);
+                check(&changed, 1, rich);
             }
             let mut pair = original.clone();
             pair.extend_from_slice(&original);
-            assert_parser_matches_original(&pair, 2, rich);
+            check(&pair, 2, rich);
             pair[original.len()..original.len() + 4].fill(0);
-            assert_parser_matches_original(&pair, 2, rich);
-            assert_parser_matches_original(&original, 0, rich);
-            assert_parser_matches_original(&original, usize::MAX, rich);
+            check(&pair, 2, rich);
+            check(&original, 0, rich);
+            check(&original, usize::MAX, rich);
         }
+        assert_eq!(
+            (total, accepted, digest),
+            (3916, 2402, 0x06db_6750_3508_e545)
+        );
     }
 
     #[test]
@@ -750,6 +770,7 @@ mod tests {
         let mut scratch = Vec::new();
         let mut buffer = Vec::new();
         let mut growths = 0;
+        let record_len = rich_record(0x607, 0x1300, 1).len();
         for (round, count) in [0, 1, 10, 600, 3, 0, 2184, 1, 0, 2].into_iter().enumerate() {
             let mut replacement = Vec::new();
             for index in 0..count {
@@ -771,25 +792,40 @@ mod tests {
             if count > old_capacity {
                 growths += 1;
             }
-            let (mut used, mut original_used) = (99, 99);
+            let mut used = 99;
             parse_offsets_with_payload(&buffer, count, true, &mut used, &mut scratch).unwrap();
-            let original =
-                parse_with_payload_original(&buffer, count, true, &mut original_used).unwrap();
-            assert_eq!(used, original_used);
+            assert_eq!(used, count * record_len);
             assert_eq!(scratch.len(), count);
             if count <= old_capacity {
                 assert_eq!(scratch.capacity(), old_capacity);
                 assert_eq!(scratch.as_ptr(), old_pointer);
             }
-            for (record, original) in scratch.iter().zip(&original) {
+            for (index, record) in scratch.iter().enumerate() {
                 let name = buffer.get(record.name.clone()).unwrap();
+                let expected = Record {
+                    name: &[b'a' + round as u8, b'b', b'c'],
+                    device: 0,
+                    inode: round as u64 * 10000 + index as u64,
+                    kind: 1,
+                    length: 128,
+                    allocated: 1024,
+                    links: 1,
+                    clone_metadata: Some(crate::CloneMetadata {
+                        clone_id: 42,
+                        data_allocated_size: 512,
+                        data_length: 123,
+                        reference_count: 2,
+                        may_share_blocks: true,
+                        verified: false,
+                    }),
+                    clone_checked: true,
+                };
                 assert_eq!(
                     record_view(record, name),
-                    record_view(original, original.name)
+                    record_view(&expected, expected.name)
                 );
             }
             // The numeric ranges do not borrow the old backing allocation.
-            drop(original);
             buffer.fill(0xff);
             let pointer = scratch.as_ptr();
             let capacity = scratch.capacity();
@@ -811,173 +847,9 @@ mod tests {
         assert!(std::mem::size_of::<crate::tree::Record>() <= 72);
         assert!(std::mem::size_of::<io::Result<crate::Entry>>() <= 64);
     }
-    // Frozen baseline byte parser: independent of the shared generic parser.
-    fn parse_with_payload_original<'a>(
-        b: &'a [u8],
-        count: usize,
-        rich: bool,
-        used: &mut usize,
-    ) -> io::Result<Vec<Record<'a>>> {
-        *used = 0;
-        if count > b.len() / 24 {
-            return Err(invalid());
-        }
-        let mut out = Vec::with_capacity(count);
-        let mut start = 0;
-        for _ in 0..count {
-            let len = u32_at(b, start)? as usize;
-            if len < 24 || !len.is_multiple_of(4) {
-                return Err(invalid());
-            }
-            let end = start.checked_add(len).ok_or_else(invalid)?;
-            let r = b.get(start..end).ok_or_else(invalid)?;
-            let common = u32_at(r, 4)?;
-            let file = u32_at(r, 16)?;
-            // Returned attributes appear first; absent attributes are not packed.
-            if common != 0x8200000b
-                || file & !(if rich { 0x607 } else { 7 }) != 0
-                || u32_at(r, 8)? != 0
-                || u32_at(r, 12)? != 0
-                || u32_at(r, 20)? & !(if rich { 0x1300 } else { 0 }) != 0
-            {
-                return Err(invalid());
-            }
-            let reference = 24;
-            let offset = u32_at(r, reference)? as i32;
-            let name_len = u32_at(r, reference + 4)? as usize;
-            // Darwin dev_t is a signed 32-bit field; match fstat sign extension.
-            let device = u32_at(r, 32)? as i32 as u64;
-            let kind = u32_at(r, 36)?;
-            let inode = u64_at(r, 40)?;
-            if kind == 1 && file & 7 != 7 {
-                return Err(invalid());
-            }
-            let name_start = (reference as i64)
-                .checked_add(offset as i64)
-                .filter(|v| *v >= 48)
-                .ok_or_else(invalid)? as usize;
-            let name_end = name_start.checked_add(name_len).ok_or_else(invalid)?;
-            let name = r.get(name_start..name_end).ok_or_else(invalid)?;
-            if name.len() < 2
-                || name.last() != Some(&0)
-                || name[..name.len() - 1]
-                    .iter()
-                    .any(|byte| matches!(byte, 0 | b'/'))
-            {
-                return Err(invalid());
-            }
-            let mut at = 48;
-            let links = if file & 1 != 0 {
-                let v = u32_at(r, at)?;
-                at += 4;
-                v
-            } else {
-                0
-            };
-            let length = if file & 2 != 0 {
-                let v = u64_at(r, at)?;
-                if v > i64::MAX as u64 {
-                    return Err(invalid());
-                }
-                at += 8;
-                v
-            } else {
-                0
-            };
-            let allocated = if file & 4 != 0 {
-                let v = u64_at(r, at)?;
-                if v > i64::MAX as u64 {
-                    return Err(invalid());
-                }
-                at += 8;
-                v
-            } else {
-                0
-            };
-            // Omitted fields consume no bytes in Darwin's canonical packed order.
-            let ext = u32_at(r, 20)?;
-            let mut optional_size = |mask: u32| -> io::Result<Option<u64>> {
-                if file & mask == 0 {
-                    return Ok(None);
-                }
-                let value = u64_at(r, at)?;
-                at += 8;
-                if value > i64::MAX as u64 {
-                    return Err(invalid());
-                }
-                Ok(Some(value))
-            };
-            let data_length = optional_size(0x200)?;
-            let data_allocated = optional_size(0x400)?;
-            let clone_id = if ext & 0x100 != 0 {
-                let v = u64_at(r, at)?;
-                at += 8;
-                Some(v)
-            } else {
-                None
-            };
-            let flags = if ext & 0x200 != 0 {
-                let v = u64_at(r, at)?;
-                at += 8;
-                Some(v)
-            } else {
-                None
-            };
-            let refs = if ext & 0x1000 != 0 {
-                let v = u32_at(r, at)?;
-                at += 4;
-                Some(v)
-            } else {
-                None
-            };
-            if data_length.is_some_and(|v| v > length)
-                || data_allocated.is_some_and(|v| v > allocated)
-            {
-                return Err(invalid());
-            }
-            let clone_checked = rich && kind == 1 && file == 0x607 && ext == 0x1300;
-            if kind == 1 && links == 0 {
-                return Err(invalid());
-            }
-            let clone_metadata = if clone_checked && (flags.unwrap() & 1 != 0 || refs.unwrap() > 1)
-            {
-                Some(crate::CloneMetadata {
-                    clone_id: clone_id.unwrap(),
-                    data_allocated_size: data_allocated.unwrap(),
-                    data_length: data_length.unwrap(),
-                    reference_count: refs.unwrap(),
-                    may_share_blocks: flags.unwrap() & 1 != 0,
-                    verified: false,
-                })
-            } else {
-                None
-            };
-            if name_start < at {
-                return Err(invalid());
-            }
-            let name = &name[..name.len() - 1];
-            if name == b"." || name == b".." {
-                return Err(invalid());
-            }
-            out.push(Record {
-                name,
-                device,
-                inode,
-                kind,
-                length,
-                allocated,
-                links,
-                clone_metadata,
-                clone_checked,
-            });
-            start = end;
-        }
-        *used = start;
-        Ok(out)
-    }
     #[cfg(target_os = "macos")]
     #[test]
-    fn batch_extension_matches_original_across_failures_and_restarts() {
+    fn batch_extension_across_failures_and_restarts() {
         use std::{
             collections::VecDeque,
             os::unix::{ffi::OsStrExt, fs::symlink},
@@ -998,21 +870,37 @@ mod tests {
                 error.to_string(),
             )
         }
-        fn outcome(result: io::Result<Vec<io::Result<Entry>>>) -> serde_json::Value {
+        // Entries resolved from the filesystem (directories, symlinks) carry host-specific ids.
+        fn outcome(result: io::Result<Vec<io::Result<Entry>>>) -> String {
             match result {
-                Err(error) => serde_json::json!({"terminal": error_key(&error)}),
-                Ok(entries) => {
-                    serde_json::json!({"entries": entries.into_iter().map(|entry| match entry {
-                    Err(error) => serde_json::json!({"error": error_key(&error)}),
-                    Ok(entry) => serde_json::json!({
-                        "name": entry.path.as_os_str().as_bytes(),
-                        "device": entry.device, "inode": entry.inode,
-                        "kind": format!("{:?}", entry.kind),
-                        "length": entry.length, "allocated": entry.allocated,
-                        "hard_link": entry.hard_link, "clone_checked": entry.clone_checked,
-                    }),
-                }).collect::<Vec<_>>()})
-                }
+                Err(error) => format!("terminal {:?}", error_key(&error)),
+                Ok(entries) => entries
+                    .into_iter()
+                    .map(|entry| match entry {
+                        Err(error) => format!("error {:?}", error_key(&error)),
+                        Ok(entry)
+                            if matches!(entry.kind, NodeKind::Directory | NodeKind::Symlink) =>
+                        {
+                            format!(
+                                "{:?} {:?}",
+                                std::path::Path::new(entry.path.as_os_str()).file_name(),
+                                entry.kind
+                            )
+                        }
+                        Ok(entry) => format!(
+                            "{:?} {:?} {} {} {} {} {} {}",
+                            entry.path.as_os_str().as_bytes(),
+                            entry.kind,
+                            entry.device,
+                            entry.inode,
+                            entry.length,
+                            entry.allocated,
+                            entry.hard_link,
+                            entry.clone_checked,
+                        ),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
             }
         }
         let path = std::env::temp_dir().join(format!("bulk-batch-oracle-{}", std::process::id()));
@@ -1060,85 +948,160 @@ mod tests {
             false,
             vec![Step::Batch(vec![file]), Step::Error(libc::EINTR)],
         ));
-        for (rich, script) in cases {
-            let mut expected = None;
-            for original in [true, false] {
-                let cancel = AtomicBool::new(false);
-                let mut calls = Vec::new();
-                let mut warnings = Vec::new();
-                let mut observations = VecDeque::new();
-                let mut buffer = Vec::new();
-                let mut steps = script.clone().into_iter();
-                let mut reader = |_: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool| {
-                    calls.push((rich, buffer.len()));
-                    let step = steps.next().expect("unexpected reader call");
-                    let records = match step {
-                        Step::Error(code) => return Err(io::Error::from_raw_os_error(code)),
-                        Step::Malformed => {
-                            let record = rich_record(7, 0, 1);
-                            buffer[..record.len()].copy_from_slice(&record);
-                            // Valid first row, invalid second row beyond allowance.
-                            buffer[record.len()..record.len() + 24].fill(0);
-                            return Ok(2);
-                        }
-                        Step::Cancel(records) => {
-                            cancel.store(true, Ordering::Relaxed);
-                            records
-                        }
-                        Step::Batch(records) => records,
-                    };
-                    let mut at = 0;
-                    for (index, (kind, name)) in records.iter().enumerate() {
-                        let mut record = rich_record(
-                            if rich { 0x607 } else { 7 },
-                            if rich { 0x1300 } else { 0 },
-                            *kind,
-                        );
-                        let len = record.len();
-                        record[len - 4..].copy_from_slice(name);
-                        record[40..48].copy_from_slice(&(index as u64 + 100).to_ne_bytes());
-                        buffer[at..at + len].copy_from_slice(&record);
-                        at += len;
+        // The bulk-resolved file `f\xffl` (inode 100 + its index) and the failed `bad` lookup.
+        let file = |inode: u64, checked: bool| {
+            format!("[102, 255, 108] File 0 {inode} 128 1024 false {checked}")
+        };
+        let gone = "error (\"NotFound\", Some(2), \"No such file or directory (os error 2)\")";
+        let mixed_entries = [
+            file(100, true).as_str(),
+            gone,
+            "Some(\"dir\") Directory",
+            "Some(\"lnk\") Symlink",
+            "[111, 116, 104] Other 0 104 128 1024 false false",
+            file(105, true).as_str(),
+        ]
+        .join("; ");
+        let metadata = crate::CloneMetadata {
+            clone_id: 42,
+            data_allocated_size: 512,
+            data_length: 123,
+            reference_count: 2,
+            may_share_blocks: true,
+            verified: false,
+        };
+        let observed = |indexes: &[usize]| {
+            indexes
+                .iter()
+                .map(|index| (*index, metadata.clone()))
+                .collect::<Vec<_>>()
+        };
+        // A failed rich read restarts on a fresh descriptor without extended attributes.
+        let restarted = [(true, BULK_BUFFER_BYTES), (true, BULK_BUFFER_BYTES)]
+            .into_iter()
+            .chain([(false, BULK_BUFFER_BYTES), (false, BULK_BUFFER_BYTES)])
+            .collect::<Vec<_>>();
+        let unsupported = |clone_checked| {
+            (
+                [
+                    file(100, clone_checked).as_str(),
+                    gone,
+                    file(102, clone_checked).as_str(),
+                ]
+                .join("; "),
+                restarted.clone(),
+                Vec::<String>::new(),
+                observed(&[]),
+                BULK_BUFFER_BYTES,
+                false,
+            )
+        };
+        let expected = [
+            (
+                mixed_entries.clone(),
+                vec![(true, BULK_BUFFER_BYTES), (true, BULK_BUFFER_BYTES)],
+                vec![],
+                observed(&[0, 5]),
+                BULK_BUFFER_BYTES,
+                false,
+            ),
+            // EIO is reported as a warning; unsupported errors are expected and silent.
+            (
+                unsupported(true).0,
+                restarted.clone(),
+                vec!["clone bulk accounting unavailable: Input/output error (os error 5)".into()],
+                observed(&[]),
+                BULK_BUFFER_BYTES,
+                false,
+            ),
+            unsupported(false),
+            unsupported(false),
+            (
+                [gone, file(100, true).as_str()].join("; "),
+                restarted.clone(),
+                vec!["clone bulk accounting unavailable: malformed getattrlistbulk record".into()],
+                observed(&[]),
+                BULK_BUFFER_BYTES,
+                false,
+            ),
+            // Cancelled after the first batch: no second read, entries read so far are kept.
+            (
+                mixed_entries,
+                vec![(true, BULK_BUFFER_BYTES)],
+                vec![],
+                observed(&[0, 5]),
+                BULK_BUFFER_BYTES,
+                true,
+            ),
+            (
+                "terminal (\"Interrupted\", Some(4), \"Interrupted system call (os error 4)\")"
+                    .into(),
+                vec![(false, BULK_BUFFER_BYTES), (false, BULK_BUFFER_BYTES)],
+                vec![],
+                observed(&[]),
+                BULK_BUFFER_BYTES,
+                false,
+            ),
+        ];
+        for ((rich, script), expected) in cases.into_iter().zip(expected) {
+            let cancel = AtomicBool::new(false);
+            let mut calls = Vec::new();
+            let mut warnings = Vec::new();
+            let mut observations = VecDeque::new();
+            let mut buffer = Vec::new();
+            let mut steps = script.into_iter();
+            let mut reader = |_: &std::os::fd::OwnedFd, buffer: &mut [u8], rich: bool| {
+                calls.push((rich, buffer.len()));
+                let step = steps.next().expect("unexpected reader call");
+                let records = match step {
+                    Step::Error(code) => return Err(io::Error::from_raw_os_error(code)),
+                    Step::Malformed => {
+                        let record = rich_record(7, 0, 1);
+                        buffer[..record.len()].copy_from_slice(&record);
+                        // Valid first row, invalid second row beyond allowance.
+                        buffer[record.len()..record.len() + 24].fill(0);
+                        return Ok(2);
                     }
-                    Ok(records.len())
+                    Step::Cancel(records) => {
+                        cancel.store(true, Ordering::Relaxed);
+                        records
+                    }
+                    Step::Batch(records) => records,
                 };
-                let result = if original {
-                    enumerate_using_original(
-                        &path,
-                        &cancel,
-                        &fd,
-                        rich,
-                        &mut warnings,
-                        &mut observations,
-                        &mut buffer,
-                        &mut reader,
-                    )
-                } else {
-                    enumerate_using(
-                        &path,
-                        &cancel,
-                        &fd,
-                        rich,
-                        &mut warnings,
-                        &mut observations,
-                        &mut buffer,
-                        &mut reader,
-                    )
-                };
-                let state = (
-                    outcome(result),
-                    calls,
-                    warnings,
-                    observations,
-                    buffer.len(),
-                    cancel.load(Ordering::Relaxed),
-                );
-                if let Some(expected) = &expected {
-                    assert_eq!(&state, expected, "rich={rich}");
-                } else {
-                    expected = Some(state);
+                let mut at = 0;
+                for (index, (kind, name)) in records.iter().enumerate() {
+                    let mut record = rich_record(
+                        if rich { 0x607 } else { 7 },
+                        if rich { 0x1300 } else { 0 },
+                        *kind,
+                    );
+                    let len = record.len();
+                    record[len - 4..].copy_from_slice(name);
+                    record[40..48].copy_from_slice(&(index as u64 + 100).to_ne_bytes());
+                    buffer[at..at + len].copy_from_slice(&record);
+                    at += len;
                 }
-            }
+                Ok(records.len())
+            };
+            let result = enumerate_using(
+                &path,
+                &cancel,
+                &fd,
+                rich,
+                &mut warnings,
+                &mut observations,
+                &mut buffer,
+                &mut reader,
+            );
+            let state = (
+                outcome(result),
+                calls,
+                warnings,
+                observations.into_iter().collect::<Vec<_>>(),
+                buffer.len(),
+                cancel.load(Ordering::Relaxed),
+            );
+            assert_eq!(state, expected, "rich={rich}");
         }
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1146,29 +1109,38 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn extension_reservations_bound_large_batches_and_preserve_small_minimums() {
-        for batches in [
-            vec![100],
-            vec![546, 2184, 2184],
-            vec![1, 257, 4096, 100],
-            vec![16_384],
-            vec![33_333],
+        // Capacity after each growth: small batches double like push; past 16 384 entries a batch
+        // reserves max(needed, 1.5x capacity).
+        for (batches, growth) in [
+            (
+                vec![100],
+                vec![128, 256, 512, 1024, 2048, 4096, 8192, 16384, 24576, 36864],
+            ),
+            (
+                vec![546, 2184, 2184],
+                vec![1024, 4096, 8192, 16384, 24576, 36864],
+            ),
+            (
+                vec![1, 257, 4096, 100],
+                vec![4, 512, 8192, 16384, 24576, 36864],
+            ),
+            (vec![16_384], vec![16384, 32768, 49152]),
+            (vec![33_333], vec![33333]),
         ] {
             let mut actual: Vec<io::Result<Entry>> = Vec::new();
-            let mut original: Vec<io::Result<Entry>> = Vec::new();
+            let mut observed = Vec::new();
             let mut cursor = 0;
             while actual.len() < 33_333 {
                 let count = batches[cursor % batches.len()].min(33_333 - actual.len());
                 reserve_listing_batch(&mut actual, count);
-                original_reserve_listing_batch(&mut original, count);
                 actual.extend((0..count).map(|_| Err(io::Error::other("entry"))));
-                for _ in 0..count {
-                    original.push(Err(io::Error::other("entry")));
-                }
-                assert_eq!(actual.len(), original.len());
-                assert!(actual.capacity() <= original.capacity());
                 assert!(actual.capacity() <= 49_152);
+                if observed.last() != Some(&actual.capacity()) {
+                    observed.push(actual.capacity());
+                }
                 cursor += 1;
             }
+            assert_eq!(observed, growth, "{batches:?}");
             if batches == [100] || batches == [546, 2184, 2184] {
                 assert!(actual.capacity() < 40_000);
             }
@@ -1177,110 +1149,6 @@ mod tests {
         assert!(std::mem::size_of::<io::Result<Entry>>() <= 64);
     }
 
-    #[cfg(target_os = "macos")]
-    fn original_reserve_listing_batch<T>(entries: &mut Vec<T>, batch_len: usize) {
-        let needed = entries.len().saturating_add(batch_len);
-        if needed <= entries.capacity() || needed <= 16_384 {
-            return;
-        }
-        // Reserve once per validated batch. Only very wide listings grow by 1.5x;
-        // ordinary growth avoids extra reallocations in medium-sized directories.
-        let target = needed.max(
-            entries
-                .capacity()
-                .saturating_add(entries.capacity().div_ceil(2)),
-        );
-        entries.reserve_exact(target.saturating_sub(entries.len()));
-    }
-    #[cfg(target_os = "macos")]
-    #[allow(clippy::too_many_arguments)]
-    fn enumerate_using_original(
-        path: &std::path::Path,
-        cancel: &std::sync::atomic::AtomicBool,
-        fd: &std::os::fd::OwnedFd,
-        rich: bool,
-        warnings: &mut Vec<String>,
-        observations: &mut std::collections::VecDeque<(usize, crate::CloneMetadata)>,
-        buffer: &mut Vec<u8>,
-        reader: &mut impl FnMut(&std::os::fd::OwnedFd, &mut [u8], bool) -> io::Result<usize>,
-    ) -> io::Result<Vec<io::Result<Entry>>> {
-        use std::os::unix::ffi::OsStrExt;
-        // A scan worker owns this bounded buffer across directory listings.
-        buffer.resize(BULK_BUFFER_BYTES, 0);
-        let mut entries = vec![];
-        loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            let mut used = 0;
-            let records = reader(fd, buffer, rich)
-                .and_then(|count| parse_with_payload_original(buffer, count, rich, &mut used));
-            let records = match records {
-                Ok(records) => records,
-                Err(error) if rich => {
-                    let unsupported = is_unsupported(&error);
-                    let expected = crate::descriptor::identity_fd(fd);
-                    observations.clear();
-                    return recover_listing(entries, error, unsupported, warnings, |warnings| {
-                        let fresh = crate::descriptor::reopen(fd, &expected?)?;
-                        enumerate_using_original(
-                            path,
-                            cancel,
-                            &fresh,
-                            false,
-                            warnings,
-                            observations,
-                            buffer,
-                            reader,
-                        )
-                    });
-                }
-                Err(error) => return crate::retry::terminal_listing(entries, error),
-            };
-            if records.is_empty() {
-                break;
-            }
-            original_reserve_listing_batch(&mut entries, records.len());
-            for r in records {
-                let kind = node_kind(r.kind);
-                let name = std::ffi::OsStr::from_bytes(r.name);
-                // Bulk IDs at firmlinks/mount points can describe the covered namespace inode.
-                // Resolve directory metadata relative to the held descriptor before queueing it.
-                if matches!(kind, NodeKind::Symlink | NodeKind::Directory) {
-                    entries.push(crate::entry_result(
-                        crate::descriptor::entry_at(fd, path, name),
-                        || crate::child_path(path, name),
-                    ));
-                    continue;
-                }
-                if let Some(metadata) = r.clone_metadata {
-                    observations.push_back((entries.len(), metadata));
-                }
-                entries.push(Ok(Entry {
-                    // Only the basename is retained in the compact tree. Preserve
-                    // native bytes without repeating the listing's directory prefix.
-                    path: crate::EntryPath::from_native(name),
-                    hard_link: kind == NodeKind::File && r.links > 1,
-                    clone_checked: r.clone_checked,
-                    device: r.device,
-                    inode: r.inode,
-                    kind,
-                    length: if kind == NodeKind::Directory {
-                        0
-                    } else {
-                        r.length
-                    },
-                    allocated: if kind == NodeKind::Directory {
-                        0
-                    } else {
-                        r.allocated
-                    },
-                }));
-            }
-            grow_packed_buffer(buffer, used);
-        }
-        Ok(entries)
-    }
     #[cfg(target_os = "macos")]
     #[test]
     fn listing_batch_reservation_preserves_small_growth_and_bounds_large_growth() {

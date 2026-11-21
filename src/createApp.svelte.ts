@@ -169,6 +169,21 @@ export default function createApp() {
     targets = targets.map((t) => (t === disk ? renamed : t));
     return renamed;
   }
+  // Puts a place into the targets list and returns what to select. A listed disk is not added twice:
+  // its rescan uses the same slot. keepListed leaves a folder that is already listed where it is.
+  function listPlace(place: Target, keepListed = false) {
+    const disk = place.volume ? listedDisk(place.path) : undefined;
+    if (disk) return replaceDisk(disk, place);
+    if (!keepListed || !targets.some((t) => t.id === place.id))
+      targets = [
+        // The backend gives a recreated folder a new id and drops the old one.
+        ...targets.filter(
+          (t) => t.id !== place.id && (t.volume || t.path !== place.path),
+        ),
+        place,
+      ];
+    return place;
+  }
   function scanQueue(entryId: string) {
     if (sessionBlocked) return;
     // The lookup can take seconds; what the user opened meanwhile keeps the view.
@@ -181,18 +196,7 @@ export default function createApp() {
         seen.queueOpen !== queueOpen
       )
         return;
-      // A disk is already in the Disks list; its rescan uses the same slot, so it gets no second row.
-      const disk = location.volume ? listedDisk(location.path) : undefined;
-      if (!disk)
-        targets = [
-          // The backend gives a recreated folder a new id and drops the old one.
-          ...targets.filter(
-            (t) =>
-              t.id !== location.id && (t.volume || t.path !== location.path),
-          ),
-          location,
-        ];
-      target = disk ? replaceDisk(disk, location) : location;
+      target = listPlace(location);
       queueOpen = false;
       // Entries already ready in a completed scan of this slot: open it, a rescan would drop them to "Needs scan".
       const key = slotKey(location);
@@ -602,19 +606,7 @@ export default function createApp() {
     try {
       const chosen = await invoke<Target | null>("choose_folder");
       if (!current()) return;
-      const disk = chosen?.volume ? listedDisk(chosen.path) : undefined;
-      if (disk) target = replaceDisk(disk, chosen!);
-      else if (chosen) {
-        target = chosen;
-        targets = targets.some((item) => item.id === chosen.id)
-          ? targets
-          : [
-              ...targets.filter(
-                (item) => item.volume || item.path !== chosen.path,
-              ),
-              chosen,
-            ];
-      }
+      if (chosen) target = listPlace(chosen, true);
       return chosen;
     } catch (e) {
       if (current())
@@ -1740,8 +1732,6 @@ export default function createApp() {
     get homeOpen() {
       return homeOpen;
     },
-    showHome,
-    showResults,
     openDisk,
     get scanSlots() {
       return scans.slots;
@@ -1766,12 +1756,8 @@ export default function createApp() {
       return clearQueueOpen;
     },
     showQueue,
-    refreshQueue,
     scanQueue,
     prepareQueue,
-    removeQueues: cleanupQueue.remove,
-    removeQueue: (entryId: string) => cleanupQueue.remove([entryId]),
-    clearQueue: cleanupQueue.clear,
     setClearQueueOpen: (value: boolean) => {
       clearQueueOpen = value;
     },

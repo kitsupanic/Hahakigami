@@ -206,7 +206,14 @@ impl Service {
         self.session
             .lock()
             .ok()
-            .and_then(|session| session.progress.as_ref().map(|p| p.entries))
+            // `progress` is still the previous scan's until the new one installs.
+            .and_then(|session| {
+                session
+                    .progress
+                    .as_ref()
+                    .filter(|_| !session.starting)
+                    .map(|p| p.entries)
+            })
             .unwrap_or(0)
     }
 
@@ -542,6 +549,24 @@ mod tests {
         // A start that fails clears the state and the previous results are served again.
         drop(ActiveGuard(&service.session));
         assert_eq!(service.status().unwrap()["state"], "completed");
+    }
+
+    #[test]
+    fn entries_scanned_is_zero_while_a_scan_starts() {
+        let service = Service::new();
+        {
+            let mut session = service.session.lock().unwrap();
+            session.progress = Some(disk_scan::Progress {
+                entries: 7,
+                directories: 0,
+                errors: 0,
+                excluded: 0,
+                elapsed_ms: 0,
+            });
+        }
+        assert_eq!(service.entries_scanned(), 7);
+        service.session.lock().unwrap().starting = true;
+        assert_eq!(service.entries_scanned(), 0);
     }
 
     #[test]

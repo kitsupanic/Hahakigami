@@ -135,6 +135,15 @@ beforeEach(async () => {
               path: "/fixture",
               totalBytes: null,
               freeBytes: null,
+              volume: true,
+            },
+            {
+              id: "other",
+              name: "Other",
+              path: "/other",
+              totalBytes: null,
+              freeBytes: null,
+              volume: true,
             },
           ];
         case "get_node":
@@ -745,7 +754,10 @@ it("hides the back bar and ignores the return on Home or the queue", async () =>
   expect(container.textContent).toContain("Back to results");
   const filters = calls("filter_nodes").length;
   for (const [show, hide] of [
-    [() => app().showHome(), () => app().showResults()],
+    [
+      () => app().openDisk(app().targets[1]),
+      () => app().openDisk(app().targets[0]),
+    ],
     [() => app().showQueue(true), () => app().showQueue(false)],
   ]) {
     await act(show);

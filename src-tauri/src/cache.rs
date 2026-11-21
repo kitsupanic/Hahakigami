@@ -1,5 +1,5 @@
 //! Private, bounded optimization cache.
-use crate::cache_store::{open, sync_dir, unusable, ScanMetadata, Store};
+use crate::cache_store::{open, unusable, ScanMetadata, Store};
 use disk_scan::{Identity, ScanState, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -240,7 +240,6 @@ impl Cache {
         if skipped {
             return Ok(());
         }
-        let mut removed = false;
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -260,12 +259,8 @@ impl Cache {
                 }
                 // One undeletable leftover (EPERM, `uchg`) must not fail every later
                 // pass; the next one retries it, as the prune loop in `save` does.
-                removed |= fs::remove_file(&path).is_ok();
+                let _ = fs::remove_file(&path);
             }
-        }
-        // F_FULLFSYNC flushes the whole drive: only when there is a removal to persist.
-        if removed {
-            sync_dir(&self.root).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
