@@ -5,7 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, SystemTime},
 };
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -304,19 +304,36 @@ pub fn collapse(items: Vec<CheckedItem>) -> Vec<CheckedItem> {
 
 pub struct Ticket {
     pub token: String,
-    pub created: Instant,
+    /// Wall clock, not `Instant`: on macOS `Instant` stops while the Mac sleeps.
+    pub created: SystemTime,
     pub items: Vec<CheckedItem>,
     pub queue_revision: Option<u64>,
 }
 impl Ticket {
     pub fn expired(&self) -> bool {
-        self.created.elapsed() > Duration::from_secs(120)
+        // A clock set back gives an error: expired too.
+        self.created
+            .elapsed()
+            .map_or(true, |age| age > Duration::from_secs(120))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ticket_expires_on_wall_clock_and_on_a_clock_set_back() {
+        let ticket = |created| Ticket {
+            token: String::new(),
+            created,
+            items: vec![],
+            queue_revision: None,
+        };
+        let now = SystemTime::now();
+        assert!(!ticket(now - Duration::from_secs(60)).expired());
+        assert!(ticket(now - Duration::from_secs(121)).expired());
+        assert!(ticket(now + Duration::from_secs(3600)).expired());
+    }
     #[test]
     fn protects_roots_and_system() {
         let home = Path::new("/Users/test");

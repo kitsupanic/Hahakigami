@@ -170,6 +170,57 @@ it("refreshes expanded folders with the latest loader and ignores older failures
   }
 });
 
+it("stops refreshing folders opened inside a collapsed folder", async () => {
+  const outer: NodeView = {
+    id: 1,
+    parentId: 0,
+    name: "Outer",
+    path: "/Outer",
+    kind: "directory",
+    allocatedBytes: 100,
+    childrenCount: 1,
+    incomplete: false,
+  };
+  const inner: NodeView = { ...outer, id: 2, parentId: 1, name: "Inner", path: "/Outer/Inner" };
+  const loads: number[] = [];
+  const load = async (id: number): Promise<Page> => {
+    loads.push(id);
+    return { items: id === 1 ? [inner] : [], total: id === 1 ? 1 : 0 };
+  };
+  const element = document.createElement("div");
+  document.body.append(element);
+  const root = createRoot(element);
+  const render = (revision: string) =>
+    root.render(FileRows, {
+      items: [outer],
+      selection: [],
+      scanBytes: 100,
+      running: true,
+      revision,
+      onLoadChildren: load,
+      onSelect: () => {},
+      onOpen: () => {},
+    });
+  const click = (label: string) =>
+    act(async () => {
+      element.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click();
+    });
+  try {
+    await act(async () => render("1"));
+    await click("Expand Outer");
+    await click("Expand Inner");
+    await click("Collapse Outer");
+    loads.length = 0;
+    await act(async () => render("2"));
+    expect(loads).toEqual([]);
+    await click("Expand Outer");
+    expect(element.querySelector('[aria-label="Expand Inner"]')).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});
+
 it("keeps excluded directories selectable without presenting empty sizes or expanding them", async () => {
   const folder: NodeView = {
     id: 1,

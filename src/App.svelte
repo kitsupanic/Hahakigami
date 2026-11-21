@@ -357,8 +357,6 @@
     offset;
     filterKey;
     sort;
-    map;
-    page.items;
     queueOpen;
     untrack(() => {
       hover = null;
