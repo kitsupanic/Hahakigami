@@ -12,7 +12,7 @@ test-support = []
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 # Already locked through tauri; matches names across NFC/NFD spellings.
-icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_normalizer = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
 
 [dev-dependencies]
 serde_json = "1"
