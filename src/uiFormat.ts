@@ -1,10 +1,10 @@
 import { guardianInk, theme } from "./theme.svelte";
 import { bytes } from "./types";
 
-/** One binary unit for compact UI; bytes() retains the full accounting detail. */
 /** "1 file", "2 files": one place for the singular/plural switch. */
 export const countLabel = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
+/** One binary unit for compact UI; bytes() retains the full accounting detail. */
 export function compactBytes(n: number, minimumFractionDigits: 0 | 1 = 0) {
   return bytes(n, minimumFractionDigits).split(" (")[0];
 }

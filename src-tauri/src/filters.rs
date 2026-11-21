@@ -12,6 +12,18 @@ pub(crate) fn folded(text: &str) -> String {
         .normalize(text)
         .to_lowercase()
 }
+/// Whether `name` contains `text`, which `folded` already folded. ASCII on both sides needs no NFC and no new
+/// strings, and most names are ASCII; anything else (a name with a Kelvin sign folds to ASCII) takes `folded`.
+fn name_contains(name: &str, text: &str) -> bool {
+    if name.is_ascii() && text.is_ascii() {
+        return text.is_empty()
+            || name
+                .as_bytes()
+                .windows(text.len())
+                .any(|w| w.eq_ignore_ascii_case(text.as_bytes()));
+    }
+    folded(name).contains(text)
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Query {
@@ -84,7 +96,7 @@ impl Query {
     }
     fn matches(&self, node: &NodeRef<'_>) -> bool {
         if self.search {
-            return !self.text.is_empty() && folded(&node.display_name()).contains(&self.text);
+            return !self.text.is_empty() && name_contains(&node.display_name(), &self.text);
         }
         if node.parent.is_none() || node.excluded {
             return false;
@@ -97,7 +109,7 @@ impl Query {
             return false;
         }
         let size = node.allocated_size;
-        (self.text.is_empty() || folded(&node.display_name()).contains(&self.text))
+        (self.text.is_empty() || name_contains(&node.display_name(), &self.text))
             && self.min.is_none_or(|min| size >= min)
             && self.max.is_none_or(|max| size <= max)
             && (self.category == "all" || category(node) == Some(self.category.as_str()))
@@ -267,6 +279,21 @@ mod tests {
     }
     fn query(category: &str, min: Option<u64>, max: Option<u64>) -> Query {
         Query::new(String::new(), category.into(), min, max).unwrap()
+    }
+    #[test]
+    fn ascii_and_unicode_names_match_the_folded_query() {
+        let matches = |name: &str, text: &str| {
+            Query::search(text.into(), Order::default())
+                .unwrap()
+                .matches_legacy(&node(1, name, NodeKind::File, 0, 0))
+        };
+        assert!(matches("Report-FINAL.pdf", "final"));
+        assert!(matches("a", "A"));
+        assert!(!matches("a", "ab"));
+        assert!(!matches("notes.txt", "report"));
+        // The Kelvin sign folds to an ASCII "k", on the query side and on the name side.
+        assert!(matches("kelvin.txt", "\u{212A}elvin"));
+        assert!(matches("\u{212A}elvin.txt", "kelvin"));
     }
     #[test]
     fn composed_and_decomposed_spellings_match_each_other() {
