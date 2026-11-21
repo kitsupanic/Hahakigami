@@ -295,7 +295,8 @@ pub fn protected(
     {
         return true;
     }
-    home.is_some_and(|h| path == h.join("Library"))
+    // The Library folder itself, and the user's Trash (volume Trashes are covered above): Trashing there frees nothing.
+    home.is_some_and(|h| path == h.join("Library") || path.starts_with(h.join(".Trash")))
 }
 
 /// The check immediately before Trash: `verify_paths`, then the item's volume must still be the recorded one.
@@ -443,6 +444,8 @@ mod tests {
         assert!(blocked("/"), "/");
         assert!(blocked("/Users/test"), "the home folder");
         assert!(blocked("/Users/test/Library"), "the home Library");
+        assert!(blocked("/Users/test/.Trash"), "the home Trash");
+        assert!(blocked("/Users/test/.Trash/x"), "inside the home Trash");
         for system in [
             "/System", "/Library", "/bin", "/sbin", "/usr", "/etc", "/private", "/dev",
         ] {

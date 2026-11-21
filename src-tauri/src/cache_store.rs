@@ -71,14 +71,14 @@ pub(crate) fn unusable(e: &io::Error) -> bool {
 pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path).and_then(|d| d.sync_all())
 }
-/// Writes `path` through a private temp file `<prefix><uuid>.tmp` in `dir` and renames it into place.
-/// `Ok(Some(warning))`: the file is published but the directory sync after the rename failed.
-pub(crate) fn atomic(
+/// Writes `path` through a private temp file `<prefix><uuid>.tmp` in `dir` and renames it into place. Nothing is
+/// synced: for files a lost write only costs a rescan (the rescan cache).
+pub(crate) fn replace(
     dir: &Path,
     path: &Path,
     prefix: &str,
     write: impl FnOnce(File) -> Result<(), String>,
-) -> Result<Option<String>, String> {
+) -> Result<(), String> {
     let temp = dir.join(format!("{prefix}{}.tmp", uuid::Uuid::new_v4()));
     let f = OpenOptions::new()
         .write(true)
@@ -91,7 +91,17 @@ pub(crate) fn atomic(
     if result.is_err() {
         let _ = fs::remove_file(temp);
     }
-    result?;
+    result
+}
+/// `replace`, then a directory sync so the rename survives a crash.
+/// `Ok(Some(warning))`: the file is published but the directory sync after the rename failed.
+pub(crate) fn atomic(
+    dir: &Path,
+    path: &Path,
+    prefix: &str,
+    write: impl FnOnce(File) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    replace(dir, path, prefix, write)?;
     Ok(sync_dir(dir).err().map(err))
 }
 impl Store {
@@ -103,7 +113,7 @@ impl Store {
             file_limit: u64::MAX,
         }
     }
-    /// This store, but `save` fails, before it syncs or publishes anything, once the archive passes `limit` bytes.
+    /// This store, but `save` fails, before it publishes anything, once the archive passes `limit` bytes.
     pub fn with_file_limit(&self, limit: u64) -> Self {
         Self {
             file_limit: limit,
@@ -133,13 +143,11 @@ impl Store {
             open(path)?.take(1024 * 1024),
         ))?)
     }
-    // The sync-failure warning is dropped: the cache only speeds up scans, so a rename lost to a crash costs a full scan.
+    // No fsync: the cache only speeds up scans, so a write lost to a crash costs a full scan.
     pub(crate) fn write_json(&self, path: &Path, value: &impl Serialize) -> Result<(), String> {
-        atomic(&self.root, path, "", |mut f| {
-            serde_json::to_writer(&mut f, value).map_err(err)?;
-            f.sync_all().map_err(err)
+        replace(&self.root, path, "", |mut f| {
+            serde_json::to_writer(&mut f, value).map_err(err)
         })
-        .map(drop)
     }
     /// The entries with a readable row and archive, newest first.
     pub fn list(&self) -> Result<Vec<Row>, String> {
@@ -191,7 +199,7 @@ impl Store {
         validate_metadata(m)?;
         let id = uuid::Uuid::new_v4().to_string();
         let archive = self.path(&id, "zst")?;
-        atomic(&self.root, &archive, "", |f| {
+        replace(&self.root, &archive, "", |f| {
             validated_encoding(
                 parallel,
                 || validate(s, self.node_limit),
@@ -220,11 +228,10 @@ impl Store {
                     buffered.flush().map_err(err)?;
                     drop(buffered);
                     let mut writer = encoder.finish().map_err(err)?;
-                    writer.flush().map_err(err)?;
-                    writer.get_ref().inner.sync_all().map_err(err)
+                    writer.flush().map_err(err)
                 },
             )
-        })?; // Warning dropped as in `write_json`.
+        })?;
         let row = Row {
             id: id.clone(),
             started_at_ms: m.started_at_ms,
@@ -290,14 +297,13 @@ impl Store {
                 Err(e) => return Err(err(e)),
             }
         }
-        // Persist archive removal first so an interruption never leaves a hidden archive.
+        // Archive first, so an interruption leaves at most a row without its archive; no fsync, as in `write_json`.
         for path in [&archive, &metadata] {
             match fs::remove_file(path) {
                 Ok(()) => (),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Err(e) => return Err(err(e)),
             }
-            sync_dir(&self.root).map_err(err)?;
         }
         Ok(())
     }
@@ -589,7 +595,7 @@ mod tests {
         l.prepare().unwrap();
         let archive = l.root.join("invalid.zst");
         let encoded = std::sync::atomic::AtomicBool::new(false);
-        let result = atomic(&l.root, &archive, "", |mut file| {
+        let result = replace(&l.root, &archive, "", |mut file| {
             validated_encoding(
                 true,
                 || {

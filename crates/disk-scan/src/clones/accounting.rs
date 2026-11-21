@@ -28,18 +28,6 @@ pub fn allocation_plan(s: &Snapshot) -> Result<AllocationPlan, String> {
     internal_allocation_plan(s).map(|p| p.materialize(s))
 }
 
-pub(crate) enum AllocationChange {
-    Zero,
-    Subtract(u64),
-}
-impl AllocationChange {
-    pub(crate) fn apply(self, value: u64) -> u64 {
-        match self {
-            Self::Zero => 0,
-            Self::Subtract(bytes) => value - bytes,
-        }
-    }
-}
 pub(crate) struct InternalAllocationPlan {
     pub clone_deduction_bytes: u64,
     pub clone_attributions: Vec<(u32, (bool, u64))>,
@@ -62,12 +50,12 @@ impl<'a> AllocationCursor<'a> {
     }
     fn value(&mut self, id: u32, mut raw: u64) -> u64 {
         if self.aliases.get(self.alias) == Some(&id) {
-            raw = AllocationChange::Zero.apply(raw);
+            raw = 0;
             self.alias += 1;
         }
         if let Some((claim, (_, deduction))) = self.attributions.get(self.attribution) {
             if *claim == id {
-                raw = AllocationChange::Subtract(*deduction).apply(raw);
+                raw -= *deduction;
                 self.attribution += 1;
             }
         }
@@ -372,31 +360,6 @@ mod tests {
             s.stats, s.accounting, s.errors, s.exclusions, s.state
         )
     }
-    fn reference_aggregate_two_pass(s: &mut Snapshot) {
-        let plan = allocations_two_pass_original(s, true).unwrap();
-        s.accounting.deduction_bytes = plan.clone_deduction_bytes;
-        let mut cursor = AllocationCursor::new(&plan);
-        for id in 0..s.node_count() {
-            s.update_node(id as u32, |n| {
-                n.allocated_size = cursor.value(id as u32, n.own_allocated_size);
-            })
-            .unwrap();
-        }
-        s.tree.clone_attributions = plan.clone_attributions;
-        for id in (0..s.node_count()).rev() {
-            let n = s.node(id as u32).unwrap();
-            if let Some(parent) = n.parent {
-                let allocated = n.allocated_size;
-                s.update_node(parent, |n| {
-                    n.allocated_size = n.allocated_size.saturating_add(allocated);
-                })
-                .unwrap();
-            }
-        }
-        if let Some(root) = s.node(0) {
-            s.stats.allocated_bytes = root.allocated_size;
-        }
-    }
     fn hardlink_fixture() -> Snapshot {
         let template = super::super::tests::fixture();
         let mut s = Snapshot::empty("/fixture".into());
@@ -444,50 +407,55 @@ mod tests {
         }
     }
 
-    fn assert_hardlink_substep_matches_original(s: &Snapshot) {
-        let mut actual = empty_hardlink_plan();
-        let mut expected = empty_hardlink_plan();
-        let (mut actual_owners, mut expected_owners) = (HashMap::new(), HashMap::new());
+    /// Own sizes of the hard-link fixture after aliases are zeroed.
+    const HARDLINK_VALUES: [u64; 13] = [0, 0, 0, 0, 0, 0, 120, 120, 120, 0, 120, 0, 120];
+    type Owners = Vec<((u64, u64), u32)>;
+
+    /// The elected owners (also the partial map at a first error), and on success the aliases and
+    /// attributed values. The scratch buffers must grow like one-at-a-time insertion.
+    fn elect_hardlinks(s: &Snapshot) -> (Result<(), String>, Owners, Vec<u32>, Vec<u64>) {
+        let mut plan = empty_hardlink_plan();
+        let mut owners = HashMap::new();
         let before: Vec<_> = (0..s.node_count())
             .map(|id| format!("{:?}", s.tree.records[id]))
             .collect();
         let got = collect_hardlinks(
             s,
-            &mut actual,
-            &mut actual_owners,
+            &mut plan,
+            &mut owners,
             &mut [OwnerPathScratch::new(s), OwnerPathScratch::new(s)],
         );
-        let reference = hardlinks_two_pass_original(
-            s,
-            &mut expected,
-            &mut expected_owners,
-            &mut [OwnerPathScratch::new(s), OwnerPathScratch::new(s)],
-        );
-        assert_eq!(got, reference);
-        // This also compares the partially elected owner map at the first error.
-        assert_eq!(actual_owners, expected_owners);
-        assert_eq!(actual_owners.capacity(), expected_owners.capacity());
-        if got.is_ok() {
-            assert_eq!(actual.aliases, expected.aliases);
-            assert_eq!(actual.aliases.capacity(), expected.aliases.capacity());
-            let actual = actual.materialize(s);
-            let expected = expected.materialize(s);
-            assert_eq!(actual.values, expected.values);
-        } else {
-            // The original second pass has not begun. The new private plan can
-            // contain earlier loser commands, but Err drops it before publication.
-            assert!(expected.aliases.is_empty());
-        }
         assert_eq!(
             before,
             (0..s.node_count())
                 .map(|id| format!("{:?}", s.tree.records[id]))
                 .collect::<Vec<_>>()
         );
+        let mut elected: Owners = owners.iter().map(|(key, id)| (*key, *id)).collect();
+        elected.sort();
+        if got.is_err() {
+            // Err drops the private plan, so its partial aliases are not part of the contract.
+            return (got, elected, vec![], vec![]);
+        }
+        let mut reference = HashMap::new();
+        for (key, id) in &elected {
+            reference.insert(*key, *id);
+        }
+        assert_eq!(owners.capacity(), reference.capacity());
+        let mut reference = Vec::new();
+        for alias in &plan.aliases {
+            reference.push(*alias);
+        }
+        assert_eq!(plan.aliases.capacity(), reference.capacity());
+        let aliases = plan.aliases.clone();
+        (got, elected, aliases, plan.materialize(s).values)
     }
 
     #[test]
-    fn onepass_hardlinks_match_frozen_two_pass_owners_errors_and_scratch() {
+    fn hardlink_owners_errors_and_scratch() {
+        let owners: Owners = vec![((1, 100), 7), ((1, 200), 8), ((1, 300), 6), ((2, 100), 10)];
+        let aliases = vec![1, 2, 3, 4, 5, 9, 11];
+        let failed: Owners = vec![((1, 100), 5), ((1, 200), 4), ((1, 300), 6)];
         for variant in 0..7 {
             let mut s = hardlink_fixture();
             match variant {
@@ -522,7 +490,25 @@ mod tests {
                 }
                 _ => {}
             }
-            assert_hardlink_substep_matches_original(&s);
+            let invalid = Err("invalid path ancestry".to_string());
+            let expected = match variant {
+                1 => (Ok(()), owners.clone(), aliases.clone(), vec![0; 13]),
+                3 | 5 => (invalid, failed.clone(), vec![], vec![]),
+                4 => (
+                    Ok(()),
+                    vec![((1, 100), 5), ((1, 200), 8), ((1, 300), 6), ((2, 100), 10)],
+                    vec![1, 2, 3, 4, 7, 9, 11],
+                    vec![0, 0, 0, 0, 0, 120, 120, 0, 120, 0, 120, 0, 120],
+                ),
+                6 => (invalid, vec![((1, 100), 1), ((1, 200), 2)], vec![], vec![]),
+                _ => (
+                    Ok(()),
+                    owners.clone(),
+                    aliases.clone(),
+                    HARDLINK_VALUES.to_vec(),
+                ),
+            };
+            assert_eq!(elect_hardlinks(&s), expected, "variant {variant}");
         }
         let s = hardlink_fixture();
         let mut plan = empty_hardlink_plan();
@@ -542,26 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn onepass_complete_plans_match_frozen_original_with_sparse_claims() {
+    fn complete_plans_with_sparse_claims() {
         type MaterializedPlan = (Vec<u64>, Vec<(u32, (bool, u64))>, u64);
-        fn observed(
-            s: &Snapshot,
-            original: bool,
-            clones: bool,
-        ) -> Option<Result<MaterializedPlan, String>> {
-            std::panic::catch_unwind(|| {
-                let plan = if original {
-                    allocations_two_pass_original(s, clones)
-                } else {
-                    allocations(s, clones)
-                };
-                plan.map(|p| {
-                    let p = p.materialize(s);
-                    (p.values, p.clone_attributions, p.clone_deduction_bytes)
-                })
-            })
-            .ok()
-        }
         let template = super::super::tests::fixture();
         let metadata = template.tree.clones[0].1.clone();
         for variant in 0..4 {
@@ -583,180 +551,38 @@ mod tests {
                 _ => {}
             }
             for clones in [false, true] {
-                assert_eq!(
-                    observed(&s, false, clones),
-                    observed(&s, true, clones),
-                    "variant={variant}, clones={clones}"
-                );
+                let actual: Result<MaterializedPlan, String> = allocations(&s, clones).map(|p| {
+                    let p = p.materialize(&s);
+                    (p.values, p.clone_attributions, p.clone_deduction_bytes)
+                });
+                // Only verified claims attribute, and only a consistent group deducts (id 8: 100).
+                let expected = match (variant, clones) {
+                    (3, _) => Err("invalid path ancestry".to_string()),
+                    (0, true) => {
+                        let mut values = HARDLINK_VALUES;
+                        values[8] -= 100;
+                        let claims = [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (7, 0), (8, 100)];
+                        Ok((
+                            values.to_vec(),
+                            claims.map(|(id, d)| (id, (id == 7, d))).to_vec(),
+                            100,
+                        ))
+                    }
+                    _ => Ok((HARDLINK_VALUES.to_vec(), vec![], 0)),
+                };
+                assert_eq!(actual, expected, "variant={variant}, clones={clones}");
             }
             if variant < 3 {
                 let mut actual = s.clone();
                 let mut expected = s;
                 for _ in 0..2 {
-                    reference_aggregate_two_pass(&mut expected);
+                    reference_aggregate(&mut expected);
                     crate::aggregate(&mut actual);
                     assert_eq!(content(&actual), content(&expected));
                 }
             }
         }
     }
-    // Frozen original two-pass hardlink substep; independent of collect_hardlinks.
-    fn hardlinks_two_pass_original(
-        s: &Snapshot,
-        plan: &mut InternalAllocationPlan,
-        inodes: &mut HashMap<(u64, u64), u32>,
-        paths: &mut [OwnerPathScratch<'_>; 2],
-    ) -> Result<(), String> {
-        for n in s.iter_nodes().filter(|n| n.hard_link) {
-            let owner = inodes
-                .entry((n.identity.device, n.identity.inode))
-                .or_insert(n.id);
-            if earlier(n.id, *owner, paths)? {
-                *owner = n.id;
-            }
-        }
-        for n in s.iter_nodes().filter(|n| n.hard_link) {
-            if inodes[&(n.identity.device, n.identity.inode)] != n.id {
-                plan.aliases.push(n.id);
-            }
-        }
-
-        Ok(())
-    }
-
-    // Frozen complete original planner keeps clone/error/scratch comparisons independent.
-    fn allocations_two_pass_original(
-        s: &Snapshot,
-        clones: bool,
-    ) -> Result<InternalAllocationPlan, String> {
-        let mut plan = InternalAllocationPlan {
-            aliases: Vec::new(),
-            clone_deduction_bytes: 0,
-            clone_attributions: Vec::new(),
-        };
-        let mut paths = [OwnerPathScratch::new(s), OwnerPathScratch::new(s)];
-        let mut inodes = HashMap::new();
-        for n in s.iter_nodes().filter(|n| n.hard_link) {
-            let owner = inodes
-                .entry((n.identity.device, n.identity.inode))
-                .or_insert(n.id);
-            if earlier(n.id, *owner, &mut paths)? {
-                *owner = n.id;
-            }
-        }
-        for n in s.iter_nodes().filter(|n| n.hard_link) {
-            if inodes[&(n.identity.device, n.identity.inode)] != n.id {
-                plan.aliases.push(n.id);
-            }
-        }
-        if !clones {
-            return Ok(plan);
-        }
-        if s.accounting.model != AccountingModel::FullClonesV1 {
-            if !s.tree.clones.is_empty() {
-                return Err("legacy accounting contains clone metadata".into());
-            }
-            return Ok(plan);
-        }
-        if s.tree.clones.is_empty() {
-            return Ok(plan);
-        }
-        // Index only cloned inodes. References into the immutable snapshot avoid
-        // copying allocation and metadata fields into each map entry.
-        let mut aliases = HashMap::new();
-        for (index, (id, m)) in s.tree.clones.iter().enumerate() {
-            let n = s.node(*id).ok_or("invalid clone node")?;
-            if n.identity.kind != NodeKind::File
-                || m.data_allocated_size > n.own_allocated_size
-                || m.data_length > n.length
-                || m.clone_id == 0
-                || m.reference_count <= 1
-            {
-                return Err("invalid clone metadata".into());
-            }
-            aliases
-                .entry((n.identity.device, n.identity.inode))
-                .or_insert(index);
-        }
-        let alias_lookup = AliasLookup::new(&aliases);
-        let mut claims = ClaimCursor::new(&s.tree.clones);
-        for n in s.iter_nodes().filter(|n| n.identity.kind == NodeKind::File) {
-            let current = claims.get(n.id);
-            if let Some(first) = alias_lookup.get(&(n.identity.device, n.identity.inode)) {
-                let first_id = s.tree.clones[*first].0;
-                let a = s.node(first_id).ok_or("invalid clone alias")?;
-                if (a.length, a.own_allocated_size, claims.at(*first))
-                    != (n.length, n.own_allocated_size, current)
-                    || (n.id != first_id && (!n.hard_link || !a.hard_link))
-                {
-                    return Err("inconsistent cloned inode aliases or link flags".into());
-                }
-            }
-        }
-        // Alias consistency is established before grouping. Release its map so
-        // these two sparse indexes never overlap.
-        drop(aliases);
-        let mut groups: HashMap<(u64, u64), Group> = HashMap::new();
-        for (id, m) in &s.tree.clones {
-            let n = s.node(*id).ok_or("invalid clone node")?;
-            if n.hard_link && inodes.get(&(n.identity.device, n.identity.inode)) != Some(id) {
-                continue;
-            }
-            let group = groups
-                .entry((n.identity.device, m.clone_id))
-                .or_insert(Group {
-                    first: *id,
-                    owner: *id,
-                    verified_owner: None,
-                    consistent: true,
-                });
-            let first = s.node(group.first).ok_or("invalid clone group")?;
-            let first_metadata = first.clone_metadata().ok_or("missing clone metadata")?;
-            group.consistent &= m.verified
-                && m.data_allocated_size == first_metadata.data_allocated_size
-                && m.data_length == first_metadata.data_length;
-            let previous_owner = group.owner;
-            let replaces_owner = earlier(*id, previous_owner, &mut paths)?;
-            if replaces_owner {
-                group.owner = *id;
-            }
-            if m.verified
-                && match group.verified_owner {
-                    Some(owner) if owner == previous_owner => replaces_owner,
-                    Some(owner) => earlier(*id, owner, &mut paths)?,
-                    None => true,
-                }
-            {
-                group.verified_owner = Some(*id);
-            }
-        }
-        for (id, m) in &s.tree.clones {
-            let n = s.node(*id).ok_or("invalid clone node")?;
-            let alias =
-                n.hard_link && inodes.get(&(n.identity.device, n.identity.inode)) != Some(id);
-            let group = groups.get(&(n.identity.device, m.clone_id));
-            let deduction = if !alias && group.is_some_and(|g| g.consistent && g.owner != *id) {
-                m.data_allocated_size
-            } else {
-                0
-            };
-            plan.clone_deduction_bytes = plan
-                .clone_deduction_bytes
-                .checked_add(deduction)
-                .ok_or("clone deduction overflow")?;
-            if m.verified {
-                plan.clone_attributions.push((
-                    *id,
-                    (
-                        !alias && group.is_some_and(|g| g.verified_owner == Some(*id)),
-                        deduction,
-                    ),
-                ));
-            }
-        }
-        Ok(plan)
-    }
-
     #[test]
     fn alias_lookup_matches_map_across_threshold_and_exact_inode_keys() {
         let keys = [
@@ -797,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn allocation_cursor_matches_commands_across_zero_claims_and_sparse_gaps() {
+    fn allocation_cursor_applies_aliases_and_claims_across_zero_claims_and_sparse_gaps() {
         for (aliases, attributions) in [
             (vec![], vec![]),
             (
@@ -819,11 +645,10 @@ mod tests {
             };
             let mut expected = vec![20; 10];
             for id in &plan.aliases {
-                expected[*id as usize] = AllocationChange::Zero.apply(expected[*id as usize]);
+                expected[*id as usize] = 0;
             }
             for (id, (_, deduction)) in &plan.clone_attributions {
-                expected[*id as usize] =
-                    AllocationChange::Subtract(*deduction).apply(expected[*id as usize]);
+                expected[*id as usize] -= *deduction;
             }
             for _ in 0..2 {
                 let mut cursor = AllocationCursor::new(&plan);

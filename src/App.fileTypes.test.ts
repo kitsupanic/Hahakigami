@@ -147,6 +147,15 @@ beforeEach(async () => {
             path: "/fixture",
             totalBytes: null,
             freeBytes: null,
+            volume: true,
+          },
+          {
+            id: "spare",
+            name: "Spare",
+            path: "/spare",
+            totalBytes: null,
+            freeBytes: null,
+            volume: true,
           },
         ];
       case "start_scan":
@@ -351,9 +360,9 @@ it("supports keyboard tabs, keeps the file-types panel open during navigation, a
 
 it("keeps the File types tab through a Home round trip on the same scan", async () => {
   await openTypes();
-  await act(() => app().showHome());
+  await act(() => app().openDisk(app().targets[1]));
   await flush();
-  await act(() => app().showResults());
+  await act(() => app().openDisk(app().targets[0]));
   await flush();
   expect(
     element.querySelector("#file-types-tab")?.getAttribute("aria-selected"),
@@ -571,7 +580,7 @@ it("does not re-query file-type highlights of a live scan while the explorer is 
   await openTypes();
   await selectType(".jpg");
   await report("running", 1000);
-  await act(() => app().showHome());
+  await act(() => app().openDisk(app().targets[1]));
   await flush();
   const before = count("get_file_type_highlights");
   await report("running", 10000);

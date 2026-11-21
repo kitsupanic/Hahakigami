@@ -104,6 +104,8 @@ macro_rules! span {
 #[derive(Default)]
 pub(crate) struct Baselines {
     cache: Mutex<Option<cache::Cache>>,
+    /// The cache directory, readable without the cache lock: `acquire` must not wait behind another disk's save.
+    storage: Mutex<Option<PathBuf>>,
 }
 
 /// One scan's question: what, if anything, to start from.
@@ -176,6 +178,8 @@ impl Baselines {
         let cache = cache::Cache::new(dir);
         // An expired entry never lingers: scans of "/" never reach probe or save, which sweep otherwise.
         let _ = cache.maintain();
+        *self.storage.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(cache.storage().to_path_buf());
         *self.lock() = Some(cache);
     }
     // A scan thread that panicked while holding the cache lock poisons it; the cache's files stay
@@ -209,9 +213,11 @@ impl Baselines {
         let root = request.root;
         let started_at_ms = request.started_at_ms;
         let holds_cache = self
+            .storage
             .lock()
-            .as_ref()
-            .map(|c| storage_inside(c.storage(), root.path()));
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_deref()
+            .map(|storage| storage_inside(storage, root.path()));
         let configured = holds_cache == Some(false);
         let history = if configured && root.path() != Path::new("/") {
             journal.history(root)

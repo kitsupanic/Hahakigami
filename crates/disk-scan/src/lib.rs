@@ -795,6 +795,15 @@ fn skip_unsupported_fixture(reason: &str) {
     );
     eprintln!("skipping: {reason}");
 }
+/// Golden checks over too many outputs to list fold each one's text into this FNV-1a digest.
+#[cfg(test)]
+const DIGEST_START: u64 = 0xcbf2_9ce4_8422_2325;
+#[cfg(test)]
+fn fold_digest(digest: &mut u64, text: &str) {
+    for byte in text.bytes() {
+        *digest = (*digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    }
+}
 #[cfg(test)]
 fn node(e: Entry, id: u32, parent: Option<u32>) -> Node {
     let identity = e.identity();
@@ -1239,6 +1248,8 @@ fn scan_live_internal_reuse(
                             // The root is held by descriptor; only a child directory can vanish
                             // or be replaced by a new one (not part of what was enumerated).
                             Err(e) if id != 0 && (vanished(&e) || replaced(&e)) => {
+                                // It may have moved to a folder not listed yet; let that listing queue it.
+                                visited.remove(&(expected.device, expected.inode));
                                 // Not a race when the cache said the folder was there, and a cached
                                 // parent listed it: rescan fully. A parent read from disk can lose it.
                                 if let Some(reuse) = reuse.filter(|_| !fresh && work.parent_reused)

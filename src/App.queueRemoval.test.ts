@@ -95,7 +95,7 @@ afterEach(async () => {
 it("removes stale saved entries without access or a fresh scan and preserves single removal compatibility", async () => {
   expect(app.summary).toBeNull();
   expect(app.access?.status).toBe("off");
-  expect(await app.removeQueue("q1")).toBe(1);
+  expect(await app.cleanupQueue.remove(["q1"])).toBe(1);
   expect(app.queue.entries.map((entry) => entry.id)).toEqual(["q2", "q3"]);
   expect(
     mock.invoke.mock.calls.some(([command]) =>
@@ -105,7 +105,7 @@ it("removes stale saved entries without access or a fresh scan and preserves sin
 });
 
 it("guards empty batches, other operations and blocked storage", async () => {
-  expect(await app.removeQueues([])).toBe(0);
+  expect(await app.cleanupQueue.remove([])).toBe(0);
   // An open folder picker is another operation in flight.
   const picker = deferred<null>();
   const standard = mock.invoke.getMockImplementation()!;
@@ -114,12 +114,12 @@ it("guards empty batches, other operations and blocked storage", async () => {
   );
   const picking = app.chooseFolder();
   await flush();
-  expect(await app.removeQueues(["q1"])).toBe(0);
+  expect(await app.cleanupQueue.remove(["q1"])).toBe(0);
   picker.resolve(null);
   await picking;
   queue = { ...queue, blocked: true };
-  await app.refreshQueue();
-  expect(await app.removeQueues(["q1"])).toBe(0);
+  await app.cleanupQueue.refresh();
+  expect(await app.cleanupQueue.remove(["q1"])).toBe(0);
   expect(removals()).toHaveLength(0);
 });
 
@@ -137,11 +137,11 @@ it("invalidates a queued Trash ticket and drains a refresh only after the whole 
     token: "old-ticket",
     items: [],
   });
-  const pending = app.removeQueues(["q1", "q2"]);
+  const pending = app.cleanupQueue.remove(["q1", "q2"]);
   const listCount = mock.invoke.mock.calls.filter(
     ([command]) => command === "list_cleanup_queue",
   ).length;
-  await app.refreshQueue();
+  await app.cleanupQueue.refresh();
   await flush();
   expect(app.trash?.token).toBe("old-ticket");
   expect(

@@ -788,8 +788,9 @@ mod tests {
         }
     }
     #[test]
-    fn sibling_run_rollup_matches_original_across_chunks_and_saturation() {
+    fn sibling_run_rollup_reproduces_golden_across_chunks_and_saturation() {
         let count = records::CHUNK_SIZE * 2 + 17;
+        let mut digest = crate::DIGEST_START;
         for case in 0..8 {
             let parents: Vec<_> = (0..count)
                 .map(|id| {
@@ -816,34 +817,34 @@ mod tests {
                 })
                 .collect();
             let mut actual = rollup_fixture(&parents, case);
-            let mut expected = actual.clone();
-            for repetition in 0..2 {
-                assert_eq!(
-                    actual.aggregate_sizes_to_parents(),
-                    original_size_rollup(&mut expected),
-                    "case {case}, repetition {repetition}"
-                );
-                assert_rollup_records_equal(&actual, &expected);
+            for _ in 0..2 {
+                fold_rollup(&mut digest, &mut actual);
             }
         }
+        assert_eq!(digest, 0x7b07_c050_e780_cc6b);
     }
     #[test]
-    fn sibling_run_rollup_matches_original_for_all_small_parent_graphs() {
+    fn sibling_run_rollup_reproduces_golden_for_all_small_parent_graphs() {
         const COUNT: usize = 4;
         let choices = [NO_PARENT, 0, 1, 2, 3, 4, 5];
+        let mut digest = crate::DIGEST_START;
         for mut code in 0usize..choices.len().pow(COUNT as u32) {
             let mut parents = [NO_PARENT; COUNT];
             for parent in &mut parents {
                 *parent = choices[code % choices.len()];
                 code /= choices.len();
             }
-            let mut actual = rollup_fixture(&parents, 3);
-            let mut expected = actual.clone();
-            assert_eq!(
-                actual.aggregate_sizes_to_parents(),
-                original_size_rollup(&mut expected)
-            );
-            assert_rollup_records_equal(&actual, &expected);
+            fold_rollup(&mut digest, &mut rollup_fixture(&parents, 3));
+        }
+        assert_eq!(digest, 0xf7d0_7c34_d2e4_d739);
+    }
+    /// Folds the result and every record. The golden digests are the output of the one-record
+    /// reverse-ID rollup that run grouping replaced, so they pin the original's partial updates.
+    fn fold_rollup(digest: &mut u64, s: &mut Snapshot) {
+        let result = s.aggregate_sizes_to_parents();
+        crate::fold_digest(digest, &format!("{result:?}"));
+        for id in 0..s.node_count() {
+            crate::fold_digest(digest, &format!("{:?}", s.tree.records[id]));
         }
     }
     fn rollup_fixture(parents: &[u32], salt: u64) -> Snapshot {
@@ -865,32 +866,6 @@ mod tests {
             });
         }
         snapshot
-    }
-    // Frozen original one-record reverse-ID algorithm: independent of run grouping.
-    fn original_size_rollup(s: &mut Snapshot) -> Result<(), String> {
-        for id in (0..s.node_count()).rev() {
-            let r = &s.tree.records[id];
-            let (parent, allocated) = (r.parent, r.allocated_size);
-            if parent != NO_PARENT {
-                let parent = s
-                    .tree
-                    .records
-                    .get_mut(parent as usize)
-                    .ok_or("invalid node id")?;
-                parent.allocated_size = parent.allocated_size.saturating_add(allocated);
-            }
-        }
-        Ok(())
-    }
-    fn assert_rollup_records_equal(actual: &Snapshot, expected: &Snapshot) {
-        assert_eq!(actual.node_count(), expected.node_count());
-        for id in 0..actual.node_count() {
-            assert_eq!(
-                format!("{:?}", actual.tree.records[id]),
-                format!("{:?}", expected.tree.records[id]),
-                "parents/results differ at node {id}"
-            );
-        }
     }
     #[test]
     fn size_rollup_preserves_general_update_behavior_for_malformed_parents() {

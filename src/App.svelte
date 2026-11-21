@@ -597,7 +597,7 @@
       onclick={(event) =>
         void keepFocus(
           event,
-          () => app.removeQueue(entry.id),
+          () => app.cleanupQueue.remove([entry.id]),
           removeFocusTarget(event.currentTarget),
         )}
       ><Icon name="close" size={14} /></button
@@ -1093,7 +1093,7 @@
           </p>{/if}
         {#if app.queueError}<p class="cleanup-alert" role="alert">
             {app.queueError}
-            <button disabled={queueBusy} onclick={() => void app.refreshQueue()}
+            <button disabled={queueBusy} onclick={() => void app.cleanupQueue.refresh()}
               >Retry</button
             >
           </p>{/if}
@@ -1185,7 +1185,7 @@
                           void keepFocus(
                             event,
                             () =>
-                              app.removeQueues(
+                              app.cleanupQueue.remove(
                                 item.rows.map((row) => row.entry.id),
                               ),
                             removeFocusTarget(event.currentTarget),
@@ -1720,7 +1720,7 @@
         <button
           disabled={queueBusy}
           onclick={() => app.setClearQueueOpen(false)}>Cancel</button
-        ><button disabled={queueBusy} onclick={() => void app.clearQueue()}
+        ><button disabled={queueBusy} onclick={() => void app.cleanupQueue.clear()}
           >Clear queue</button
         >
       </div>
@@ -1754,7 +1754,7 @@
         app.dismissCleanupReport();
         app.showQueue(true);
       }}
-      onRetry={() => void app.refreshQueue()}
+      onRetry={() => void app.cleanupQueue.refresh()}
       onDismiss={app.dismissCleanupReport}
     />
   {/if}

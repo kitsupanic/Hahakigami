@@ -103,12 +103,9 @@ const locationTarget = (text: string) => ({
     mock.app!.setTarget(chosen);
   },
 });
-async function chooseFolderFromHome() {
-  await act(() => mock.app!.showHome());
+async function chooseFolderFromSidebar() {
   await act(() =>
-    container
-      .querySelector<HTMLButtonElement>("button.welcome-target")!
-      .click(),
+    container.querySelector<HTMLButtonElement>("button.scan-folder-nav")!.click(),
   );
   await flush();
 }
@@ -870,7 +867,7 @@ it("keeps folder choosing and cleanup available whatever the status", async () =
   await click("Move to Trash");
   expect(calls("prepare_trash")).toHaveLength(1);
   await click("Cancel");
-  await chooseFolderFromHome();
+  await chooseFolderFromSidebar();
   expect(calls("choose_folder")).toHaveLength(1);
 });
 it("shows the explorer directly with worker diagnostics and no settings IPC", async () => {
@@ -1025,7 +1022,7 @@ it("opens a modal for a failed folder pick, with the raw error only under Techni
     if (command === "choose_folder") throw new Error("Picker offline");
     return original(command, args);
   });
-  await chooseFolderFromHome();
+  await chooseFolderFromSidebar();
   const dialog = failureDialog()!;
   expect(dialog.querySelector("h2")?.textContent).toContain(
     "Couldn’t choose the folder",

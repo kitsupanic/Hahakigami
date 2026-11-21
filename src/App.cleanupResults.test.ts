@@ -349,7 +349,7 @@ it.each(["failure", "blocked"])(
       mode === "failure" ? "Queue storage unavailable" : "Queue needs repair",
     );
     mock.invoke.mockImplementation(standard);
-    await act(() => app.refreshQueue());
+    await act(() => app.cleanupQueue.refresh());
     expect(app.cleanupReport).toMatchObject({
       queueState: "confirmed",
       remainingQueued: 2,
@@ -406,7 +406,7 @@ it("does not resurrect a dismissed receipt or update a newer receipt from old qu
   mock.invoke.mockImplementation((command, args) =>
     command === "list_cleanup_queue" ? old.promise : standard(command, args),
   );
-  const pending = app.refreshQueue();
+  const pending = app.cleanupQueue.refresh();
   app.dismissCleanupReport();
   old.resolve({ ...queue, entries: [] });
   await act(() => pending);
@@ -422,7 +422,7 @@ it("does not resurrect a dismissed receipt or update a newer receipt from old qu
       ? stale.promise
       : standard(command, args),
   );
-  const staleLoad = app.refreshQueue();
+  const staleLoad = app.cleanupQueue.refresh();
   review();
   await act(() => app.commitTrash());
   await flush();
@@ -442,8 +442,8 @@ it("updates receipt counts after accepted queue mutations and keeps deferred ref
       ? mutation.promise
       : standard(command, args),
   );
-  const pending = app.removeQueue("q1");
-  await app.refreshQueue();
+  const pending = app.cleanupQueue.remove(["q1"]);
+  await app.cleanupQueue.refresh();
   expect(app.cleanupReport).toMatchObject({
     queueState: "unconfirmed",
     remainingQueued: null,

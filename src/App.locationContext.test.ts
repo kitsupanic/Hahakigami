@@ -32,6 +32,14 @@ const alpha: Target = {
 };
 // Same display name deliberately exercises source identity rather than labels.
 const beta: Target = { ...alpha, id: "beta", path: "/beta/Projects" };
+// An unscanned disk: opening it shows Home over the scanned folder.
+const spare: Target = {
+  ...alpha,
+  id: "spare",
+  name: "Spare",
+  path: "/Volumes/Spare",
+  volume: true,
+};
 const summary = (scanId: string): ScanSummary => ({
   scanId,
   rootId: 0,
@@ -284,7 +292,14 @@ it("selects a next target without replacing the displayed workspace", async () =
 });
 
 it("restores the toolbar and workspace when choosing a folder is cancelled", async () => {
+  const standard = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((command, args) =>
+    command === "discover_targets"
+      ? Promise.resolve([alpha, beta, spare])
+      : standard(command, args),
+  );
   await mount();
+  await chooseAlpha();
   await act(() => app().start());
   await settle();
   const before = {
@@ -293,13 +308,13 @@ it("restores the toolbar and workspace when choosing a folder is cancelled", asy
     selection: app().selection,
   };
   const choosing = deferred<Target | null>();
-  const standard = mock.invoke.getMockImplementation()!;
+  const withPicker = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command, args) =>
-    command === "choose_folder" ? choosing.promise : standard(command, args),
+    command === "choose_folder" ? choosing.promise : withPicker(command, args),
   );
   const picker = () =>
     container.querySelector<HTMLButtonElement>("button.welcome-target")!;
-  await act(() => app().showHome());
+  await act(() => app().openDisk(spare));
   await act(() => picker().click());
   expect(picker().getAttribute("aria-busy")).toBe("true");
   expect(app().can.rescan).toBe(false);
@@ -310,7 +325,7 @@ it("restores the toolbar and workspace when choosing a folder is cancelled", asy
   await settle();
   expect(picker().getAttribute("aria-busy")).toBe("false");
   expect(app().can.rescan).toBe(true);
-  await act(() => app().showResults());
+  await act(() => app().openDisk(before.target!));
   expect(button("Rescan Projects")).toBeTruthy();
   for (const key of ["target", "summary", "selection"] as const)
     expect(app()[key]).toBe(before[key]);

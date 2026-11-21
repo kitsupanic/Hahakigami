@@ -466,7 +466,7 @@ const enabledOnHome = [
 ];
 async function home() {
   await scanned();
-  await act(() => app().showHome());
+  await act(() => app().openDisk(app().targets.find((t) => !t.volume)!));
   await flush();
   expect(app().homeOpen).toBe(true);
 }
