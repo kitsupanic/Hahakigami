@@ -1,5 +1,5 @@
 import unittest
-from build_macos import development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command
+from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command
 
 class LocalSigningTests(unittest.TestCase):
     def test_existing_development_identity_selection_fails_closed(self):
@@ -62,3 +62,25 @@ class LocalSigningTests(unittest.TestCase):
         output = Path('/tmp/benchmark space')
         self.assertEqual(benchmark_frontend_command({'scripts': {'check': 'svelte-check'}}, output), "pnpm check && pnpm exec vite build --outDir '/tmp/benchmark space/dist' --emptyOutDir")
         self.assertTrue(benchmark_frontend_command({'scripts': {}}, output).startswith('pnpm exec tsc &&'))
+
+    def test_release_selects_only_developer_id(self):
+        first, second = 'A' * 40, 'B' * 40
+        output = f'  1) {first} "Apple Development: Fixture (TEAM)"\n  2) {second} "Developer ID Application: Fixture (TEAM)"\n'
+        self.assertEqual(development_identities(output, RELEASE), [second])
+        self.assertEqual(select_identity([second], kind=RELEASE), second)
+        with self.assertRaises(ValueError): select_identity([second], first, kind=RELEASE)
+
+    def test_release_environment_requires_one_complete_notary_set_and_drops_import(self):
+        base = {'PATH': '/bin', 'APPLE_CERTIFICATE': 'x', 'APPLE_CERTIFICATE_PASSWORD': 'x'}
+        key = {'APPLE_API_KEY': 'k', 'APPLE_API_ISSUER': 'i', 'APPLE_API_KEY_PATH': '/k.p8'}
+        self.assertEqual(release_environment({**base, **key}, 'B' * 40), {'PATH': '/bin', 'APPLE_SIGNING_IDENTITY': 'B' * 40, **key})
+        account = {'APPLE_ID': 'a', 'APPLE_PASSWORD': 'p', 'APPLE_TEAM_ID': 'T'}
+        self.assertEqual(release_environment({**base, **account}, 'B' * 40)['APPLE_TEAM_ID'], 'T')
+        for partial in [base, {**base, 'APPLE_API_KEY': 'k', 'APPLE_API_ISSUER': 'i'}, {**base, **account, 'APPLE_PASSWORD': ''}]:
+            with self.assertRaises(ValueError): release_environment(partial, 'B' * 40)
+
+    def test_release_bundle_requires_developer_id_and_hardened_runtime(self):
+        metadata = 'Identifier=app.hahakigami.desktop\nCodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+7 location=embedded\nAuthority=Developer ID Application: Fixture (TEAM)\nTeamIdentifier=TEAM\nSealed Resources version=2\ndesignated => identifier "app.hahakigami.desktop" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = TEAM\n'
+        verify_metadata(metadata, 'app.hahakigami.desktop', False, RELEASE)
+        for changed in [metadata.replace('0x10000(runtime)', '0x0(none)'), metadata.replace('Developer ID Application', 'Apple Development')]:
+            with self.assertRaises(ValueError): verify_metadata(changed, 'app.hahakigami.desktop', False, RELEASE)
