@@ -72,6 +72,14 @@ open target/release/bundle/macos/Hahakigami.app
 
 With several identities, pass `python3 scripts/build_macos.py --identity <SHA1>`. With none, `--adhoc` builds unsigned, and macOS may ask for permissions again after every rebuild.
 
+To build a release for other Macs, you need a **Developer ID Application** identity in your keychain and notarization credentials in the environment: `APPLE_API_KEY`, `APPLE_API_ISSUER` and `APPLE_API_KEY_PATH`, or `APPLE_ID`, `APPLE_PASSWORD` (app-specific) and `APPLE_TEAM_ID`. Then:
+
+```sh
+pnpm desktop:build --release
+```
+
+It notarizes and staples the app and prints the path of the DMG to share. See [ADR 0006](docs/adr/0006-sign-releases-with-developer-id-and-notarize.md).
+
 ## CLI and MCP
 
 The app's executable also runs scans without the UI:
