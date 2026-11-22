@@ -128,6 +128,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 [Verification notes](docs/VERIFICATION.md) cover packaged-app checks and known limits. [Benchmarks](docs/BENCHMARKS.md) compare against OpenDisk.
 
+## Roadmap
+
+Hahakigami runs on macOS today. Planned next:
+
+- [ ] Windows support
+- [ ] Linux support
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
