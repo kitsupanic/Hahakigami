@@ -2,6 +2,47 @@
 
 This is a historical log. The portable `docs/benchmark-results-*.json` files it cites were removed before open-sourcing (they remain in git history); fresh results will replace them. Paths under `benchmark-results/` are raw reports the scripts write locally; that folder is gitignored, so it is not in a fresh clone.
 
+## Shipped desktop apps: full startup-disk scans — 22 November 2026
+
+**OpenDisk's App Store build scans the whole startup disk fastest, at 31.3 s, and rescans in 4.4 s from its cache. Hahakigami takes 41.2 s, which matches its native engine on the same disk (42.0–42.5 s). It gets no faster on a rescan (40.9 s), because the startup disk is always scanned in full. Radix takes 63–66 s. Hahakigami and Radix agree on the size of the disk. OpenDisk's total is about 170 GB higher, more than the APFS container actually holds.**
+
+Unlike the earlier sections, these are the real GUI apps doing what a user does: open the app, scan **Macintosh HD**, wait for the result, then rescan in the same window. The person clicked Scan in each app.
+
+| App (build) | First scan | Rescan | Total shown | Peak main-process RSS |
+| --- | ---: | ---: | ---: | ---: |
+| OpenDisk MAS 1.5 (55), Mac App Store | **31.3 s** | **4.4 s** | 916.66 GB | 4.2 GiB (second session, see below) |
+| Hahakigami 0.1.0 at `b7ed74f` (development-signed `target/release` bundle) | 41.2 s | 40.9 s | 695.1 GiB = 746.4 GB | **1.42 GiB** |
+| Radix 1.8.0 (14) | 63 s | 66 s | 746.34 GB | 5.7 GiB during scans, 6.8 GiB at most |
+
+**Size check.** `diskutil apfs list` reports 801.9 GB in use across all volumes in the startup container, which includes VM, Preboot and Recovery. Hahakigami and Radix match each other to within 0.1 GB. OpenDisk's 916.66 GB is higher than everything the container holds. That fits the earlier finding that it counts every APFS clone copy at full size: in October it reported 914.1 GB, against Hahakigami's verified 785.6 GB.
+
+**How it was measured.**
+- The times are the ones each app showed, as reported by the person who ran the scans.
+- For Hahakigami and Radix, a sampler also recorded the main process's CPU time and RSS every 100 ms (`ps`). Each scan was taken as the span where the process used at least half a CPU core. The sampled times match the app's own: Hahakigami 41.21 / 40.92 s, Radix 68.2 / 68.9 s. Radix's sampled spans are a few seconds longer than its own readout, which suggests it keeps working after the timer it shows stops. Each scan used about 143 s of CPU time in Hahakigami and about 415 s in Radix.
+- **OpenDisk's memory comes from a second session.** In the first session the sampler stopped when OpenDisk's first process exited after a 10.8 s burst (54 s of CPU time, 909 MiB), so the timed scans were missed. A sampler that re-attaches on relaunch then recorded a second session of a scan and a rescan. The app runs as one process, with no XPC helper.
+  - Within 7 s of launch, before any scan, RSS rose to 2.0–3.1 GiB at under one core of CPU. That fits OpenDisk loading its saved scan.
+  - The full scan was a 35.4 s busy span (18:42:13). RSS climbed from 1.3 GiB to a **peak of 4.2 GiB**, and the process used about 1.1–1.75 cores.
+  - Afterwards the process settled back to 1.4–2.3 GiB.
+  - The person did not report the in-app times for this second session, so the times in the table are from the first session.
+- Hahakigami's RSS covers only the Rust main process. Its WebKit helper processes are not counted.
+
+**Caveats.**
+- This is one run per app on one machine: Apple M4 Pro, 24 GiB RAM, macOS 26.5. Disk caches were warm from earlier activity, and the desktop was not controlled.
+- Radix was still open, with about 2.2 GiB resident, while Hahakigami scanned. It used 0.01 s of CPU time in that window, so it competed only for memory.
+- Each app ran with whatever Full Disk Access it already had. Nothing was granted or changed for this run.
+- None of this was checked for path-level equivalence between the apps.
+
+**What stands out for Hahakigami.**
+- **The app adds almost no time to its engine. The disk now holds far more files.** Right after the app runs, the native engine (`target/release/examples/scan / 7`, the same 7 workers the app's Auto policy picks on this Mac) took **42.04 s and 42.48 s**. The app took 41.2 s. The October figure of about 26 s was for 4.76 million entries. Today the startup disk has **6.75 million entries in 1.00 million folders**, 42% more. The walk now takes 30.3–31.1 s, compared with about 20 s in October, roughly in proportion to the extra entries. Clone verification takes 10.0–10.3 s, compared with about 6.3 s. The engine's peak RSS is 1.25–1.38 GiB, close to the app's 1.42 GiB. Each run used about 7 s of user CPU and 134–138 s of system CPU, so the time goes almost entirely into filesystem calls in the kernel. Thermal and performance warnings: none recorded.
+- **A rescan of `/` is always a full scan, by design.** Three separate rules force it:
+  - `cache::eligible` refuses to save a result whose root is `/` (`src-tauri/src/cache.rs`).
+  - `Baselines::acquire` skips event history for `/` (`src-tauri/src/baseline.rs`).
+  - The engine's incremental path rejects it with "startup disk requires a full scan" (`crates/disk-scan/src/incremental.rs`).
+
+  This applies to the result held in memory as well as the one on disk. Even without those rules, today's scan has 435 errors and is marked incomplete, and `eligible` also refuses any result with errors. The scan details panel (`ScanDetails.svelte`) shows "Full scan" in this case. The reason (`fallbackReason`) is not shown anywhere in the UI. OpenDisk's cached rescan is 9× faster, but its scans also overcount clones, and this comparison did not check how fresh its cached result is.
+- **It uses the least memory.** Its peak of 1.42 GiB is about a third of OpenDisk's (4.2 GiB) and a quarter of Radix's (5.7 GiB).
+- **Remaining gap to OpenDisk on a first scan: about 10 s.** That is roughly the time Hahakigami spends verifying clones, a step OpenDisk does not do. OpenDisk was not rerun on today's disk with its engine, so this split is an estimate.
+
 ## Results before clone verification: time to first result — 19 October 2026
 
 **Prototype: the scanner now marks the end of the walk (`stats.walk_ms`) and publishes a progress event before clone verification starts. The app reports that stretch as a new `verifying` phase. Explorable results arrive 30–31% sooner than OpenDisk's on GitHub and Home, but still 2.4% later on startup `/`.**
