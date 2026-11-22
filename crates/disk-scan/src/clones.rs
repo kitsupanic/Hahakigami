@@ -935,7 +935,8 @@ mod native {
         }
     }
     struct ParentTask {
-        parent_id: u32,
+        /// Depth-first rank of the parent, so neighbouring tasks share ancestors.
+        tree_order: u32,
         range: std::ops::Range<usize>,
         query_work: usize,
         statuses: std::sync::Mutex<Vec<ClaimStatus>>,
@@ -946,6 +947,7 @@ mod native {
         statuses: &[ClaimStatus],
         strategy: ValidationStrategy,
     ) -> Vec<ParentTask> {
+        let order = tree_order(s);
         let mut tasks = Vec::new();
         let mut start = 0;
         while start < claims.len() {
@@ -969,7 +971,7 @@ mod native {
                 active
             };
             tasks.push(ParentTask {
-                parent_id: parent.unwrap_or(0),
+                tree_order: order[parent.unwrap_or(0) as usize],
                 range: start..end,
                 query_work,
                 statuses: std::sync::Mutex::new(statuses[start..end].to_vec()),
@@ -979,12 +981,32 @@ mod native {
         prioritize_tasks(&mut tasks);
         tasks
     }
+    /// Preorder rank of every directory; other nodes stay `u32::MAX`.
+    fn tree_order(s: &Snapshot) -> Vec<u32> {
+        let mut order = vec![u32::MAX; s.node_count()];
+        let mut stack = vec![0u32];
+        let mut next = 0;
+        while let Some(id) = stack.pop() {
+            order[id as usize] = next;
+            next += 1;
+            let children = s.node(id).unwrap().children();
+            stack.extend(
+                children
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|&child| s.node(child).unwrap().identity.kind == NodeKind::Directory),
+            );
+        }
+        order
+    }
+    const HEAVY_TASK_WORK: usize = 4096;
     fn prioritize_tasks(tasks: &mut [ParentTask]) {
-        // Start expensive whole parents early. Nearby directory IDs group sibling
+        // Start expensive whole parents early. Depth-first order groups nearby
         // parents for the bounded ancestry cache; original claim ranges stay intact.
         tasks.sort_unstable_by(|a, b| {
-            let a_heavy = a.query_work >= 4096;
-            let b_heavy = b.query_work >= 4096;
+            let a_heavy = a.query_work >= HEAVY_TASK_WORK;
+            let b_heavy = b.query_work >= HEAVY_TASK_WORK;
             b_heavy
                 .cmp(&a_heavy)
                 .then_with(|| {
@@ -996,13 +1018,33 @@ mod native {
                 })
                 .then_with(|| {
                     if !a_heavy && !b_heavy {
-                        a.parent_id.cmp(&b.parent_id)
+                        a.tree_order.cmp(&b.tree_order)
                     } else {
                         std::cmp::Ordering::Equal
                     }
                 })
                 .then_with(|| a.range.start.cmp(&b.range.start))
         });
+    }
+    /// Light tasks are claimed in runs of neighbouring parents so one worker's
+    /// ancestor cache stays warm; one-at-a-time claims interleave workers and
+    /// reopen most of each chain. A heavy task is claimed alone, and a run ends
+    /// once its work reaches a heavy task's, so no worker is left with a long tail.
+    const LIGHT_TASK_RUN: usize = 32;
+    fn claim_tasks(tasks: &[ParentTask], next: &std::sync::Mutex<usize>) -> std::ops::Range<usize> {
+        let mut next = next.lock().unwrap();
+        let start = *next;
+        let mut end = start;
+        let mut work = 0;
+        while end < tasks.len() && end - start < LIGHT_TASK_RUN && work < HEAVY_TASK_WORK {
+            if tasks[end].query_work >= HEAVY_TASK_WORK && end > start {
+                break;
+            }
+            work += tasks[end].query_work;
+            end += 1;
+        }
+        *next = end;
+        start..end
     }
     fn validation_workers(s: &Snapshot, bulk: bool, claims: usize, available: usize) -> usize {
         if bulk && claims >= 4096 {
@@ -1317,7 +1359,7 @@ mod native {
             // A task is an entire contiguous parent range. No split can turn a
             // dense parent into repeated bulk enumerations or sparse probes.
             let tasks = parent_tasks(s, claims, &statuses, strategy);
-            let next = std::sync::atomic::AtomicUsize::new(0);
+            let next = std::sync::Mutex::new(0usize);
             std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..workers)
                     .map(|_| {
@@ -1329,19 +1371,24 @@ mod native {
                             crate::diagnostics::disable_dataless_materialization();
                             let mut worker = MemberWorker::new(ctx.cache_limit);
                             while !ctx.cancel.load(Ordering::Relaxed) {
-                                let index = next.fetch_add(1, Ordering::Relaxed);
-                                let Some(task) = tasks.get(index) else {
+                                let batch = claim_tasks(tasks, next);
+                                if batch.is_empty() {
                                     break;
-                                };
-                                let mut statuses = task.statuses.lock().unwrap();
-                                worker.begin_task();
-                                validate_members(
-                                    ctx,
-                                    &claims[task.range.clone()],
-                                    &mut statuses,
-                                    &mut |_| {},
-                                    &mut worker,
-                                );
+                                }
+                                for task in &tasks[batch] {
+                                    if ctx.cancel.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    let mut statuses = task.statuses.lock().unwrap();
+                                    worker.begin_task();
+                                    validate_members(
+                                        ctx,
+                                        &claims[task.range.clone()],
+                                        &mut statuses,
+                                        &mut |_| {},
+                                        &mut worker,
+                                    );
+                                }
                             }
                             worker
                         })
@@ -2055,12 +2102,66 @@ mod native {
             }
         }
         #[test]
+        fn light_tasks_are_claimed_in_runs_and_heavy_tasks_alone() {
+            let tasks: Vec<_> = [9000, 1, 1, 5000]
+                .into_iter()
+                .chain(std::iter::repeat_n(1, LIGHT_TASK_RUN + 3))
+                .chain([3000, 3000, 3000])
+                .map(|query_work| ParentTask {
+                    tree_order: 0,
+                    range: 0..0,
+                    query_work,
+                    statuses: std::sync::Mutex::new(Vec::new()),
+                })
+                .collect();
+            let next = std::sync::Mutex::new(0);
+            let runs: Vec<_> = std::iter::from_fn(|| Some(claim_tasks(&tasks, &next)))
+                .take_while(|run| !run.is_empty())
+                .collect();
+            let end = 4 + LIGHT_TASK_RUN;
+            let n = tasks.len();
+            assert_eq!(runs, vec![0..1, 1..3, 3..4, 4..end, end..n - 1, n - 1..n]);
+        }
+        #[test]
+        fn tree_order_ranks_directories_depth_first() {
+            let p = std::env::temp_dir().join(format!("hahakigami-order-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            for dir in ["a/a1", "a/a2", "b/b1"] {
+                std::fs::create_dir_all(p.join(dir)).unwrap();
+            }
+            std::fs::write(p.join("a/file"), b"x").unwrap();
+            let s = crate::scan(
+                p.clone(),
+                crate::ScanOptions::default(),
+                std::sync::Arc::new(AtomicBool::new(false)),
+                |_| {},
+            )
+            .unwrap();
+            std::fs::remove_dir_all(&p).unwrap();
+            let order = tree_order(&s);
+            let rank = |path: &str| {
+                let id = s
+                    .iter_nodes()
+                    .find(|n| s.path(n.id).unwrap().ends_with(path))
+                    .unwrap()
+                    .id;
+                order[id as usize]
+            };
+            let a = rank("a");
+            assert_eq!(
+                [rank("a/a1"), rank("a/a2")].map(|r| r > a && r <= a + 2),
+                [true; 2]
+            );
+            assert_eq!(rank("b/b1"), rank("b") + 1);
+            assert_eq!(rank("a/file"), u32::MAX);
+        }
+        #[test]
         fn light_parent_locality_preserves_original_claim_slots() {
             let mut tasks: Vec<_> = [12, 4, 12, 1, 7]
                 .into_iter()
                 .enumerate()
-                .map(|(index, parent_id)| ParentTask {
-                    parent_id,
+                .map(|(index, tree_order)| ParentTask {
+                    tree_order,
                     range: index * 2..index * 2 + 2,
                     query_work: 1,
                     statuses: std::sync::Mutex::new(vec![ClaimStatus::Drop, ClaimStatus::Verified]),
@@ -2068,7 +2169,7 @@ mod native {
                 .collect();
             prioritize_tasks(&mut tasks);
             assert_eq!(
-                tasks.iter().map(|task| task.parent_id).collect::<Vec<_>>(),
+                tasks.iter().map(|task| task.tree_order).collect::<Vec<_>>(),
                 vec![1, 4, 7, 12, 12],
             );
             assert_eq!(
@@ -2108,7 +2209,7 @@ mod native {
                     let range = offset..offset + length;
                     offset += length;
                     ParentTask {
-                        parent_id: 0,
+                        tree_order: 0,
                         query_work,
                         statuses: std::sync::Mutex::new(
                             (range.clone())
