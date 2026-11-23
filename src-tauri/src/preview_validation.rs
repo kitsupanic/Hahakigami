@@ -112,14 +112,12 @@ impl Item {
                 "This item is outside the scan location.",
             ));
         }
-        for (path, expected) in &self.expected.ancestors {
-            if Identity::read(path)? != *expected {
-                return Err(say(
-                    self.reveal,
-                    "A preview ancestor changed. Rescan this location.",
-                    "A folder above this item moved or changed since the scan. Rescan to reveal it.",
-                ));
-            }
+        if !crate::safety::ancestors_unchanged(&self.expected.ancestors)? {
+            return Err(say(
+                self.reveal,
+                "A preview ancestor changed. Rescan this location.",
+                "A folder above this item moved or changed since the scan. Rescan to reveal it.",
+            ));
         }
         if Identity::read(&self.path)? != self.expected.identity {
             return Err(say(

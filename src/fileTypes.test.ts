@@ -20,6 +20,8 @@ describe("file extensions", () => {
     ["..hidden", "hidden"],
     ["résumé.PDF", "pdf"],
     ["file.ÉXT", "éxt"],
+    // A decomposed (NFD) suffix is one type with its composed (NFC) spelling, as in Rust.
+    ["a.caf\u0065\u0301", "caf\u00e9"],
   ])("extracts %s as %s", (name, expected) => {
     expect(fileExtension(name)).toBe(expected);
   });

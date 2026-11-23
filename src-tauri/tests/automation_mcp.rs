@@ -56,7 +56,7 @@ async fn stdio_initializes_and_lists_metadata_tools() {
         );
         let scan = tools.iter().find(|tool| tool.name == "scan").unwrap();
         assert_eq!(scan.input_schema["properties"]["path"]["type"], "string");
-        // Only the query tools accept the optional scan_id.
+        // Only the query tools accept scan_id; node and children require it, the rest keep it optional.
         for tool in &tools {
             let takes = tool
                 .input_schema
@@ -68,13 +68,19 @@ async fn stdio_initializes_and_lists_metadata_tools() {
                 "{}",
                 tool.name
             );
-            assert!(!tool.input_schema.get("required").is_some_and(|required| {
+            let requires = tool.input_schema.get("required").is_some_and(|required| {
                 required
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|name| name == "scan_id")
-            }));
+            });
+            assert_eq!(
+                requires,
+                ["node", "children"].contains(&tool.name.as_ref()),
+                "{}",
+                tool.name
+            );
         }
         client.cancel().await.unwrap();
     })
@@ -106,15 +112,25 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_eq!(found["items"][0]["name"], "needle.txt");
         assert_eq!(found["scanId"], scan_id);
         let node_id = found["items"][0]["id"].as_u64().unwrap();
-        let node = value(&client, "node", json!({"node_id": node_id})).await;
+        let node = value(
+            &client,
+            "node",
+            json!({"node_id": node_id, "scan_id": scan_id}),
+        )
+        .await;
         assert!(node.get("logicalBytes").is_none());
         assert!(node.get("allocatedBytes").is_some());
         assert_eq!(node["scanId"], scan_id);
-        let first = value(&client, "children", json!({"node_id": 0, "limit": 1})).await;
+        let first = value(
+            &client,
+            "children",
+            json!({"node_id": 0, "scan_id": scan_id, "limit": 1}),
+        )
+        .await;
         let second = value(
             &client,
             "children",
-            json!({"node_id": 0, "offset": 1, "limit": 1}),
+            json!({"node_id": 0, "scan_id": scan_id, "offset": 1, "limit": 1}),
         )
         .await;
         assert_eq!(first["total"], 2);
@@ -129,7 +145,7 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         assert_eq!(summary["allocatedBytes"], scanned["allocatedBytes"]);
         assert_eq!(summary["state"], "completed");
         for (name, args) in [
-            ("node", json!({"node_id": u32::MAX})),
+            ("node", json!({"node_id": u32::MAX, "scan_id": scan_id})),
             ("issues", json!({"limit": 0})),
             ("search", json!({"query": ""})),
             // An ID from another scan is refused, and a file has no children.
@@ -166,6 +182,17 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
             call(&client, "scan", json!({"path": 42})).await.is_error,
             Some(true)
         );
+        // Without a scan_id the stale-node check cannot run, so node and children refuse the call.
+        for (name, args) in [
+            ("node", json!({"node_id": 0})),
+            ("children", json!({"node_id": 0})),
+        ] {
+            assert_eq!(
+                call(&client, name, args).await.is_error,
+                Some(true),
+                "{name}"
+            );
+        }
         // A scan_id is a number, not a name.
         assert_eq!(
             call(
@@ -180,7 +207,10 @@ async fn stdio_scans_and_queries_the_latest_scan_and_reports_errors() {
         // Logical size no longer exists: tools take no size metric or sort option.
         for (name, args) in [
             ("search", json!({"query": "needle", "metric": "logical"})),
-            ("children", json!({"node_id": 0, "sort": "logical"})),
+            (
+                "children",
+                json!({"node_id": 0, "scan_id": scan_id, "sort": "logical"}),
+            ),
         ] {
             assert_eq!(
                 call(&client, name, args).await.is_error,

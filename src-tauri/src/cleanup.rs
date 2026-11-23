@@ -5,7 +5,7 @@
 //! the Trash itself (behind the `trash` seam), `Queue::outcomes` and invalidating the cleaned scan.
 use crate::{
     cleanup_queue::{self, Queue},
-    issue_index, platform, safety,
+    events, issue_index, platform, safety,
     slots::{Need, Session, Slot},
     view, NodeView,
 };
@@ -364,16 +364,24 @@ fn invalidate_overlapping(
         let Some(snapshot) = other.try_peek_completed() else {
             continue;
         };
-        if unconfirmed_move
-            || items.iter().any(|i| {
-                snapshot.root.starts_with(&i.path) || safety::node_at(&snapshot, &i.path).is_some()
-            })
-        {
+        if unconfirmed_move || items.iter().any(|i| overlaps(&snapshot, &i.path)) {
             other.invalidate();
             stale.push(other.id.clone());
         }
     }
     stale
+}
+/// Whether the scan holds `path` or its root lies inside it. macOS spells one place two ways (`/Users/me` and
+/// `/System/Volumes/Data/Users/me`, `/var` and `/private/var`), so both are compared in the journal's spelling and
+/// the item is looked up again under the scan's own spelling.
+fn overlaps(snapshot: &Snapshot, path: &Path) -> bool {
+    let (root, item) = (events::namespace(&snapshot.root), events::namespace(path));
+    snapshot.root.starts_with(path)
+        || root.starts_with(&item)
+        || safety::node_at(snapshot, path).is_some()
+        || item
+            .strip_prefix(&root)
+            .is_ok_and(|rest| safety::node_at(snapshot, &snapshot.root.join(rest)).is_some())
 }
 type Execution = (
     TrashResult,
@@ -392,7 +400,8 @@ fn execute(
     // Verify all first, so a stale ticket moves nothing; then again just before each item's move, with the mounts
     // read anew: a disk mounted mid-batch inside a later item's folder must stop that item.
     for item in items {
-        safety::verify(item, root, home, data, mounts)?;
+        safety::verify(item, root, home, data, mounts)
+            .map_err(|e| format!("{}: {e}", item.path.display()))?;
     }
     let mut result = TrashResult {
         trashed: 0,
@@ -532,7 +541,8 @@ pub(crate) fn selection(
             host.home.as_deref(),
             host.data.as_deref(),
             &host.mounts,
-        )?;
+        )
+        .map_err(|e| format!("{}: {e}", item.path.display()))?;
     }
     Ok(items)
 }
@@ -596,6 +606,24 @@ mod tests {
         let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         (dir, root)
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_scan_overlaps_an_item_spelled_the_other_way() {
+        // `/var/...` and `/private/var/...` are one place, like `/Users/me` and `/System/Volumes/Data/Users/me`.
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(root.starts_with("/private/var"), "{root:?}");
+        let other_spelling = |p: &Path| Path::new("/").join(p.strip_prefix("/private").unwrap());
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir/a"), b"a").unwrap();
+        let disk = snapshot(root.clone());
+        let folder = snapshot(root.join("dir"));
+        assert!(overlaps(&disk, &other_spelling(&root.join("dir/a"))));
+        assert!(!overlaps(&disk, &other_spelling(&root.join("dir/missing"))));
+        assert!(overlaps(&folder, &other_spelling(&root.join("dir/a"))));
+        assert!(overlaps(&folder, &other_spelling(&root)));
+        assert!(!overlaps(&folder, &other_spelling(&root.join("elsewhere"))));
     }
     /// A completed scan of `root` with a review of everything directly in it.
     fn reviewed(state: &AppState, root: &Path) -> (Arc<Session>, String) {
@@ -966,7 +994,10 @@ mod tests {
             });
             assert_eq!(
                 refused.err(),
-                Some(format!("Nothing was moved: {PROTECTED}")),
+                Some(format!(
+                    "Nothing was moved: {}: {PROTECTED}",
+                    folder.display()
+                )),
                 "{case}"
             );
             // The whole batch is refused up front, the plain file beside the folder too.
@@ -1085,18 +1116,19 @@ mod tests {
             mounts: vec![folder.join("mnt")],
             ..none()
         };
-        assert_eq!(select(mount).as_deref(), Some(PROTECTED));
+        let named = format!("{}: {PROTECTED}", folder.display());
+        assert_eq!(select(mount).as_deref(), Some(named.as_str()));
         let home = Host {
             home: Some(folder.clone()),
             ..none()
         };
-        assert_eq!(select(home).as_deref(), Some(PROTECTED));
+        assert_eq!(select(home).as_deref(), Some(named.as_str()));
         // The app's own data folder, or a folder holding it: trashing it would free the instance lock.
         let data = Host {
             data: Some(folder.join("data")),
             ..none()
         };
-        assert_eq!(select(data).as_deref(), Some(PROTECTED));
+        assert_eq!(select(data).as_deref(), Some(named.as_str()));
     }
 
     /// A queued file `a` of a completed scan, with the queue and the scans to review it against.

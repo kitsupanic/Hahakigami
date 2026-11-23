@@ -7,11 +7,12 @@ use std::{
     path::Path,
 };
 
-/// Last suffix, including native hidden-file semantics; no leading dot.
+/// Last suffix, including native hidden-file semantics; no leading dot. Folded like search text, so `a.café` in
+/// NFD and `b.café` in NFC are one type.
 pub(crate) fn extension(name: &OsStr) -> String {
     Path::new(name)
         .extension()
-        .map(|s| s.to_string_lossy().to_lowercase())
+        .map(|s| crate::filters::folded(&s.to_string_lossy()))
         .unwrap_or_default()
 }
 pub(crate) fn matches(node: &NodeRef<'_>, wanted: &str) -> bool {
@@ -90,7 +91,7 @@ pub(crate) fn highlights(
         return Err("Unknown scope node".into());
     }
     let requested: HashSet<_> = ids.iter().copied().collect();
-    let wanted = wanted.to_lowercase();
+    let wanted = crate::filters::folded(wanted);
     let mut found = HashSet::new();
     // (node, next child index, subtree has a match)
     let mut stack = vec![(scope, 0usize, false)];
@@ -188,6 +189,12 @@ pub(crate) mod tests {
         ] {
             assert_eq!(extension(OsStr::new(name)), expected, "{name}");
         }
+    }
+    #[test]
+    fn decomposed_and_composed_suffixes_are_one_type() {
+        let (nfd, nfc) = ("a.cafe\u{301}", "b.caf\u{e9}");
+        assert_eq!(extension(OsStr::new(nfd)), extension(OsStr::new(nfc)));
+        assert_eq!(extension(OsStr::new("c.CAFE\u{301}")), "caf\u{e9}");
     }
     #[test]
     fn accounting_counts_regular_files_and_attributed_zero_values_in_scope() {

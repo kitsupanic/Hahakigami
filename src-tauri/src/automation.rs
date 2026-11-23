@@ -1,6 +1,6 @@
 //! Independent metadata scans and their in-memory results for the CLI and local MCP server.
 use crate::{filters, platform, settings, sorting};
-use disk_scan::{Progress, Snapshot};
+use disk_scan::{Progress, ScanState, Snapshot};
 use serde_json::{json, Value};
 use std::{
     path::PathBuf,
@@ -370,8 +370,20 @@ struct ActiveGuard<'a>(&'a Mutex<Session>);
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
         let mut session = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // While `starting`, `current` is still the previous scan's: only an installed store is this scan's.
+        let panicked = std::thread::panicking() && !session.starting;
+        let store = session.current.clone().filter(|_| panicked);
         session.active = false;
         session.starting = false;
+        drop(session);
+        // A panicked scan leaves its store Running; `status` would report it as running forever.
+        if let Some(store) = store {
+            store.clear_poison();
+            let mut snapshot = store.write().unwrap_or_else(|e| e.into_inner());
+            if snapshot.state == ScanState::Running {
+                crate::mark_failed(&mut snapshot, "The scan stopped unexpectedly.".into());
+            }
+        }
     }
 }
 
@@ -427,6 +439,40 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(!service.session.lock().unwrap().active);
+    }
+
+    #[test]
+    fn a_panicked_scan_marks_its_installed_store_failed_but_not_the_previous_one() {
+        let panic_in_guard = |service: &Service| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _active = ActiveGuard(&service.session);
+                panic!("scanner failure");
+            }));
+            assert!(result.is_err());
+        };
+        let store = |state| {
+            let mut snapshot = Snapshot::empty(PathBuf::from("/"));
+            snapshot.state = state;
+            Arc::new(RwLock::new(snapshot))
+        };
+        let service = Service::new();
+        let installed = store(ScanState::Running);
+        {
+            let mut session = service.session.lock().unwrap();
+            (session.current, session.active) = (Some(installed.clone()), true);
+        }
+        panic_in_guard(&service);
+        assert_eq!(installed.read().unwrap().state, ScanState::Failed);
+        assert_eq!(service.status().unwrap()["state"], "failed");
+        // Still starting: `current` is the previous completed scan, which the panic must leave alone.
+        let previous = store(ScanState::Completed);
+        {
+            let mut session = service.session.lock().unwrap();
+            (session.current, session.active, session.starting) =
+                (Some(previous.clone()), true, true);
+        }
+        panic_in_guard(&service);
+        assert_eq!(previous.read().unwrap().state, ScanState::Completed);
     }
 
     #[test]

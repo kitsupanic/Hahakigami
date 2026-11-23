@@ -575,6 +575,65 @@ it("re-queries file-type highlights once per revision of a live scan, not on eve
   expect(map().dataset.ids).toBe("0,3");
 });
 
+it("treats a scan-wide highlight reply as loading once the map shows other tiles", async () => {
+  await openTypes();
+  await selectType(".jpg");
+  expect(map().dataset.pending).toBe("false");
+  expect(map().dataset.ids).toBe("0,1");
+  const slow = deferred<number[]>();
+  const original = mock.invoke.getMockImplementation()!;
+  const inside = [5, 6, 7].map((id) => ({ ...image, id, parentId: 2 }));
+  mock.invoke.mockImplementation((name, args) =>
+    name === "get_file_type_highlights"
+      ? slow.promise
+      : name === "get_map"
+        ? Promise.resolve({ nodes: inside })
+        : original(name, args),
+  );
+  // "Entire scan" keeps the same highlight key while the map changes to the folder's tiles.
+  await act(() => app().open(folder));
+  await flush();
+  expect(map().dataset.pending).toBe("true");
+  expect(map().dataset.ids).toBe("");
+  await act(() => slow.resolve([1, 2]));
+  await flush();
+  expect(map().dataset.pending).toBe("false");
+  expect(map().dataset.ids).toBe("1,2");
+});
+
+it("keeps a completed scan's highlights shown when the map reloads the same tiles", async () => {
+  await openTypes();
+  await selectType(".jpg");
+  const shown = map().dataset.ids;
+  const slow = deferred<number[]>();
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((name, args) =>
+    name === "get_file_type_highlights" ? slow.promise : original(name, args),
+  );
+  // This fixture's folder map has the same tiles as the scan root's.
+  await act(() => app().open(folder));
+  await flush();
+  expect(map().dataset.pending).toBe("false");
+  expect(map().dataset.ids).toBe(shown);
+});
+
+it("keeps a live scan's highlights shown while the next revision's reply is pending", async () => {
+  const report = liveReports();
+  await openTypes();
+  await selectType(".jpg");
+  await report("running", 1000);
+  const shown = map().dataset.ids;
+  expect(shown).not.toBe("");
+  const slow = deferred<number[]>();
+  const original = mock.invoke.getMockImplementation()!;
+  mock.invoke.mockImplementation((name, args) =>
+    name === "get_file_type_highlights" ? slow.promise : original(name, args),
+  );
+  await report("running", 10000);
+  expect(map().dataset.pending).toBe("false");
+  expect(map().dataset.ids).toBe(shown);
+});
+
 it("does not re-query file-type highlights of a live scan while the explorer is hidden behind Home", async () => {
   const report = liveReports();
   await openTypes();
