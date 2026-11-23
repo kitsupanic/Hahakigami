@@ -327,13 +327,17 @@ fn report(
     let rss = peak_rss();
     let summary = s.summary();
     let snapshot = s.store.read().unwrap();
-    let settings = settings::ScanSettings::default().automatic_info_for_scope(
-        if config.root == Path::new("/") {
-            settings::AutoScope::Volume
-        } else {
-            settings::AutoScope::Folder
-        },
-    );
+    // The same mount-root test as production, so `/Volumes/X` reports Volume too.
+    // A root that can't be reopened (removed mid-run) still gets a report, labelled Folder.
+    let volume = snapshot.node(0).is_some_and(|n| {
+        disk_scan::ScanRoot::open(config.root.clone(), n.identity.clone())
+            .is_ok_and(|root| platform::is_volume_root(&root))
+    });
+    let settings = settings::ScanSettings::default().automatic_info_for_scope(if volume {
+        settings::AutoScope::Volume
+    } else {
+        settings::AutoScope::Folder
+    });
     // Untimed buffer inspection follows the RSS capture. These estimates are
     // separate from process RSS and never expose query text or native paths.
     let folder_storage = s.list_folder.lock().unwrap().retained_buffer_storage();

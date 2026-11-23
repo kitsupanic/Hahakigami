@@ -894,6 +894,12 @@ fn replaced(error: &std::io::Error) -> bool {
 fn replaced(_: &std::io::Error) -> bool {
     false
 }
+/// Test seam: runs once just before the directory at a path is opened, so a test can swap it in
+/// after its parent was listed.
+#[cfg(test)]
+static BEFORE_OPEN: Mutex<Vec<(PathBuf, OpenHook)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+type OpenHook = Box<dyn FnOnce() + Send>;
 pub fn scan(
     root: PathBuf,
     options: ScanOptions,
@@ -1094,6 +1100,20 @@ fn scan_live_internal_reuse(
                             s.node(id).unwrap().identity,
                         )
                     };
+                    #[cfg(test)]
+                    {
+                        // Run the hook after releasing the lock, so a failing hook can't poison it.
+                        let hook = {
+                            let mut hooks = BEFORE_OPEN.lock().unwrap();
+                            hooks
+                                .iter()
+                                .position(|(p, _)| *p == path)
+                                .map(|i| hooks.swap_remove(i).1)
+                        };
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    }
                     let metadata = Instant::now();
                     #[cfg(unix)]
                     let cached = reuse
@@ -1252,9 +1272,12 @@ fn scan_live_internal_reuse(
                                 visited.remove(&(expected.device, expected.inode));
                                 // Not a race when the cache said the folder was there, and a cached
                                 // parent listed it: rescan fully. A parent read from disk can lose it.
-                                if let Some(reuse) = reuse.filter(|_| !fresh && work.parent_reused)
-                                {
-                                    reuse.lock().unwrap().stale = true;
+                                match reuse.filter(|_| !fresh && work.parent_reused) {
+                                    Some(reuse) => reuse.lock().unwrap().stale = true,
+                                    // The parent was listed before the swap, so no later listing
+                                    // reaches the new folder: its contents are missing.
+                                    None if replaced(&e) => io_issue(&mut s, path, e),
+                                    None => {}
                                 }
                             }
                             // `retry::interrupted` reports cancellation as EINTR; that is not a scan error.
@@ -2216,6 +2239,47 @@ mod tests {
             assert!(s.accounting.checks_complete);
         }
         fs::remove_dir_all(p).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn folder_replaced_between_listing_and_open_marks_the_scan_incomplete() {
+        let p = fixture();
+        let outside = fixture();
+        fs::create_dir(p.join("node_modules")).unwrap();
+        fs::write(p.join("node_modules/old"), b"x").unwrap();
+        let (child, moved, recreated) = (
+            p.join("node_modules"),
+            outside.join("old"),
+            p.join("node_modules"),
+        );
+        // `rm -rf node_modules && npm install` after the parent was listed: the new folder
+        // is not part of any listing, so it must not read as a complete, empty folder.
+        BEFORE_OPEN.lock().unwrap().push((
+            child.clone(),
+            Box::new(move || {
+                fs::rename(&child, moved).unwrap();
+                fs::create_dir(&recreated).unwrap();
+                fs::write(recreated.join("new"), b"x").unwrap();
+            }),
+        ));
+        let s = scan(
+            p.clone(),
+            ScanOptions::default(),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert!(BEFORE_OPEN
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(h, _)| *h != p.join("node_modules")));
+        assert_eq!(s.state, ScanState::Completed);
+        assert!(s.stats.incomplete);
+        assert_eq!(s.errors.len(), 1);
+        assert_eq!(s.errors[0].path, p.join("node_modules"));
+        fs::remove_dir_all(p).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
     #[test]
     fn dataless_listing_failure_is_recognised() {

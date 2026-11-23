@@ -476,7 +476,7 @@ impl Drop for OpenPermit<'_> {
     }
 }
 /// The directory at a path is no longer the one enumerated (deleted and recreated). Callers still
-/// refuse to descend; the kind lets a fresh listing record it as a vanish, and survives the
+/// refuse to descend; the kind lets the walk record it as a scan issue (or a stale-reuse retry), and survives the
 /// error rebuilds in the walk. A real ESTALE carries an errno, which `is_replaced` excludes.
 fn replaced() -> io::Error {
     io::Error::new(

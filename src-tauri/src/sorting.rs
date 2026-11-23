@@ -28,33 +28,41 @@ impl Order {
 fn group(a: &NodeRef<'_>, b: &NodeRef<'_>) -> Ordering {
     (b.identity.kind == NodeKind::Directory).cmp(&(a.identity.kind == NodeKind::Directory))
 }
-fn tie(
-    snapshot: &Snapshot,
-    a: &NodeRef<'_>,
-    b: &NodeRef<'_>,
-    left: &mut PathBuf,
-    right: &mut PathBuf,
-) -> Ordering {
-    // Siblings share a path prefix, so their path order is their name order. A path override
-    // can break that, so with any override present every pair builds both paths.
-    if a.parent == b.parent && !snapshot.has_path_overrides() {
-        return a
-            .native_name()
-            .as_bytes()
-            .cmp(b.native_name().as_bytes())
-            .then(a.id.cmp(&b.id));
+/// Orders a run the primary sort left equal: sibling name bytes when the run shares a parent (their
+/// path order is their name order unless a path override breaks that), else full path bytes, then
+/// id. Each path is built once here, not on every comparison.
+fn sort_ties(snapshot: &Snapshot, run: &mut [u32]) {
+    let parent = snapshot.node(run[0]).expect("checked sort id").parent;
+    if !snapshot.has_path_overrides()
+        && run
+            .iter()
+            .all(|&id| snapshot.node(id).expect("checked sort id").parent == parent)
+    {
+        run.sort_unstable_by(|&a, &b| {
+            let (an, bn) = (snapshot.node(a).unwrap(), snapshot.node(b).unwrap());
+            an.native_name()
+                .as_bytes()
+                .cmp(bn.native_name().as_bytes())
+                .then(a.cmp(&b))
+        });
+        return;
     }
-    let (a, b) = (a.id, b.id);
-    // Every selected path is checked before sorting; the immutable snapshot
-    // cannot change between that pass and this comparator.
-    snapshot.path_into(a, left).expect("prevalidated sort path");
-    snapshot
-        .path_into(b, right)
-        .expect("prevalidated sort path");
-    left.as_os_str()
-        .as_bytes()
-        .cmp(right.as_os_str().as_bytes())
-        .then(a.cmp(&b))
+    let mut path = PathBuf::new();
+    let mut keyed: Vec<_> = run
+        .iter()
+        .map(|&id| {
+            // Every selected path is checked before sorting; the immutable snapshot
+            // cannot change between that pass and this one.
+            snapshot
+                .path_into(id, &mut path)
+                .expect("prevalidated sort path");
+            (path.as_os_str().as_bytes().to_vec(), id)
+        })
+        .collect();
+    keyed.sort_unstable();
+    for (slot, (_, id)) in run.iter_mut().zip(keyed) {
+        *slot = id;
+    }
 }
 /// Case folding is done before sorting; arbitrarily long ASCII numbers never overflow.
 fn natural(a: &[u8], b: &[u8]) -> Ordering {
@@ -94,7 +102,7 @@ fn natural(a: &[u8], b: &[u8]) -> Ordering {
     (a.len() - i).cmp(&(b.len() - j))
 }
 pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Result<(), String> {
-    let (mut left, mut right) = (PathBuf::new(), PathBuf::new());
+    let mut left = PathBuf::new();
     let first_parent = ids
         .first()
         .and_then(|&id| snapshot.node(id))
@@ -104,27 +112,33 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
         let node = snapshot.node(id).ok_or("Invalid sort node ID")?;
         one_folder &= Some(node.parent) == first_parent;
     }
-    // `tie` builds paths only across folders or with path overrides, so only then are they validated here.
+    // `sort_ties` builds paths only across folders or with path overrides, so only then are they validated here.
     if !one_folder || snapshot.has_path_overrides() {
         for &id in ids.iter() {
             snapshot.path_into(id, &mut left)?;
         }
     }
     match order {
-        Order::SizeDescending | Order::SizeAscending => ids.sort_unstable_by(|&a, &b| {
-            let (a, b) = (
-                snapshot.node(a).expect("checked sort id"),
-                snapshot.node(b).expect("checked sort id"),
-            );
-            let sizes = if order == Order::SizeDescending {
-                b.allocated_size.cmp(&a.allocated_size)
-            } else {
-                a.allocated_size.cmp(&b.allocated_size)
+        Order::SizeDescending | Order::SizeAscending => {
+            let by_size = |a: u32, b: u32| {
+                let (a, b) = (
+                    snapshot.node(a).expect("checked sort id"),
+                    snapshot.node(b).expect("checked sort id"),
+                );
+                let sizes = if order == Order::SizeDescending {
+                    b.allocated_size.cmp(&a.allocated_size)
+                } else {
+                    a.allocated_size.cmp(&b.allocated_size)
+                };
+                group(&a, &b).then(sizes)
             };
-            group(&a, &b)
-                .then(sizes)
-                .then_with(|| tie(snapshot, &a, &b, &mut left, &mut right))
-        }),
+            ids.sort_unstable_by(|&a, &b| by_size(a, b));
+            for run in ids.chunk_by_mut(|&a, &b| by_size(a, b) == Ordering::Equal) {
+                if run.len() > 1 {
+                    sort_ties(snapshot, run);
+                }
+            }
+        }
         Order::NameAscending | Order::NameDescending => {
             // Keep keys only for the selected IDs, not for every node in the snapshot.
             let mut keyed: Vec<_> = ids
@@ -140,22 +154,28 @@ pub(crate) fn sort_ids(snapshot: &Snapshot, ids: &mut [u32], order: Order) -> Re
                     )
                 })
                 .collect();
-            keyed.sort_unstable_by(|(a, ka), (b, kb)| {
+            let by_name = |(a, ka): &(u32, String), (b, kb): &(u32, String)| {
                 let (a, b) = (
                     snapshot.node(*a).expect("checked sort id"),
                     snapshot.node(*b).expect("checked sort id"),
                 );
                 let names = natural(ka.as_bytes(), kb.as_bytes());
-                group(&a, &b)
-                    .then(if order == Order::NameDescending {
-                        names.reverse()
-                    } else {
-                        names
-                    })
-                    .then_with(|| tie(snapshot, &a, &b, &mut left, &mut right))
-            });
-            for (slot, (id, _)) in ids.iter_mut().zip(keyed) {
-                *slot = id;
+                group(&a, &b).then(if order == Order::NameDescending {
+                    names.reverse()
+                } else {
+                    names
+                })
+            };
+            keyed.sort_unstable_by(by_name);
+            for (slot, (id, _)) in ids.iter_mut().zip(&keyed) {
+                *slot = *id;
+            }
+            let mut start = 0;
+            for run in keyed.chunk_by(|a, b| by_name(a, b) == Ordering::Equal) {
+                if run.len() > 1 {
+                    sort_ties(snapshot, &mut ids[start..start + run.len()]);
+                }
+                start += run.len();
             }
         }
     }
@@ -377,6 +397,124 @@ mod tests {
             ids.reverse();
             sort_ids(&s, &mut ids, order).unwrap();
             assert_eq!(ids, expected, "{order:?}");
+        }
+    }
+    /// The comparator that rebuilt both paths on every comparison; its order is the contract.
+    fn reference_order(snapshot: &Snapshot, ids: &mut [u32], order: Order) {
+        ids.sort_by(|&a, &b| {
+            let (an, bn) = (snapshot.node(a).unwrap(), snapshot.node(b).unwrap());
+            let primary = match order {
+                Order::SizeDescending => bn.allocated_size.cmp(&an.allocated_size),
+                Order::SizeAscending => an.allocated_size.cmp(&bn.allocated_size),
+                Order::NameAscending | Order::NameDescending => {
+                    let (ka, kb) = (
+                        crate::filters::folded(&an.display_name()),
+                        crate::filters::folded(&bn.display_name()),
+                    );
+                    let names = natural(ka.as_bytes(), kb.as_bytes());
+                    if order == Order::NameDescending {
+                        names.reverse()
+                    } else {
+                        names
+                    }
+                }
+            };
+            let tie = if an.parent == bn.parent && !snapshot.has_path_overrides() {
+                an.native_name().as_bytes().cmp(bn.native_name().as_bytes())
+            } else {
+                let (mut left, mut right) = (PathBuf::new(), PathBuf::new());
+                snapshot.path_into(a, &mut left).unwrap();
+                snapshot.path_into(b, &mut right).unwrap();
+                left.as_os_str()
+                    .as_bytes()
+                    .cmp(right.as_os_str().as_bytes())
+            };
+            group(&an, &bn).then(primary).then(tie).then(a.cmp(&b))
+        });
+    }
+    #[test]
+    fn equal_keys_across_folders_keep_the_per_comparison_path_order() {
+        for overrides in [false, true] {
+            let mut s = Snapshot::empty(PathBuf::from("/fixture"));
+            // Folders 1..=3 under the root; files reuse a few names and sizes across them, so
+            // every order has equal keys both within one folder and across folders.
+            let mut next = 0u32;
+            let mut add = |s: &mut Snapshot, parent: Option<u32>, name: &str, dir: bool, size| {
+                let id = next;
+                next += 1;
+                let path = parent.map_or(s.root.clone(), |p| {
+                    s.legacy_node(p).unwrap().path.join(name)
+                });
+                s.append_legacy_node(Node {
+                    id,
+                    parent,
+                    children: vec![],
+                    name: name.into(),
+                    path,
+                    identity: Identity {
+                        device: 1,
+                        inode: u64::from(id),
+                        kind: if dir {
+                            NodeKind::Directory
+                        } else {
+                            NodeKind::File
+                        },
+                    },
+                    allocated_size: size,
+                    length: size,
+                    own_allocated_size: size,
+                    is_directory: dir,
+                    hard_link: false,
+                    clone_metadata: None,
+                    excluded: false,
+                })
+                .unwrap();
+                id
+            };
+            add(&mut s, None, "root", true, 0);
+            let dirs: Vec<u32> = ["b", "a", "c"]
+                .into_iter()
+                .map(|n| add(&mut s, Some(0), n, true, 5))
+                .collect();
+            let mut all = dirs.clone();
+            let mut children: Vec<Vec<u32>> = vec![dirs.clone(), vec![], vec![], vec![]];
+            for (slot, parent) in [0u32, 1, 2, 3].into_iter().enumerate() {
+                for (name, size) in [("x", 7), ("y", 7), ("Y", 7), ("z", 3), ("10", 3), ("9", 3)] {
+                    let id = add(&mut s, Some(parent), name, false, size);
+                    children[slot].push(id);
+                    all.push(id);
+                }
+            }
+            for (parent, kids) in children.iter().enumerate() {
+                s.set_children(parent as u32, kids).unwrap();
+            }
+            s.state = ScanState::Completed;
+            if overrides {
+                // A path that disagrees with the name chain, as a lossy raw-byte name would.
+                let mut n = s.legacy_node(all[5]).unwrap();
+                n.path = s.root.join("zz-moved");
+                s.replace_node(all[5], n).unwrap();
+            }
+            assert_eq!(s.has_path_overrides(), overrides);
+            for order in [
+                Order::SizeDescending,
+                Order::SizeAscending,
+                Order::NameAscending,
+                Order::NameDescending,
+            ] {
+                let mut expected = all.clone();
+                expected.reverse();
+                reference_order(&s, &mut expected, order);
+                let mut actual = all.clone();
+                sort_ids(&s, &mut actual, order).unwrap();
+                assert_eq!(actual, expected, "{order:?} overrides={overrides}");
+                // One folder alone takes the sibling-name path.
+                let mut one = children[1].clone();
+                let mut expected = one.clone();
+                reference_order(&s, &mut expected, order);
+                sort_ids(&s, &mut one, order).unwrap();
+                assert_eq!(one, expected, "{order:?} one folder overrides={overrides}");
+            }
         }
     }
     #[test]

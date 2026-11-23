@@ -200,7 +200,6 @@
   const clearQueueOpen = $derived(app.clearQueueOpen);
   const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
   const performanceMapReady = $derived(app.performanceMapReady);
-  const performanceLayoutPending = app.performanceLayoutPending;
   const target = $derived(app.target);
   // Home shows the welcome page while the scan stays in memory.
   const summary = $derived(app.shown?.summary ?? null);
@@ -299,7 +298,7 @@
       !!failedScan ||
       !!error,
   );
-  const quickLook = $derived(app.quickLook);
+  const quickLook = app.quickLook;
   const filtered = $derived(app.filtered);
   const filterKey = $derived(app.filterKey);
   const resultLocation = $derived(app.resultLocation);
@@ -343,11 +342,6 @@
         : compactBytes(detailsSubject.allocatedBytes),
   );
   const setMode = app.setMode;
-  const setOffset = app.setOffset;
-  const setError = app.setError;
-  const setCancelling = app.setCancelling;
-  const setTrash = app.setTrash;
-  const navigation = app.navigation;
   $effect(() => {
     // Hover belongs to one displayed result, never to a future scan or query.
     summary?.scanId;
@@ -363,36 +357,26 @@
       hoverEpoch++;
     });
   });
-  const invalidateList = app.invalidateList;
   const changeFilters = app.changeFilters;
-  const persistSort = app.persistSort;
-  const changeSort = app.changeSort;
   // Clicking a column sorts by it in its natural direction; clicking again reverses.
   function sortBy(column: "name" | "size") {
     const [first, flip] =
       column === "name"
         ? (["nameAscending", "nameDescending"] as const)
         : (["sizeDescending", "sizeAscending"] as const);
-    changeSort(sort === first ? flip : first);
+    app.changeSort(sort === first ? flip : first);
   }
-  const previewEligible = app.previewEligible;
-  const previewRow = app.previewRow;
-  const fail = app.fail;
-  const performanceRendered = app.performanceRendered;
-  const start = app.start;
   const open = app.open;
   const select = app.select;
-  const prepareTrash = app.prepareTrash;
-  const commitTrash = app.commitTrash;
   let searchInput = $state<HTMLInputElement>();
   let queueToggle = $state<HTMLButtonElement>();
   function cancelScan() {
     const scan = app.summary;
     if (!scan) return;
-    setCancelling(true);
+    app.setCancelling(true);
     // A scan finishing its rescan cache refuses to cancel; it ends on its own soon.
     invoke("cancel_scan", { scanId: scan.scanId }).catch(() =>
-      setCancelling(false),
+      app.setCancelling(false),
     );
   }
   function revealInFinder() {
@@ -401,7 +385,7 @@
     invoke("reveal_node", {
       scanId: scan.scanId,
       nodeId: inspected?.id,
-    }).catch(fail);
+    }).catch(app.fail);
   }
   // A single folder keeps the Quick Look button in place, greyed out, so the row doesn't reflow.
   const folderOnly = $derived(
@@ -416,7 +400,7 @@
   );
   function toggleQuickLook() {
     if (previewVisible) quickLook.dismiss();
-    else if (app.summary && previewNode && previewEligible(previewNode))
+    else if (app.summary && previewNode && app.previewEligible(previewNode))
       void quickLook.open({
         scanId: app.summary.scanId,
         nodeId: previewNode.id,
@@ -429,7 +413,7 @@
     dialogOpener =
       active instanceof HTMLElement && active !== document.body ? active : null;
     trashSelectedCount = selection.length;
-    void prepareTrash();
+    void app.prepareTrash();
   }
   function showListViewFromMenu(view: typeof listView) {
     listVisible = true;
@@ -669,7 +653,7 @@
             ready={sortReady}
             saving={sortSaving}
             warning={sortWarning}
-            onRetry={() => void persistSort(sort)}
+            onRetry={() => void app.persistSort(sort)}
           />
           <div class="filters-control">
             <button
@@ -690,7 +674,7 @@
               hidden={!filtersOpen}
               use:dismissPopover={() => (filtersOpen = false)}
             >
-              {#key `${summary.scanId}:${navigation.current}`}
+              {#key `${summary.scanId}:${app.navigation.current}`}
                 <ExplorerFilters
                   value={filters}
                   disabled={blocked}
@@ -760,7 +744,7 @@
           onSelect={select}
           onSelectRange={app.selectRange}
           onOpen={open}
-          onPreview={previewRow}
+          onPreview={app.previewRow}
           keyboardBlocked={previewDialog}
           onScrollbarWidthChange={(width) => (listScrollbarWidth = width)}
           restoreScroll={listScrollRestore}
@@ -778,8 +762,8 @@
           <button
             disabled={listLoading || offset === 0}
             onclick={() => {
-              invalidateList();
-              setOffset(Math.max(0, offset - PAGE_SIZE));
+              app.invalidateList();
+              app.setOffset(Math.max(0, offset - PAGE_SIZE));
             }}
           >
             Previous
@@ -787,8 +771,8 @@
           <button
             disabled={listLoading || offset + PAGE_SIZE >= page.total}
             onclick={() => {
-              invalidateList();
-              setOffset(offset + PAGE_SIZE);
+              app.invalidateList();
+              app.setOffset(offset + PAGE_SIZE);
             }}
           >
             Next
@@ -1403,7 +1387,7 @@
                       ? `Scan ${locationName(target.name, target.path)}`
                       : "Scan selected location"}
                     disabled={!app.can.rescan}
-                    onclick={() => void start(target)}
+                    onclick={() => void app.start(target)}
                     ><Icon name="refresh" size={17} /><span
                       >{target && app.scanStarting(target)
                         ? "Starting scan…"
@@ -1463,10 +1447,10 @@
                     scanId={summary.scanId}
                     scanComplete={summary.state === "completed"}
                     onRendered={performanceBuild
-                      ? performanceRendered
+                      ? app.performanceRendered
                       : undefined}
                     onLayoutPending={performanceBuild
-                      ? performanceLayoutPending
+                      ? app.performanceLayoutPending
                       : undefined}
                     nodes={map}
                     {queuedPaths}
@@ -1740,8 +1724,8 @@
       selectedCount={trash.queued ? undefined : trashSelectedCount}
       {busy}
       opener={dialogOpener}
-      onCancel={() => setTrash(null)}
-      onConfirm={() => void commitTrash()}
+      onCancel={() => app.setTrash(null)}
+      onConfirm={() => void app.commitTrash()}
     />
   {/if}
   {#if app.cleanupReport}
@@ -1766,7 +1750,7 @@
         "Hahakigami could not finish that. Try again."}
       details={error}
       opener={dialogOpener}
-      onClose={() => setError("")}
+      onClose={() => app.setError("")}
     />
   {/if}
   {#if failedScan && !app.cleanupReport}
