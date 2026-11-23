@@ -44,7 +44,7 @@ struct PageInput {
 struct NodeInput {
     node_id: u32,
     /// The `scanId` the ID came from; refused if a newer scan has replaced it.
-    scan_id: Option<u64>,
+    scan_id: u64,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -52,7 +52,7 @@ struct NodeInput {
 struct ChildrenInput {
     node_id: u32,
     /// The `scanId` the ID came from; refused if a newer scan has replaced it.
-    scan_id: Option<u64>,
+    scan_id: u64,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_limit")]
@@ -164,14 +164,19 @@ impl Mcp {
 
     #[tool(description = "Read a node's metadata, native path representation and allocated size.")]
     async fn node(&self, Parameters(input): Parameters<NodeInput>) -> CallToolResult {
-        self.execute(move |service| service.node(input.node_id, input.scan_id))
+        self.execute(move |service| service.node(input.node_id, Some(input.scan_id)))
             .await
     }
 
     #[tool(description = "Read a directory node's children from a metadata snapshot, paginated.")]
     async fn children(&self, Parameters(input): Parameters<ChildrenInput>) -> CallToolResult {
         self.execute(move |service| {
-            service.children(input.node_id, input.scan_id, input.offset, input.limit)
+            service.children(
+                input.node_id,
+                Some(input.scan_id),
+                input.offset,
+                input.limit,
+            )
         })
         .await
     }

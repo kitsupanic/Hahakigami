@@ -16,7 +16,7 @@ export interface FileTypeStats {
 /** Last suffix, matching Rust Path.extension for names (including dotfiles). */
 export function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
-  return dot > 0 && name !== ".." ? name.slice(dot + 1).toLowerCase() : "";
+  return dot > 0 && name !== ".." ? name.slice(dot + 1).normalize("NFC").toLowerCase() : "";
 }
 
 export function fileTypeLabel(extension: string): string {

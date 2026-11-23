@@ -330,15 +330,23 @@ pub fn verify_paths(
     if std::fs::canonicalize(parent).map_err(|e| e.to_string())? != parent {
         return Err("The path's ancestors now resolve elsewhere.".into());
     }
-    for (path, identity) in &item.ancestors {
-        if Identity::read(path)? != *identity {
-            return Err("A path ancestor changed. Rescan before cleanup.".into());
-        }
+    if !ancestors_unchanged(&item.ancestors)? {
+        return Err("A path ancestor changed. Rescan before cleanup.".into());
     }
     if Identity::read(&item.path)? != item.identity {
         return Err("The selected item changed. Rescan before cleanup.".into());
     }
     Ok(())
+}
+
+/// Whether every recorded ancestor still reads as its recorded identity. A read that fails is an error, not a change.
+pub fn ancestors_unchanged(ancestors: &[(PathBuf, Identity)]) -> Result<bool, String> {
+    for (path, identity) in ancestors {
+        if Identity::read(path)? != *identity {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn collapse(items: Vec<CheckedItem>) -> Vec<CheckedItem> {

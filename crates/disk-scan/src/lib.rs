@@ -1358,7 +1358,6 @@ fn scan_live_internal_reuse(
                                                 s.stats.directories += 1;
                                             }
                                             let a = n.metadata.allocated_size;
-                                            let child_path = permitted.then(|| entry_path.clone());
                                             let inserted = s.append_scanned_node(&n);
                                             drop(n);
                                             inserted.expect("scanner compact insertion");
@@ -1375,10 +1374,7 @@ fn scan_live_internal_reuse(
                                             {
                                                 let n = s.node(nid).unwrap();
                                                 let cost = priorities.map_or(0, |hints| {
-                                                    hints.cost(
-                                                        child_path.as_deref().unwrap(),
-                                                        &n.identity,
-                                                    )
+                                                    hints.cost(&entry_path, &n.identity)
                                                 });
                                                 pending.push((
                                                     Work {
@@ -1387,9 +1383,7 @@ fn scan_live_internal_reuse(
                                                         #[cfg(unix)]
                                                         parent: parent_lease.clone(),
                                                         #[cfg(unix)]
-                                                        name: child_path
-                                                            .as_deref()
-                                                            .unwrap()
+                                                        name: entry_path
                                                             .file_name()
                                                             .map(descriptor::ChildName::new),
                                                     },
@@ -1408,7 +1402,7 @@ fn scan_live_internal_reuse(
                         // partial batch.
                         s.stats.allocated_bytes =
                             s.stats.allocated_bytes.saturating_add(added_allocated);
-                        let mut ancestor = Some(id);
+                        let mut ancestor = (added_allocated != 0).then_some(id);
                         while let Some(i) = ancestor {
                             ancestor = s.node(i).unwrap().parent;
                             s.update_node(i, |n| {
@@ -1515,6 +1509,12 @@ fn scan_live_internal_reuse(
     // phases allocate their own grouping buffers, including after cancellation.
     drop(visited);
     drop(allocated_seen);
+    {
+        // The walk appends names and child lists to doubling vectors: release their slack before validation.
+        let mut s = store.write().unwrap();
+        s.tree.names.shrink_to_fit();
+        s.tree.children.shrink_to_fit();
+    }
     // Every entry is now in the tree with raw, hard-link-attributed sizes.
     // Publish that before clone validation, which only lowers shared sizes.
     if !cancel.load(Ordering::Relaxed) {

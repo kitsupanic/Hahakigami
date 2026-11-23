@@ -571,7 +571,11 @@
         </div>{/if}{/each}
   </div>
   {#if !items.length}<p class="no-files">
-      {running ? "Waiting for entries…" : "No matching files"}
+      {running
+        ? "Waiting for entries…"
+        : showParentPaths
+          ? "No matching files"
+          : "This folder is empty"}
     </p>{/if}
 </div>
 

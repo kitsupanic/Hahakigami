@@ -219,3 +219,28 @@ it("publishes expanded child ancestry and does not scroll offscreen rows into ho
     container.remove();
   }
 });
+
+it("says an empty folder is empty, and a search or filter with no hits has no matches", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createTestRoot(container);
+  const props = {
+    items: [],
+    selection: [],
+    scanBytes: 100,
+    running: false,
+    onSelect: vi.fn(),
+    onOpen: vi.fn(),
+    colorForNode: () => "#000",
+  };
+  const text = () => container.querySelector(".no-files")?.textContent?.trim();
+  try {
+    await act(() => root.render(FileRows, { ...props, showParentPaths: false }));
+    expect(text()).toBe("This folder is empty");
+    await act(() => root.render(FileRows, { ...props, showParentPaths: true }));
+    expect(text()).toBe("No matching files");
+  } finally {
+    await act(() => root.unmount());
+    container.remove();
+  }
+});

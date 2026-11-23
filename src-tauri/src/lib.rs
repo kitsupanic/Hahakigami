@@ -423,9 +423,30 @@ async fn mounted_volumes() -> Vec<String> {
 }
 /// Registers a picked folder. A disk root is flagged like the Disks list does, so it shares the disk's slot and id.
 fn register_picked(state: &AppState, path: PathBuf) -> Result<platform::Target, String> {
+    let path = plain_spelling(path);
     let mut target = platform::target(&path, platform::folder_name(&path));
     target.volume = platform::is_disk_path(&path);
     register(state, target, path)
+}
+/// A pick under `/System/Volumes/Data` is the same folder as its plain `/Users/...` spelling, but the protection
+/// rules block everything under `/System`, so nothing in that scan could be trashed. Uses the plain spelling when
+/// both read as one directory.
+fn plain_spelling(path: PathBuf) -> PathBuf {
+    let plain = events::namespace(&path);
+    match (
+        safety::Identity::read(&path),
+        safety::Identity::read(&plain),
+    ) {
+        // Canonical too: a plain spelling through a symlinked ancestor (synthetic.conf) would fail registration.
+        (Ok(a), Ok(b))
+            if plain != path
+                && a == b
+                && std::fs::canonicalize(&plain).is_ok_and(|c| c == plain) =>
+        {
+            plain
+        }
+        _ => path,
+    }
 }
 #[tauri::command]
 async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>, String> {
@@ -456,10 +477,8 @@ fn validate_target(guard: &safety::CheckedItem) -> Result<safety::CheckedItem, S
     {
         return Err("The chosen folder changed. Choose it again before scanning.".into());
     }
-    for (path, identity) in &guard.ancestors {
-        if safety::Identity::read(path)? != *identity {
-            return Err("A scan target ancestor changed. Choose the folder again.".into());
-        }
+    if !safety::ancestors_unchanged(&guard.ancestors)? {
+        return Err("A scan target ancestor changed. Choose the folder again.".into());
     }
     Ok(guard)
 }

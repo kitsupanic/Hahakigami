@@ -1200,6 +1200,21 @@ fn a_picked_disk_root_is_the_listed_disk_and_a_plain_folder_is_not() {
     let folder = std::fs::canonicalize(d.path()).unwrap();
     assert!(!register_picked(&state, folder).unwrap().volume);
 }
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_picked_under_the_data_volume_is_registered_by_its_plain_path() {
+    let state = AppState::default();
+    let (_dir, root) = disk_root();
+    let data = Path::new("/System/Volumes/Data").join(root.strip_prefix("/").unwrap());
+    assert_eq!(plain_spelling(data.clone()), root);
+    assert_eq!(
+        register_picked(&state, data).unwrap().path,
+        root.to_string_lossy()
+    );
+    // The Data volume's own root is a different directory from `/`: it keeps its spelling.
+    let data_root = PathBuf::from("/System/Volumes/Data");
+    assert_eq!(plain_spelling(data_root.clone()), data_root);
+}
 #[test]
 fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
     tauri::async_runtime::block_on(async {
@@ -3374,7 +3389,10 @@ fn cleanup_queue_executor_partial_failure_whole_batch_validation_and_pruning() {
         cleanup::commit(&s, &state.cleanup_queue, &token, false, &[], |i| trash
             .trash(i))
         .err(),
-        Some("Nothing was moved: The selected item changed. Rescan before cleanup.".into())
+        Some(format!(
+            "Nothing was moved: {}: The selected item changed. Rescan before cleanup.",
+            b.display()
+        ))
     );
     assert!(trash.calls.is_empty());
 }
@@ -5092,8 +5110,11 @@ fn a_reformatted_volume_with_the_same_identities_is_never_ready_or_trashed() {
             trash.trash(i)
         });
         assert_eq!(
-            result.err().as_deref(),
-            Some("Nothing was moved: The volume at this location changed. Rescan before cleanup.")
+            result.err(),
+            Some(format!(
+                "Nothing was moved: {}: The volume at this location changed. Rescan before cleanup.",
+                n.item.display()
+            ))
         );
         assert!(trash.calls.is_empty());
         assert!(own.is_valid());

@@ -2767,3 +2767,31 @@ it("says a completed scan has nothing to draw, but not while the scan runs", asy
     element.remove();
   }
 });
+
+it("does not say a folder is empty while the map still holds the previous folder's nodes", async () => {
+  const { element, root, respond } = await mountWithManualWorker();
+  const nodes = [emptyRoot];
+  const empty = () => element.querySelector(".map-empty")?.textContent?.trim();
+  const render = (rootId: number) =>
+    root.render(DiskMap, {
+      nodes,
+      rootId,
+      mode: "treemap",
+      selected: [],
+      scanComplete: true,
+      onSelect: () => {},
+      onOpen: () => {},
+    });
+  try {
+    await act(async () => render(0));
+    await act(async () => respond([]));
+    expect(empty()).toBe("Nothing here takes space on disk.");
+    // Focus moved up, but the get_map reply for the new folder has not arrived.
+    await act(async () => render(7));
+    await act(async () => respond([]));
+    expect(empty()).toBe("The map fills in as files are found");
+  } finally {
+    await act(async () => root.unmount());
+    element.remove();
+  }
+});

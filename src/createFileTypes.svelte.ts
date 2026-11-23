@@ -30,7 +30,11 @@ export default function createFileTypes(context: {
     disposed = true;
   });
   let failure = $state.raw<{ key: string; message: string } | null>(null);
-  let highlighted = $state.raw<{ key: string; ids: number[] } | null>(null);
+  let highlighted = $state.raw<{
+    key: string;
+    ids: number[];
+    nodeIds: number[];
+  } | null>(null);
   let highlightFailure = $state.raw<{ key: string; message: string } | null>(
     null,
   );
@@ -51,6 +55,29 @@ export default function createFileTypes(context: {
   const version = $derived(`${revision}:${retry}`);
   const statsKey = $derived(`${statsScope}:${version}`);
   const highlightKey = $derived(`${statsScope}:${JSON.stringify(extension)}`);
+  // A live scan's map reloads every second or two, but each query walks the whole tree under the
+  // scan's read lock: while running, keep the asked tiles until the revision (or a retry) changes or
+  // the map shows mostly other tiles (the user moved to another folder).
+  let asked: number[] = [],
+    askedSet = new Set<number>(),
+    askedVersion = "";
+  const highlightNodeIds = $derived.by(() => {
+    const ids = context.nodes
+      .filter((node) => node.kind !== "aggregate")
+      .map((node) => node.id);
+    const fresh = version;
+    if (
+      running &&
+      fresh === askedVersion &&
+      ids.filter((id) => askedSet.has(id)).length * 2 >= ids.length
+    )
+      return asked;
+    asked = ids;
+    askedSet = new Set(ids);
+    askedVersion = fresh;
+    return ids;
+  });
+
   const stats = $derived(
     (loaded?.key === statsScope
       ? loaded
@@ -61,14 +88,28 @@ export default function createFileTypes(context: {
   );
   const error = $derived(failure?.key === statsKey ? failure.message : "");
   // Ids of tiles no longer shown are harmless: the map only matches tiles it has.
-  const highlights = $derived(
-    highlighted?.key === highlightKey ? highlighted.ids : [],
-  );
+  // A reply answers only the tiles it was asked about: after the map changes (the scan-wide key stays
+  // the same), it is stale until the new query returns. While running, a reply for mostly the same tiles
+  // stays shown across revisions, so live highlights do not blink every refresh.
+  const highlightsCurrent = $derived.by(() => {
+    if (highlighted?.key !== highlightKey) return false;
+    const was = highlighted.nodeIds;
+    if (
+      was === highlightNodeIds ||
+      (was.length === highlightNodeIds.length &&
+        was.every((id, i) => id === highlightNodeIds[i]))
+    )
+      return true;
+    if (!running) return false;
+    const asked = new Set(was);
+    return highlightNodeIds.filter((id) => asked.has(id)).length * 2 >= highlightNodeIds.length;
+  });
+  const highlights = $derived(highlightsCurrent ? highlighted!.ids : []);
   const highlightError = $derived(
     highlightFailure?.key === highlightKey ? highlightFailure.message : "",
   );
   const highlightsLoading = $derived(
-    extension !== null && !highlightError && highlighted?.key !== highlightKey,
+    extension !== null && !highlightError && !highlightsCurrent,
   );
 
   $effect(() => {
@@ -109,29 +150,6 @@ export default function createFileTypes(context: {
     };
   });
 
-  // A live scan's map reloads every second or two, but each query walks the whole tree under the
-  // scan's read lock: while running, keep the asked tiles until the revision (or a retry) changes or
-  // the map shows mostly other tiles (the user moved to another folder).
-  let asked: number[] = [],
-    askedSet = new Set<number>(),
-    askedVersion = "";
-  const highlightNodeIds = $derived.by(() => {
-    const ids = context.nodes
-      .filter((node) => node.kind !== "aggregate")
-      .map((node) => node.id);
-    const fresh = version;
-    if (
-      running &&
-      fresh === askedVersion &&
-      ids.filter((id) => askedSet.has(id)).length * 2 >= ids.length
-    )
-      return asked;
-    asked = ids;
-    askedSet = new Set(ids);
-    askedVersion = fresh;
-    return ids;
-  });
-
   $effect(() => {
     const key = highlightKey;
     const scan = scanId;
@@ -151,7 +169,7 @@ export default function createFileTypes(context: {
         nodeIds,
       })
         .then((ids) => {
-          if (!ignore) highlighted = { key, ids };
+          if (!ignore) highlighted = { key, ids, nodeIds };
         })
         .catch((reason) => {
           if (!ignore) highlightFailure = { key, message: String(reason) };

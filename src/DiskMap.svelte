@@ -482,14 +482,15 @@
     ctx.arc(x + radius, y + radius, radius, Math.PI, Math.PI * 1.5);
     ctx.closePath();
   }
-  function outlinePath(ctx: CanvasRenderingContext2D, s: Shape) {
+  // `inset` pulls the outline inside the tile (treemap) or ring (sunburst).
+  function outlinePath(ctx: CanvasRenderingContext2D, s: Shape, inset: number) {
     ctx.beginPath();
-    if (mode === "treemap") tilePath(ctx, s, 1.5);
+    if (mode === "treemap") tilePath(ctx, s, inset);
     else {
       const cx = dimensions.width / 2,
         cy = dimensions.height / 2;
-      ctx.arc(cx, cy, s.outer, s.start, s.end);
-      ctx.arc(cx, cy, s.inner, s.end, s.start, true);
+      ctx.arc(cx, cy, s.outer - inset, s.start, s.end);
+      ctx.arc(cx, cy, s.inner + inset, s.end, s.start, true);
       ctx.closePath();
     }
   }
@@ -584,15 +585,7 @@
                 : "rgba(255,255,255,.38)"
             : "rgba(255,255,255,.42)";
       ctx.lineWidth = 1;
-      ctx.beginPath();
-      if (mode === "treemap") tilePath(ctx, s, 1);
-      else {
-        const cx = dimensions.width / 2,
-          cy = dimensions.height / 2;
-        ctx.arc(cx, cy, s.outer, s.start, s.end);
-        ctx.arc(cx, cy, s.inner, s.end, s.start, true);
-        ctx.closePath();
-      }
+      outlinePath(ctx, s, mode === "treemap" ? 1 : 0);
       ctx.fill();
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -611,28 +604,13 @@
         ctx.strokeStyle = fileTypeColor(highlightedFileType!);
         ctx.lineWidth = 3;
         ctx.setLineDash([]);
-        ctx.beginPath();
-        if (mode === "treemap")
-          tilePath(ctx, s, Math.min(4, s.width / 4, s.height / 4));
-        else {
-          const inset = Math.min(3, (s.outer - s.inner) / 4);
-          ctx.arc(
-            dimensions.width / 2,
-            dimensions.height / 2,
-            s.outer - inset,
-            s.start,
-            s.end,
-          );
-          ctx.arc(
-            dimensions.width / 2,
-            dimensions.height / 2,
-            s.inner + inset,
-            s.end,
-            s.start,
-            true,
-          );
-          ctx.closePath();
-        }
+        outlinePath(
+          ctx,
+          s,
+          mode === "treemap"
+            ? Math.min(4, s.width / 4, s.height / 4)
+            : Math.min(3, (s.outer - s.inner) / 4),
+        );
         // A white rim keeps the solid type outline visible on same-color tiles.
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = 6;
@@ -862,7 +840,7 @@
       if (!selectedIds.has(s.id)) continue;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 5;
-      outlinePath(ctx, s);
+      outlinePath(ctx, s, mode === "treemap" ? 1.5 : 0);
       ctx.stroke();
       ctx.strokeStyle = accent ??= selectionColor(el);
       ctx.lineWidth = 2;
@@ -892,7 +870,7 @@
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 3]);
     // Hover traces the same edge as the selection outline, so moving between them doesn't shift.
-    outlinePath(ctx, s);
+    outlinePath(ctx, s, mode === "treemap" ? 1.5 : 0);
     ctx.stroke();
   });
   function clearHover() {
@@ -1038,7 +1016,7 @@
     </div>
   {/if}
   {#if !shapes.length}<div class="map-empty">
-      {scanComplete && layoutCurrent
+      {scanComplete && layoutCurrent && nodes[0]?.id === rootId
         ? "Nothing here takes space on disk."
         : "The map fills in as files are found"}
     </div>{/if}

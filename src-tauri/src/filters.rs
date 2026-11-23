@@ -90,7 +90,7 @@ impl Query {
         extension: Option<String>,
         scope_id: Option<u32>,
     ) -> Self {
-        self.extension = extension.map(|value| value.to_lowercase());
+        self.extension = extension.map(|value| folded(&value));
         self.scope_id = scope_id;
         self
     }
@@ -331,6 +331,11 @@ mod tests {
         let partial = base.clone().with_file_type(Some("jp".into()), Some(1));
         assert_eq!(cache.page(&snapshot, &partial, 0, 500).unwrap().1, 0);
         assert_eq!(cache.builds, 4);
+        // A decomposed typed suffix compares like the folded one `file_types::extension` returns.
+        let nfd = base
+            .clone()
+            .with_file_type(Some("CAFE\u{301}".into()), None);
+        assert_eq!(nfd.extension.as_deref(), Some("caf\u{e9}"));
         let invalid = base.with_file_type(None, Some(999));
         assert!(cache.page(&snapshot, &invalid, 0, 500).is_err());
     }

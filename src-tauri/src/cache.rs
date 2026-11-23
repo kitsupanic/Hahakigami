@@ -301,8 +301,9 @@ impl Cache {
             return Ok(false);
         }
         record.token = next.clone();
-        self.write_record(&id, &record)?;
+        // Touch first: a failed touch then leaves the cursor as it was, so the caller's warning stays true.
         self.store.touch(&id, record.started_at_ms)?;
+        self.write_record(&id, &record)?;
         Ok(true)
     }
     pub fn save(&self, s: &Snapshot, m: &ScanMetadata, token: &Token) -> Result<(), String> {
@@ -727,6 +728,36 @@ mod tests {
             m.started_at_ms,
             previous.full_scan_at_ms + 3_600_001
         ));
+    }
+    #[test]
+    fn a_failed_recency_touch_keeps_the_previous_cursor() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Cache::new(d.path().join("cache"));
+        let s = fixture(&d.path().join("source"));
+        let m = metadata();
+        let previous = Token {
+            cursor: 42,
+            epoch: "epoch".into(),
+            full_scan_at_ms: m.started_at_ms,
+        };
+        let next = Token {
+            cursor: 84,
+            ..previous.clone()
+        };
+        c.save(&s, &m, &previous).unwrap();
+        let mut row = c.store.list().unwrap().remove(0);
+        let record = fs::read(c.path(&row.id).unwrap()).unwrap();
+        // A row that no longer matches the record's scan makes `touch` fail.
+        row.started_at_ms += 1;
+        fs::write(
+            c.root.join(format!("{}.json", row.id)),
+            serde_json::to_vec(&row).unwrap(),
+        )
+        .unwrap();
+        assert!(c
+            .refresh_unchanged(&s.root, &s.node(0).unwrap().identity, &previous, &next)
+            .is_err());
+        assert_eq!(fs::read(c.path(&row.id).unwrap()).unwrap(), record);
     }
     #[test]
     fn unchanged_refresh_rejects_missing_replaced_mismatched_and_expired_seeds() {
