@@ -493,6 +493,13 @@
       ctx.closePath();
     }
   }
+  let parents = $derived(new Set(nodes.map((n) => n.parentId)));
+  // The canvas CSS sets accent-color to the person's accent; canvas cannot read var().
+  // Read on each paint that outlines a selection, so a system accent change shows on the next one.
+  function selectionColor(el: HTMLCanvasElement) {
+    const accent = getComputedStyle(el).accentColor;
+    return accent && accent !== "auto" ? accent : "#246fde";
+  }
   $effect(() => {
     const el = canvas!;
     // After a mode switch the shapes are the other mode's until the worker replies; keep the last frame.
@@ -506,7 +513,6 @@
         untrack(() => onRendered?.(nodes));
       return;
     }
-    const parents = new Set(nodes.map((n) => n.parentId));
     const ctx = el.getContext("2d")!;
     const dpr = pixelRatio;
     const pixelWidth = Math.trunc(dimensions.width * dpr),
@@ -851,16 +857,14 @@
       }
     }
     ctx.setLineDash([]);
-    // The canvas CSS sets accent-color to the person's accent; canvas cannot read var().
-    const accent = getComputedStyle(el).accentColor;
-    const selectionColor = accent && accent !== "auto" ? accent : "#246fde";
+    let accent: string | undefined;
     for (const s of drawn) {
       if (!selectedIds.has(s.id)) continue;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 5;
       outlinePath(ctx, s);
       ctx.stroke();
-      ctx.strokeStyle = selectionColor;
+      ctx.strokeStyle = accent ??= selectionColor(el);
       ctx.lineWidth = 2;
       ctx.stroke();
     }
@@ -870,7 +874,7 @@
   // The hover outline has its own canvas so moving the pointer doesn't repaint the map.
   $effect(() => {
     const el = overlay!;
-    const s = shapes.find((shape) => shape.id === hoverId);
+    const s = drawn.find((shape) => shape.id === hoverId);
     if (!s) {
       if (el.width !== 0) el.width = 0;
       if (el.height !== 0) el.height = 0;
@@ -926,7 +930,7 @@
   onDestroy(clearHover);
   $effect(() => {
     if (!layoutCurrent) return;
-    void shapes;
+    void drawn;
     untrack(refreshHover);
   });
   function hitNode(e: { clientX: number; clientY: number }) {
@@ -935,7 +939,7 @@
       x = e.clientX - rect.left,
       y = e.clientY - rect.top;
     const shape = hitShape(
-      shapes,
+      drawn,
       mode,
       dimensions.width,
       dimensions.height,

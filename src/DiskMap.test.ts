@@ -1872,6 +1872,34 @@ it("re-hits a still pointer after a layout update and clears it when the pointer
   }
 });
 
+it("hits and outlines the tile where it is drawn while a layout tween runs", async () => {
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+  vi.stubGlobal("matchMedia", () => ({
+    matches: true,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const f = await linkedMapFixture();
+  try {
+    await f.complete();
+    // Tile 3 (report.txt) is drawn at x 150..290 and about to move to x 600.
+    await f.complete(f.currentRequest(), f.shapes.map((s) => (s.id === 3 ? { ...s, x: 600 } : s)));
+    // One frame in: still drawn near the old place, so a click there selects it.
+    await act(async () => frames.at(-1)!(performance.now() + 1));
+    await f.pointer("click", 170, 30);
+    expect(f.onSelect).toHaveBeenLastCalledWith(f.nodes[3], false);
+    await f.pointer("mousemove", 170, 30);
+    expect(f.element.querySelector(".map-wrap")!.getAttribute("data-hovered-id")).toBe("3");
+    // The final position is empty until the tween gets there.
+    f.onSelect.mockClear();
+    await f.pointer("click", 650, 30);
+    expect(f.onSelect).not.toHaveBeenCalled();
+  } finally {
+    await f.cleanup();
+  }
+});
+
 it("honors controlled hover clears and replacements without publishing obsolete clears", async () => {
   const f = await linkedMapFixture();
   try {

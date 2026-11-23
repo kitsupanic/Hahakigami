@@ -470,11 +470,15 @@ export default function createApp() {
   );
   // A null summary is a scan that has not reported yet: an empty view that its first event fills.
   function resetView(s: ScanSummary | null, scanId = s?.scanId ?? null) {
+    quickLook.dismiss();
+    ++generation.current;
+    clearView(s, scanId);
+  }
+  // Empties the per-scan view state; unlike resetView it leaves the generation to the caller.
+  function clearView(s: ScanSummary | null, scanId: string | null) {
     homeOpen = false;
     clearResultsReturn();
     clearNavigationHistory();
-    quickLook.dismiss();
-    ++generation.current;
     ++navigation.current;
     activeId.current = scanId;
     summary = s;
@@ -831,27 +835,10 @@ export default function createApp() {
           return;
         taken = true;
         // A rejected target leaves the displayed workspace usable.
-        homeOpen = false;
         queueOpen = false;
-        clearResultsReturn();
-        clearNavigationHistory();
         liveTarget = t;
         benchmark?.viewTaken();
-        ++navigation.current;
-        activeId.current = id;
-        ++listRequest.current;
-        summary = null;
-        cancelling = false;
-        trash = null;
-        focus = null;
-        crumbs = [];
-        selection = [];
-        map = [];
-        page = { items: [], total: 0 };
-        offset = 0;
-        query = "";
-        debouncedQuery = "";
-        filters = { ...emptyFilter };
+        clearView(null, id);
       },
       event(s, restarted) {
         // Progress from a scan whose results are not on screen only updates its slot.
@@ -1869,9 +1856,7 @@ export default function createApp() {
     setOffset: (value: number) => {
       offset = value;
     },
-    get setError() {
-      return setError;
-    },
+    setError,
     setCancelling: (value: boolean) => {
       cancelling = value;
     },
@@ -1881,9 +1866,7 @@ export default function createApp() {
     setAccessError: (value: string) => {
       accessError = value;
     },
-    get quickLook() {
-      return quickLook;
-    },
+    quickLook,
     get filtered() {
       return filtered;
     },
@@ -1921,87 +1904,41 @@ export default function createApp() {
     get inspected() {
       return inspected;
     },
-    get navigation() {
-      return navigation;
-    },
+    navigation,
     get liveTarget() {
       return liveTarget;
     },
-    get activeId() {
-      return activeId;
-    },
-    get invalidateList() {
-      return invalidateList;
-    },
-    get changeFilters() {
-      return changeFilters;
-    },
-    get persistSort() {
-      return persistSort;
-    },
-    get changeSort() {
-      return changeSort;
-    },
-    get previewEligible() {
-      return previewEligible;
-    },
-    get previewRow() {
-      return previewRow;
-    },
+    activeId,
+    invalidateList,
+    changeFilters,
+    persistSort,
+    changeSort,
+    previewEligible,
+    previewRow,
     get toast() {
       return toast;
     },
     dismissToast,
-    get openAccess() {
-      return openAccess;
-    },
-    get closeAccess() {
-      return closeAccess;
-    },
-    get scanAnyway() {
-      return scanAnyway;
-    },
-    get openSettings() {
-      return openSettings;
-    },
-    get relaunch() {
-      return relaunch;
-    },
-    get chooseFolder() {
-      return chooseFolder;
-    },
-    get scanFolder() {
-      return scanFolder;
-    },
+    openAccess,
+    closeAccess,
+    scanAnyway,
+    openSettings,
+    relaunch,
+    chooseFolder,
+    scanFolder,
     get choosingFolder() {
       return choosingFolder;
     },
     get targetsLoading() {
       return targetsLoading;
     },
-    get fail() {
-      return fail;
-    },
-    get performanceRendered() {
-      return (nodes: NodeView[]) => benchmark?.rendered(nodes);
-    },
-    get start() {
-      return start;
-    },
-    get open() {
-      return open;
-    },
-    get selectRange() {
-      return selectRange;
-    },
-    get select() {
-      return select;
-    },
-    get prepareTrash() {
-      return prepareTrash;
-    },
-    get commitTrash() {
-      return commitTrash;
-    },
+    fail,
+    performanceRendered: (nodes: NodeView[]) => benchmark?.rendered(nodes),
+    start,
+    open,
+    selectRange,
+    select,
+    prepareTrash,
+    commitTrash,
   };
 }
