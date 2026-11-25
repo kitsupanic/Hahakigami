@@ -1215,6 +1215,88 @@ fn a_folder_picked_under_the_data_volume_is_registered_by_its_plain_path() {
     let data_root = PathBuf::from("/System/Volumes/Data");
     assert_eq!(plain_spelling(data_root.clone()), data_root);
 }
+/// A bookmark is the path itself: enough to restore across a simulated relaunch.
+struct PathBookmarks;
+impl allowed_locations::Bookmarks for PathBookmarks {
+    fn create(&mut self, path: &Path) -> Result<Vec<u8>, String> {
+        Ok(path.to_str().unwrap().as_bytes().to_vec())
+    }
+    fn resolve(&mut self, bookmark: &[u8]) -> Result<allowed_locations::Resolved, String> {
+        Ok(allowed_locations::Resolved {
+            path: PathBuf::from(std::str::from_utf8(bookmark).unwrap()),
+            stale: false,
+        })
+    }
+    fn stop(&mut self, _path: &Path) {}
+}
+/// A state as the Lite edition's setup builds it, with the locations saved in `file`.
+fn lite_state(file: &Path) -> AppState {
+    let state = AppState::default();
+    force_access(&state, access_setup::Status::On);
+    *state.allowed_locations.lock().unwrap() =
+        Some(allowed_locations::AllowedLocations::restore_all(
+            Box::new(PathBookmarks),
+            file.to_path_buf(),
+        ));
+    state
+}
+fn scan_of(state: &AppState, path: &Path) -> Result<Summary, String> {
+    let mut target = platform::target(path, "folder".into());
+    target.volume = false;
+    let target = register(state, target, path.to_path_buf())?;
+    let (_, events) = start_recorded(state, &target, Recorder::default())?;
+    Ok(events.wait_end())
+}
+#[test]
+fn a_picked_folder_is_allowed_and_a_scan_outside_every_allowed_location_needs_access() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_picked_dir, picked) = disk_root();
+    let (_other_dir, other) = disk_root();
+    let refused = scan_of(&state, &picked).err().unwrap();
+    assert!(
+        refused.starts_with(allowed_locations::NEEDS_ACCESS),
+        "{refused}"
+    );
+    pick_folder(&state, picked.clone()).unwrap();
+    assert_eq!(scan_of(&state, &picked).unwrap().entries, 2);
+    let refused = scan_of(&state, &other).err().unwrap();
+    assert!(
+        refused.starts_with(allowed_locations::NEEDS_ACCESS),
+        "{refused}"
+    );
+}
+#[test]
+fn a_folder_inside_a_picked_folder_scans_without_being_picked() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, root) = disk_root();
+    let inner = root.join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    std::fs::write(inner.join("file"), b"abc").unwrap();
+    pick_folder(&state, root).unwrap();
+    assert_eq!(scan_of(&state, &inner).unwrap().entries, 2);
+}
+#[test]
+fn a_picked_folder_is_still_scannable_after_a_relaunch() {
+    let store = tempfile::tempdir().unwrap();
+    let file = store.path().join("allowed-locations.json");
+    let (_dir, root) = disk_root();
+    pick_folder(&lite_state(&file), root.clone()).unwrap();
+    // A new process starts from the saved file alone.
+    assert_eq!(scan_of(&lite_state(&file), &root).unwrap().entries, 2);
+}
+#[test]
+fn the_full_edition_scans_anywhere_without_a_store() {
+    let state = AppState::default();
+    force_access(&state, access_setup::Status::On);
+    assert!(state.allowed_locations.lock().unwrap().is_none());
+    let (_dir, root) = disk_root();
+    assert_eq!(scan_of(&state, &root).unwrap().entries, 2);
+    // Picking a folder remembers nothing.
+    pick_folder(&state, root).unwrap();
+    assert!(state.allowed_locations.lock().unwrap().is_none());
+}
 #[test]
 fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
     tauri::async_runtime::block_on(async {

@@ -33,6 +33,8 @@ import {
 } from "./types";
 // Mirrors the backend limit in cleanup.rs ("Select between 1 and 1,000 items.").
 const MAX_TRASH_ITEMS = 1000;
+// The start of the error a scan refused for lack of an Allowed location carries (`allowed_locations.rs`).
+const NEEDS_ACCESS = "NEEDS_ACCESS";
 const performanceBuild = import.meta.env.VITE_PERFORMANCE_BENCHMARK === "1";
 export default function createApp() {
   let mapRequestEpoch = 0;
@@ -877,6 +879,11 @@ export default function createApp() {
       },
       failed(e) {
         const accessOff = String(e).includes("FULL_DISK_ACCESS_OFF");
+        // Lite refuses a target outside every Allowed location. The sentence after the code is the message.
+        const needsAccess = String(e).startsWith(`${NEEDS_ACCESS}: `);
+        const message = needsAccess
+          ? String(e).slice(NEEDS_ACCESS.length + 2)
+          : String(e);
         // Scan all reports its failures together, but a disk swapped at its path still needs rediscovery.
         if (t.volume && String(e).includes("The chosen folder changed"))
           rediscover = true;
@@ -890,7 +897,7 @@ export default function createApp() {
           };
         if (!how.batch && g !== generation.current) {
           // The user is elsewhere: a toast, not a dialog over the new view.
-          if (!accessOff) showToast(`Couldn’t scan ${t.name}: ${String(e)}`);
+          if (!accessOff) showToast(`Couldn’t scan ${t.name}: ${message}`);
           return true;
         }
         if (accessOff) {
@@ -899,6 +906,11 @@ export default function createApp() {
             blockScan(blocking);
             void loadAccess();
           }
+        } else if (needsAccess) {
+          fail(message, {
+            title: "Allow access first",
+            reason: `${t.name} hasn’t been allowed yet. Use Scan folder to choose it, then scan again.`,
+          });
         } else {
           fail(e);
         }

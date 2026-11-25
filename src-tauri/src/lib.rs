@@ -1,4 +1,7 @@
 mod access_setup;
+mod allowed_locations;
+#[cfg(target_os = "macos")]
+mod allowed_locations_native;
 #[cfg(feature = "automation")]
 mod automation;
 mod baseline;
@@ -330,6 +333,8 @@ struct AppState {
     sort_requests: Arc<AtomicU64>,
     preview: Arc<quick_look::Registry>,
     access_setup: Arc<Mutex<access_setup::AccessSetup>>,
+    // Only the Lite edition builds it (setup); the Full edition has none and scans anywhere.
+    allowed_locations: Mutex<Option<allowed_locations::AllowedLocations>>,
     targets: Mutex<HashMap<String, (platform::Target, PathBuf)>>,
     target_guards: Mutex<HashMap<String, safety::CheckedItem>>,
     // The live scans and the scan budget; commands reach scans only through it.
@@ -452,6 +457,23 @@ fn plain_spelling(path: PathBuf) -> PathBuf {
         _ => path,
     }
 }
+/// Registers a folder the person picked. Where the edition needs it, the folder becomes an Allowed location.
+fn pick_folder(state: &AppState, path: PathBuf) -> Result<platform::Target, String> {
+    let target = register_picked(state, path)?;
+    // The registered spelling is what scans are checked against.
+    if let Some(allowed) = state.allowed_locations.lock().unwrap().as_mut() {
+        allowed.remember(Path::new(&target.path))?;
+    }
+    Ok(target)
+}
+/// Refuses a Scan target outside every Allowed location with the "needs access" error. The Full edition has no
+/// store and allows every target.
+fn require_allowed_location(state: &AppState, root: &Path) -> Result<(), String> {
+    match state.allowed_locations.lock().unwrap().as_mut() {
+        Some(allowed) => allowed.require_allowed(root),
+        None => Ok(()),
+    }
+}
 #[tauri::command]
 async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>, String> {
     // canonicalize, statvfs and register's lstat/statfs can hang on an unresponsive mount, like the picker itself.
@@ -461,7 +483,7 @@ async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>
         };
         let path = file.into_path().map_err(|e| e.to_string())?;
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-        register_picked(&app.state::<AppState>(), path).map(Some)
+        pick_folder(&app.state::<AppState>(), path).map(Some)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -853,6 +875,8 @@ fn open_scan_target(state: &AppState, target_id: String) -> Result<OpenedTarget,
             .ok_or("Choose a registered folder or volume first.")?;
         (target_id, root.clone(), target.volume)
     };
+    // Before the disk is touched: a location the person has not allowed is not ours to read.
+    require_allowed_location(state, &root)?;
     // Cloned out so no lock is held while the disk is read: on an unresponsive mount validate_target and
     // ScanRoot::open stall, and would hold up every other start, discovery and setup call.
     let guard = state
@@ -1919,6 +1943,15 @@ pub fn run() {
             let data = app.path().app_data_dir()?;
             app.manage(instance::acquire(&data)?);
             cleanup::set_app_data(&data);
+            // Restoring starts access to every Allowed location for the app's lifetime.
+            #[cfg(target_os = "macos")]
+            if edition::CURRENT.scan_targets_require_allowed_location {
+                *app.state::<AppState>().allowed_locations.lock().unwrap() =
+                    Some(allowed_locations::AllowedLocations::restore_all(
+                        Box::new(allowed_locations_native::NativeBookmarks::default()),
+                        data.join("allowed-locations.json"),
+                    ));
+            }
             #[cfg(feature = "performance-benchmark")]
             {
                 performance::install(app, benchmark_config).map_err(std::io::Error::other)?;
