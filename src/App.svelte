@@ -304,16 +304,18 @@
   const filterKey = $derived(app.filterKey);
   const resultLocation = $derived(app.resultLocation);
   const displayedTargetSelected = $derived(app.displayedTargetSelected);
-  // The place Remove access would act on: what the header scan button acts on.
-  const accessLocation = $derived(
-    displayedTargetSelected ? resultLocation : target,
-  );
-  const scanActionLabel = $derived(
+  // What the header scan button does, and the place it acts on (which Remove access acts on too).
+  const scanVerb = $derived(
     app.scanNeedsAccess
       ? "Allow access…"
       : displayedTargetSelected
-      ? `Rescan ${locationName(resultLocation?.name, resultLocation?.path)}`
-      : `Scan ${locationName(target?.name, target?.path)}`,
+        ? "Rescan"
+        : "Scan",
+  );
+  const scanActionLabel = $derived(
+    app.scanNeedsAccess
+      ? scanVerb
+      : `${scanVerb} ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`,
   );
   const filterLocation = $derived(
     filters.scopeId == null
@@ -1294,19 +1296,13 @@
               {#if running}
                 <span>{cancelling ? "Stopping…" : "Stop"}</span>
               {:else}
-                <Icon name="refresh" size={16} /><span
-                  >{app.scanNeedsAccess
-                    ? "Allow access…"
-                    : displayedTargetSelected
-                      ? "Rescan"
-                      : "Scan"}</span
-                >
+                <Icon name="refresh" size={16} /><span>{scanVerb}</span>
               {/if}
             </button>
-            {#if app.canRemoveAccess}
+            {#if app.can.removeAccess}
               <button
                 class="remove-access"
-                title={`Remove access to ${locationName(accessLocation?.name, accessLocation?.path)}`}
+                title={`Remove access to ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`}
                 onclick={() => void app.removeAccess()}>Remove access</button
               >
             {/if}
@@ -1362,6 +1358,7 @@
         <div class="analysis-main">
           <div class:has-scan={!!summary} class="explorer-content">
             {#if !summary}
+              {@const welcomeNeedsAccess = !!target && app.needsAccess(target)}
               <section class="welcome" aria-labelledby="welcome-title">
                 <img class="welcome-icon" src={appIcon} alt="" />
                 <h1 id="welcome-title">See what’s using your space.</h1>
@@ -1372,7 +1369,7 @@
                   class="welcome-target"
                   id="welcome-target"
                   title={target?.path}
-                  aria-busy={app.choosingFolder}
+                  aria-busy={app.pickerOpen}
                   disabled={!app.can.chooseFolder}
                   onclick={() => void app.chooseFolder()}
                 >
@@ -1389,7 +1386,7 @@
                           : "No location selected"}</strong
                     >
                     <span
-                      >{app.choosingFolder
+                      >{app.pickerOpen
                         ? "Choosing folder…"
                         : target
                           ? "Choose another location"
@@ -1403,7 +1400,7 @@
                     aria-describedby="welcome-note"
                     aria-busy={!!target && app.scanStarting(target)}
                     title={target
-                      ? app.needsAccess(target)
+                      ? welcomeNeedsAccess
                         ? `Allow access to ${locationName(target.name, target.path)}`
                         : `Scan ${locationName(target.name, target.path)}`
                       : "Scan selected location"}
@@ -1416,17 +1413,17 @@
                           ? "Loading locations…"
                           : target && app.allowingAccess(target)
                             ? "Allowing access…"
-                            : target && app.needsAccess(target)
+                            : welcomeNeedsAccess
                               ? "Allow access…"
                               : target
                                 ? `Scan ${locationName(target.name, target.path)}`
                                 : "Scan location"}</span
                     ></button
                   >
-                  {#if app.canRemoveAccess}
+                  {#if app.can.removeAccess}
                     <button
                       class="remove-access"
-                      title={`Remove access to ${locationName(target?.name, target?.path)}`}
+                      title={`Remove access to ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`}
                       onclick={() => void app.removeAccess()}
                       ><span>Remove access</span></button
                     >

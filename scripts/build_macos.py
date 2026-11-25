@@ -7,10 +7,12 @@ Default: local build signed with Apple Development. --release: Developer ID buil
 with Mac Installer Distribution. Upload is manual (Transporter); this script never receives App Store Connect credentials.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import platform
 import re
 import subprocess
@@ -37,8 +39,34 @@ STORE_CREDENTIAL_NAMES = {name for names in NOTARY_CREDENTIALS for name in names
 STORE_CREDENTIAL_PREFIXES = ('APP_STORE_CONNECT', 'FASTLANE_')
 
 
+def identity_names(output, kind=DEVELOPMENT):
+    """(SHA-1, full name) of each listed identity of one kind, like `Apple Distribution: Name (TEAMID)`."""
+    return re.findall(rf'^\s*\d+\) ([0-9A-Fa-f]{{40}}) "({kind}: [^"\n]+)"\s*$', output, re.MULTILINE)
+
+
 def development_identities(output, kind=DEVELOPMENT):
-    return re.findall(rf'^\s*\d+\) ([0-9A-Fa-f]{{40}}) "{kind}: [^"\n]+"\s*$', output, re.MULTILINE)
+    return [sha for sha, _ in identity_names(output, kind)]
+
+
+def identity_name(output, sha, kind):
+    """The full name of the selected identity. Fails when another valid identity has the same name, because tools
+    that select by name (productbuild) could not tell the two apart."""
+    named = {value.upper(): name for value, name in identity_names(output, kind)}
+    name = named.get(sha.upper())
+    if name is None:
+        raise ValueError(f'The selected {kind} identity is not in the keychain listing.')
+    if sum(other == name for other in named.values()) > 1:
+        raise ValueError(f'More than one valid {kind} identity is named "{name}", so it cannot be chosen by name. '
+                         'Remove the one you do not use from the keychain, or sign with a different certificate.')
+    return name
+
+
+def identity_team(name):
+    """The Team ID Apple puts at the end of a certificate's common name."""
+    match = re.search(r'\(([A-Z0-9]{10})\)$', name)
+    if not match:
+        raise ValueError(f'Could not read the Team ID from the identity name "{name}".')
+    return match.group(1)
 
 
 def select_identity(identities, requested=None, adhoc=False, kind=DEVELOPMENT, option='--identity'):
@@ -153,6 +181,41 @@ def verify_package_signature(output):
         raise ValueError(f'The installer package is not signed with a {INSTALLER} certificate.')
 
 
+APPLICATION_IDENTIFIER, TEAM_IDENTIFIER = 'com.apple.application-identifier', 'com.apple.developer.team-identifier'
+
+
+def store_identifiers(profile, team, bundle_identifier):
+    """(application identifier, team identifier) the Mac App Store build is signed with, read from the provisioning
+    profile. Fails unless the profile is for this app and for the team of the Apple Distribution identity."""
+    entitlements = profile.get('Entitlements') or {}
+    expected = f'{team}.{bundle_identifier}'
+    if entitlements.get(APPLICATION_IDENTIFIER) != expected:
+        raise ValueError(f'The provisioning profile is not for {expected} (it says '
+                         f'{entitlements.get(APPLICATION_IDENTIFIER)!r}).')
+    if entitlements.get(TEAM_IDENTIFIER) != team or team not in (profile.get('TeamIdentifier') or []):
+        raise ValueError(f'The provisioning profile belongs to another team than the Apple Distribution identity ({team}).')
+    return entitlements[APPLICATION_IDENTIFIER], entitlements[TEAM_IDENTIFIER]
+
+
+def read_provisioning_profile(path):
+    """The profile's property list. `security cms -D` only decodes the file; it does not touch the keychain."""
+    decoded = subprocess.run(['/usr/bin/security', 'cms', '-D', '-i', str(path)], check=True, capture_output=True, timeout=30)
+    return plistlib.loads(decoded.stdout)
+
+
+def store_entitlements(identifiers, base=LITE_ENTITLEMENTS):
+    """The Lite entitlements plus the two identifiers a Mac App Store build needs. The shipped file stays as it is."""
+    application_identifier, team_identifier = identifiers
+    entitlements = plistlib.loads(Path(base).read_bytes())
+    entitlements.update({APPLICATION_IDENTIFIER: application_identifier, TEAM_IDENTIFIER: team_identifier})
+    return plistlib.dumps(entitlements)
+
+
+def with_entitlements(overrides, path):
+    """Overrides that make tauri sign with the entitlements file at `path`."""
+    return {**overrides, 'bundle': {**overrides['bundle'], 'macOS': {**overrides['bundle']['macOS'], 'entitlements': str(path)}}}
+
+
 def lite_overlay(overlay):
     """Product name and identifier of the Lite edition, from its Tauri config overlay."""
     return overlay['productName'], overlay['identifier']
@@ -165,8 +228,9 @@ def lite_build_arguments(overrides):
             '--', '--no-default-features']
 
 
-def verify_entitlements(output):
-    """The Lite signature must carry the App Sandbox and the entitlements Lite uses inside it."""
+def verify_entitlements(output, identifiers=None):
+    """The Lite signature must carry the App Sandbox and the entitlements Lite uses inside it. A Mac App Store build
+    (`identifiers` is the pair from `store_identifiers`) must also carry its application and team identifiers."""
     def granted(key):
         return re.search(rf'<key>{re.escape(key)}</key>\s*<true/>', output)
     if not granted(LITE_SANDBOX_ENTITLEMENT):
@@ -174,6 +238,9 @@ def verify_entitlements(output):
     for key in LITE_REQUIRED_ENTITLEMENTS:
         if not granted(key):
             raise ValueError(f'The Lite bundle signature lacks the {key} entitlement.')
+    for key, value in zip((APPLICATION_IDENTIFIER, TEAM_IDENTIFIER), identifiers or ()):
+        if not re.search(rf'<key>{re.escape(key)}</key>\s*<string>{re.escape(value)}</string>', output):
+            raise ValueError(f'The Lite bundle signature lacks the {key} entitlement ({value}).')
 
 
 def leaf_certificate_sha1(bundle):
@@ -184,11 +251,15 @@ def leaf_certificate_sha1(bundle):
         return hashlib.sha1(Path(directory, 'cert0').read_bytes()).hexdigest().upper()
 
 
-def keychain_identities(kind):
-    """Valid identities of one kind. Installer certificates are not code-signing identities, so list without a policy."""
+def keychain_listing(kind):
+    """`security find-identity` for one kind. Installer certificates are not code-signing identities, so list without a policy."""
     policy = [] if kind == INSTALLER else ['-p', 'codesigning']
-    return development_identities(subprocess.run(['/usr/bin/security', 'find-identity', '-v', *policy], check=True,
-                                                 capture_output=True, text=True, timeout=30).stdout, kind)
+    return subprocess.run(['/usr/bin/security', 'find-identity', '-v', *policy], check=True,
+                          capture_output=True, text=True, timeout=30).stdout
+
+
+def keychain_identities(kind):
+    return development_identities(keychain_listing(kind), kind)
 
 
 def prepare_benchmark_output(output):
@@ -235,6 +306,7 @@ def main():
     kind = APPLE_DISTRIBUTION if store else RELEASE if args.release else DEVELOPMENT
     if platform.system() != 'Darwin':
         parser.error('This local build command requires macOS.')
+    scratch = contextlib.ExitStack()
     try:
         if args.release and (args.adhoc or args.benchmark_output):
             raise ValueError('--release cannot be combined with --adhoc or --benchmark-output.')
@@ -242,8 +314,11 @@ def main():
         check_store_options(args.lite, args.release, args.installer_identity, args.provisioning_profile)
         profile = check_provisioning_profile(args.provisioning_profile) if store else None
         identity = select_identity([] if args.adhoc else keychain_identities(kind), args.identity, args.adhoc, kind)
-        installer = select_identity(keychain_identities(INSTALLER), args.installer_identity, kind=INSTALLER,
+        installers = keychain_listing(INSTALLER) if store else ''
+        installer = select_identity(development_identities(installers, INSTALLER), args.installer_identity, kind=INSTALLER,
                                     option='--installer-identity') if store else None
+        # productbuild may not take a SHA-1: it gets the identity's name, which must then be unambiguous.
+        installer_name = identity_name(installers, installer, INSTALLER) if store else None
         config = json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text())
         name, identifier = lite_overlay(json.loads(LITE_CONFIG.read_text())) if args.lite else (config['productName'], config['identifier'])
         if Path(name).name != name:
@@ -257,8 +332,16 @@ def main():
               'Building ad-hoc: macOS grants may need to be renewed after each build.', flush=True)
         environment = (appstore_environment if store else release_environment if args.release else local_environment)(os.environ, identity)
         overrides = {'bundle': {'macOS': {'signingIdentity': identity}}}
+        identifiers = None
         if store:
             overrides = with_provisioning_profile(overrides, profile)
+            # The App Store needs the signature to carry the application and team identifiers the profile grants.
+            identifiers = store_identifiers(read_provisioning_profile(profile),
+                                            identity_team(identity_name(keychain_listing(APPLE_DISTRIBUTION), identity, APPLE_DISTRIBUTION)),
+                                            identifier)
+            entitlements_file = Path(scratch.enter_context(tempfile.TemporaryDirectory())) / 'lite-store.entitlements'
+            entitlements_file.write_bytes(store_entitlements(identifiers))
+            overrides = with_entitlements(overrides, entitlements_file)
         command = ['pnpm', 'tauri', 'build', '--bundles', 'app,dmg' if args.release and not store else 'app']
         if output:
             environment['CARGO_TARGET_DIR'] = str(output / 'target')
@@ -280,7 +363,7 @@ def main():
         if args.lite:
             entitlements = subprocess.run(['/usr/bin/codesign', '--display', '--entitlements', ':-', str(bundle)],
                                           check=True, capture_output=True, text=True, timeout=30)
-            verify_entitlements(entitlements.stdout + entitlements.stderr)
+            verify_entitlements(entitlements.stdout + entitlements.stderr, identifiers)
         if identity != '-' and leaf_certificate_sha1(bundle) != identity:
             raise ValueError('The bundle was not signed with the selected identity.')
         if store:
@@ -288,7 +371,7 @@ def main():
             package = bundle.parents[1] / 'pkg' / f'{name}.pkg'
             package.parent.mkdir(exist_ok=True)
             package.unlink(missing_ok=True)
-            subprocess.run(installer_command(bundle, package, installer), check=True, timeout=600)
+            subprocess.run(installer_command(bundle, package, installer_name), check=True, timeout=600)
             check = subprocess.run(['/usr/sbin/pkgutil', '--check-signature', str(package)], check=True,
                                    capture_output=True, text=True, timeout=60)
             verify_package_signature(check.stdout + check.stderr)
@@ -302,6 +385,8 @@ def main():
             print(f'Verified local app: {bundle}\nFull Disk Access remains a manual macOS grant.', flush=True)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f'Build failed: {error}\n')
+    finally:
+        scratch.close()
 
 
 if __name__ == '__main__':

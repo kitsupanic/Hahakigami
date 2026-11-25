@@ -104,15 +104,25 @@ impl AllowedLocations {
             .map(|e| e.path.as_path())
     }
 
-    /// Every Allowed location, in the order they were remembered.
-    // Nothing in the app lists locations yet: the disks list asks `containing` per target.
-    #[allow(dead_code)]
-    pub fn locations(&self) -> Vec<PathBuf> {
+    /// The Allowed location other than `path` itself that `path` lies inside: the innermost one.
+    pub fn outer(&self, path: &Path) -> Option<&Path> {
         self.entries
             .iter()
-            .filter(|e| e.allowed)
-            .map(|e| e.path.clone())
-            .collect()
+            .filter(|e| e.allowed && e.path != path && path.starts_with(&e.path))
+            .max_by_key(|e| e.path.components().count())
+            .map(|e| e.path.as_path())
+    }
+
+    /// Ends access to every Allowed location whose path `exists` no longer finds (a disk was ejected, a folder moved
+    /// or deleted) and marks it not allowed, so the next lookup resolves its bookmark again: the disk may be back
+    /// under another name. The entry stays in the file.
+    pub fn lose_missing(&mut self, exists: impl Fn(&Path) -> bool) {
+        for entry in self.entries.iter_mut().filter(|e| e.allowed) {
+            if !exists(&entry.path) {
+                self.bookmarks.stop(&entry.path);
+                entry.allowed = false;
+            }
+        }
     }
 
     /// Tries again the locations that were not allowed (a disk that was away has come back).
@@ -279,6 +289,14 @@ mod tests {
         fn stop(&mut self, path: &Path) {
             self.0.lock().unwrap().accessed.retain(|p| p != path);
         }
+    }
+    fn locations(allowed: &AllowedLocations) -> Vec<PathBuf> {
+        allowed
+            .entries
+            .iter()
+            .filter(|e| e.allowed)
+            .map(|e| e.path.clone())
+            .collect()
     }
     fn store(fake: &Fake, dir: &Path) -> AllowedLocations {
         AllowedLocations::restore_all(Box::new(fake.clone()), dir.join("allowed-locations.json"))
@@ -513,10 +531,10 @@ mod tests {
         let mut allowed = store(&fake, dir.path());
         allowed.remember(Path::new("/Users/a")).unwrap();
         allowed.remember(Path::new("/Users/a")).unwrap();
-        assert_eq!(allowed.locations(), [PathBuf::from("/Users/a")]);
+        assert_eq!(locations(&allowed), [PathBuf::from("/Users/a")]);
         assert_eq!(fake.0.lock().unwrap().accessed, [PathBuf::from("/Users/a")]);
         assert_eq!(
-            store(&fake, dir.path()).locations(),
+            locations(&store(&fake, dir.path())),
             [PathBuf::from("/Users/a")]
         );
     }
@@ -541,7 +559,7 @@ mod tests {
         assert_eq!(allowed.containing(Path::new("/Users/a/x")), None);
         assert_eq!(fake.0.lock().unwrap().accessed, [PathBuf::from("/Users/b")]);
         let relaunched = store(&fake, dir.path());
-        assert_eq!(relaunched.locations(), [PathBuf::from("/Users/b")]);
+        assert_eq!(locations(&relaunched), [PathBuf::from("/Users/b")]);
     }
 
     #[test]
@@ -556,7 +574,7 @@ mod tests {
             .unwrap_err()
             .starts_with("NEEDS_ACCESS: "));
         assert!(fake.0.lock().unwrap().accessed.is_empty());
-        assert!(store(&fake, dir.path()).locations().is_empty());
+        assert!(locations(&store(&fake, dir.path())).is_empty());
     }
 
     #[test]
@@ -579,7 +597,7 @@ mod tests {
         relaunched.reresolve();
         assert_eq!(relaunched.containing(Path::new("/Volumes/Backup")), None);
         assert_eq!(
-            store(&fake, dir.path()).locations(),
+            locations(&store(&fake, dir.path())),
             [PathBuf::from("/Users/a")]
         );
     }
@@ -629,7 +647,7 @@ mod tests {
         fake.0.lock().unwrap().unreachable.clear();
         let mut allowed = store(&fake, dir.path());
         allowed.remember(Path::new("/Users/a/Deleted")).unwrap();
-        assert_eq!(allowed.locations(), [PathBuf::from("/Users/a/Deleted")]);
+        assert_eq!(locations(&allowed), [PathBuf::from("/Users/a/Deleted")]);
         assert_eq!(
             fake.0.lock().unwrap().accessed,
             [PathBuf::from("/Users/a/Deleted")]
@@ -670,6 +688,63 @@ mod tests {
         assert_eq!(
             allowed.require_allowed(Path::new("/Volumes/Backup")),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn a_disk_that_was_ejected_and_comes_back_under_another_name_is_allowed_again() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Volumes/Backup")).unwrap();
+        // Ejected, then plugged in again as "Backup 1".
+        fake.0
+            .lock()
+            .unwrap()
+            .renamed
+            .insert("/Volumes/Backup".into(), "/Volumes/Backup 1".into());
+        allowed.lose_missing(|_| false);
+        assert_eq!(allowed.containing(Path::new("/Volumes/Backup")), None);
+        assert!(fake.0.lock().unwrap().accessed.is_empty());
+        assert_eq!(
+            allowed.require_allowed(Path::new("/Volumes/Backup 1/x")),
+            Ok(())
+        );
+        assert_eq!(
+            fake.0.lock().unwrap().accessed,
+            [PathBuf::from("/Volumes/Backup 1")]
+        );
+        // The new spelling is what the file keeps.
+        assert_eq!(
+            locations(&store(&fake, dir.path())),
+            [PathBuf::from("/Volumes/Backup 1")]
+        );
+    }
+
+    #[test]
+    fn locations_that_still_exist_stay_allowed_when_the_mounts_change() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Users/a")).unwrap();
+        allowed.remember(Path::new("/Volumes/Backup")).unwrap();
+        allowed.lose_missing(|path| path != Path::new("/Volumes/Backup"));
+        assert_eq!(locations(&allowed), [PathBuf::from("/Users/a")]);
+        assert_eq!(fake.0.lock().unwrap().accessed, [PathBuf::from("/Users/a")]);
+    }
+
+    #[test]
+    fn the_outer_location_ignores_the_paths_own_entry() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Users/a")).unwrap();
+        allowed.remember(Path::new("/Users/a/Projects")).unwrap();
+        assert_eq!(allowed.outer(Path::new("/Users/a")), None);
+        assert_eq!(
+            allowed.outer(Path::new("/Users/a/Projects")),
+            Some(Path::new("/Users/a"))
+        );
+        assert_eq!(
+            allowed.outer(Path::new("/Users/a/Projects/x")),
+            Some(Path::new("/Users/a/Projects"))
         );
     }
 }

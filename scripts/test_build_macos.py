@@ -1,5 +1,5 @@
 import unittest
-from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command, verify_entitlements, check_lite_options, lite_overlay, lite_build_arguments, LITE_ENTITLEMENTS, LITE_CONFIG, LITE_REQUIRED_ENTITLEMENTS, APPLE_DISTRIBUTION, INSTALLER, check_store_options, appstore_environment, with_provisioning_profile, installer_command, verify_package_signature, verify_provisioning_profile_embedded, check_provisioning_profile, PROVISIONING_PROFILE_NAME
+from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command, verify_entitlements, check_lite_options, lite_overlay, lite_build_arguments, LITE_ENTITLEMENTS, LITE_CONFIG, LITE_REQUIRED_ENTITLEMENTS, APPLE_DISTRIBUTION, INSTALLER, check_store_options, appstore_environment, with_provisioning_profile, installer_command, verify_package_signature, verify_provisioning_profile_embedded, check_provisioning_profile, PROVISIONING_PROFILE_NAME, identity_names, identity_name, identity_team, store_identifiers, store_entitlements, with_entitlements
 
 class LocalSigningTests(unittest.TestCase):
     def test_existing_development_identity_selection_fails_closed(self):
@@ -215,9 +215,10 @@ class AppStoreBuildTests(unittest.TestCase):
 
     def test_the_installer_is_built_from_the_app_and_signed_with_the_selected_identity(self):
         from pathlib import Path
-        command = installer_command(Path('/b/Hahakigami Lite.app'), Path('/b/pkg/Hahakigami Lite.pkg'), 'C' * 40)
+        name = 'Mac Installer Distribution: Fixture (ABCDE12345)'
+        command = installer_command(Path('/b/Hahakigami Lite.app'), Path('/b/pkg/Hahakigami Lite.pkg'), name)
         self.assertEqual(command, ['/usr/bin/productbuild', '--component', '/b/Hahakigami Lite.app', '/Applications',
-                                   '--sign', 'C' * 40, '/b/pkg/Hahakigami Lite.pkg'])
+                                   '--sign', name, '/b/pkg/Hahakigami Lite.pkg'])
 
     def test_the_package_must_be_signed_by_a_mac_installer_distribution_certificate(self):
         signed = ('Package "Hahakigami Lite.pkg":\n   Status: signed by a developer certificate issued by Apple for distribution\n'
@@ -234,3 +235,71 @@ class AppStoreBuildTests(unittest.TestCase):
         verify_metadata(metadata, 'app.hahakigami.lite', False, APPLE_DISTRIBUTION)
         for changed in [metadata.replace('Authority=Apple Distribution', 'Authority=Apple Development'), metadata.replace('app.hahakigami.lite', 'app.hahakigami.desktop')]:
             with self.assertRaises(ValueError): verify_metadata(changed, 'app.hahakigami.lite', False, APPLE_DISTRIBUTION)
+
+
+TEAM = 'ABCDE12345'
+STORE_IDENTIFIERS = (f'{TEAM}.app.hahakigami.lite', TEAM)
+PROFILE = {'Entitlements': {'com.apple.application-identifier': f'{TEAM}.app.hahakigami.lite',
+                            'com.apple.developer.team-identifier': TEAM}, 'TeamIdentifier': [TEAM]}
+
+
+class StoreSigningTests(unittest.TestCase):
+    def test_the_selected_identity_is_found_by_its_full_name(self):
+        output = listing(('B', f'Apple Distribution: Fixture ({TEAM})'), ('C', f'Mac Installer Distribution: Fixture ({TEAM})'))
+        self.assertEqual(identity_names(output, INSTALLER), [('C' * 40, f'Mac Installer Distribution: Fixture ({TEAM})')])
+        self.assertEqual(identity_name(output, 'c' * 40, INSTALLER), f'Mac Installer Distribution: Fixture ({TEAM})')
+        with self.assertRaises(ValueError): identity_name(output, 'D' * 40, INSTALLER)
+
+    def test_two_valid_identities_with_one_name_cannot_be_chosen_by_name(self):
+        name = f'Mac Installer Distribution: Fixture ({TEAM})'
+        output = listing(('C', name), ('D', name), ('E', f'Mac Installer Distribution: Other ({TEAM})'))
+        with self.assertRaisesRegex(ValueError, 'More than one.*Fixture'): identity_name(output, 'C' * 40, INSTALLER)
+        self.assertEqual(identity_name(output, 'E' * 40, INSTALLER), f'Mac Installer Distribution: Other ({TEAM})')
+        # The same certificate listed twice (two keychains) is still one identity.
+        self.assertEqual(identity_name(listing(('C', name), ('C', name)), 'C' * 40, INSTALLER), name)
+
+    def test_the_team_is_read_from_the_identity_name(self):
+        self.assertEqual(identity_team(f'Apple Distribution: Fixture Co ({TEAM})'), TEAM)
+        for name in ['Apple Distribution: Fixture', f'Apple Distribution: Fixture ({TEAM}) extra', 'Apple Distribution: Fixture (abc)']:
+            with self.assertRaises(ValueError): identity_team(name)
+
+    def test_the_profile_must_be_for_the_lite_app_and_the_signing_team(self):
+        self.assertEqual(store_identifiers(PROFILE, TEAM, 'app.hahakigami.lite'), STORE_IDENTIFIERS)
+        with self.assertRaises(ValueError): store_identifiers(PROFILE, TEAM, 'app.hahakigami.desktop')
+        with self.assertRaises(ValueError): store_identifiers(PROFILE, 'ZZZZZ99999', 'app.hahakigami.lite')
+        other = {**PROFILE, 'Entitlements': {**PROFILE['Entitlements'], 'com.apple.application-identifier': f'ZZZZZ99999.app.hahakigami.lite'}}
+        with self.assertRaises(ValueError): store_identifiers(other, TEAM, 'app.hahakigami.lite')
+        wildcard = {**PROFILE, 'Entitlements': {**PROFILE['Entitlements'], 'com.apple.application-identifier': f'{TEAM}.*'}}
+        with self.assertRaises(ValueError): store_identifiers(wildcard, TEAM, 'app.hahakigami.lite')
+        wrong_team = {**PROFILE, 'Entitlements': {**PROFILE['Entitlements'], 'com.apple.developer.team-identifier': 'ZZZZZ99999'}}
+        with self.assertRaises(ValueError): store_identifiers(wrong_team, TEAM, 'app.hahakigami.lite')
+        with self.assertRaises(ValueError): store_identifiers({}, TEAM, 'app.hahakigami.lite')
+
+    def test_the_store_entitlements_add_the_two_identifiers_and_leave_the_shipped_file_alone(self):
+        import plistlib
+        before = LITE_ENTITLEMENTS.read_bytes()
+        entitlements = plistlib.loads(store_entitlements(STORE_IDENTIFIERS))
+        self.assertEqual(entitlements, {**{key: True for key in LITE_REQUIRED_ENTITLEMENTS},
+                                        'com.apple.application-identifier': STORE_IDENTIFIERS[0],
+                                        'com.apple.developer.team-identifier': TEAM})
+        self.assertEqual(LITE_ENTITLEMENTS.read_bytes(), before)
+        self.assertNotIn(b'application-identifier', before)
+
+    def test_the_entitlements_file_is_handed_to_tauri_without_mutating_the_overrides(self):
+        from pathlib import Path
+        overrides = {'bundle': {'macOS': {'signingIdentity': 'B' * 40}}}
+        result = with_entitlements(overrides, Path('/tmp/x/lite-store.entitlements'))
+        self.assertEqual(result['bundle']['macOS'], {'signingIdentity': 'B' * 40, 'entitlements': '/tmp/x/lite-store.entitlements'})
+        self.assertNotIn('entitlements', overrides['bundle']['macOS'])
+
+    def test_a_store_signature_must_carry_both_identifiers(self):
+        signed = LITE_PLIST.replace('</dict>', f'<key>com.apple.application-identifier</key><string>{STORE_IDENTIFIERS[0]}</string>'
+                                               f'<key>com.apple.developer.team-identifier</key><string>{TEAM}</string></dict>')
+        verify_entitlements(signed, STORE_IDENTIFIERS)
+        # A development build does not need them, and a store build is not satisfied without them.
+        verify_entitlements(LITE_PLIST)
+        with self.assertRaises(ValueError): verify_entitlements(LITE_PLIST, STORE_IDENTIFIERS)
+        for key in ('com.apple.application-identifier', 'com.apple.developer.team-identifier'):
+            with self.assertRaisesRegex(ValueError, key):
+                verify_entitlements(signed.replace(f'<key>{key}</key>', '<key>x</key>'), STORE_IDENTIFIERS)
+        with self.assertRaises(ValueError): verify_entitlements(signed.replace(TEAM + '.app', 'ZZZZZ99999.app'), STORE_IDENTIFIERS)

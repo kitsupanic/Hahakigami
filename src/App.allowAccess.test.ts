@@ -301,3 +301,21 @@ it("leaves the Full edition's Disks list and Scan all disks as they were", async
   expect(calls("allowed_target_ids")).toHaveLength(0);
   expect(toast()).not.toContain("skipped");
 });
+
+it("does not offer Allow access… while a dialog holds the window, since the Open dialog could not open", async () => {
+  await mount();
+  expect(app().can.rescan).toBe(true);
+  expect(welcomeScan().disabled).toBe(false);
+  await act(() => app().openAccess());
+  expect(app().can.rescan).toBe(false);
+  expect(welcomeScan().disabled).toBe(true);
+  await act(() => app().closeAccess());
+  expect(app().can.rescan).toBe(true);
+});
+
+it("answers Remove access through the command table, for the place the scan button acts on", async () => {
+  allowed = ["hd"];
+  await mount();
+  expect(app().can.removeAccess).toBe(true);
+  expect(app().accessPlace?.id).toBe("hd");
+});

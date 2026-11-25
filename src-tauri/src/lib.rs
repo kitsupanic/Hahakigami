@@ -407,10 +407,19 @@ async fn discover_targets(app: tauri::AppHandle) -> Result<Vec<platform::Target>
     }
     // statvfs/lstat can hang on an unresponsive mount; keep it off the async workers.
     tauri::async_runtime::spawn_blocking(move || {
-        register_all(&app.state::<AppState>(), platform::discover())
+        let state = app.state::<AppState>();
+        lose_missing_locations(&state);
+        register_all(&state, platform::discover())
     })
     .await
     .map_err(|e| e.to_string())
+}
+/// The mounts changed: a disk that was ejected is no longer allowed, so a lookup resolves its bookmark again and
+/// finds it when it comes back, possibly under another name (Lite).
+fn lose_missing_locations(state: &AppState) {
+    if let Some(allowed) = state.allowed_locations.lock().unwrap().as_mut() {
+        allowed.lose_missing(Path::exists);
+    }
 }
 /// A volume that fails to register (a damaged stick, a vanished mount) is left out; the rest still list.
 fn register_all(
@@ -492,17 +501,25 @@ fn allowed_ids(state: &AppState) -> Vec<String> {
     ids.sort();
     ids
 }
+/// The registered target `target_id` and the path it scans.
+fn registered_target(
+    state: &AppState,
+    target_id: &str,
+) -> Result<(platform::Target, PathBuf), String> {
+    state
+        .targets
+        .lock()
+        .unwrap()
+        .get(target_id)
+        .cloned()
+        .ok_or_else(|| "Choose a registered folder or volume first.".to_string())
+}
 /// Allows the registered target `target_id` by the folder the person picked for it. Only the target itself will do:
 /// another folder is refused and remembered nowhere, so the person is never left allowing something that does not
 /// make the disk scannable.
 fn allow_picked(state: &AppState, target_id: &str, picked: PathBuf) -> Result<(), String> {
-    let (name, path) = {
-        let targets = state.targets.lock().unwrap();
-        let (target, path) = targets
-            .get(target_id)
-            .ok_or("Choose a registered folder or volume first.")?;
-        (target.name.clone(), path.clone())
-    };
+    let (target, path) = registered_target(state, target_id)?;
+    let name = target.name;
     if plain_spelling(picked.clone()) != path {
         return Err(format!(
             "Choose {name} in the Open dialog to allow access to it."
@@ -514,25 +531,21 @@ fn allow_picked(state: &AppState, target_id: &str, picked: PathBuf) -> Result<()
 /// done stays where it is; only the next scan needs access again. A target allowed only through an outer location
 /// is refused, since forgetting it would change nothing.
 fn remove_access_to(state: &AppState, target_id: &str) -> Result<(), String> {
-    let (name, path) = {
-        let targets = state.targets.lock().unwrap();
-        let (target, path) = targets
-            .get(target_id)
-            .ok_or("Choose a registered folder or volume first.")?;
-        (target.name.clone(), path.clone())
-    };
+    let (target, path) = registered_target(state, target_id)?;
+    let name = target.name;
     let mut guard = state.allowed_locations.lock().unwrap();
     let allowed = guard
         .as_mut()
         .ok_or("This edition does not restrict access, so there is none to remove.")?;
-    allowed.remove(&path);
-    match allowed.containing(&path) {
-        Some(outer) => Err(format!(
+    // Refused before anything changes: forgetting the target's own entry would leave it allowed through `outer`.
+    if let Some(outer) = allowed.outer(&path) {
+        return Err(format!(
             "{name} is allowed through {}. Remove access to that location instead.",
             outer.display()
-        )),
-        None => Ok(()),
+        ));
     }
+    allowed.remove(&path);
+    Ok(())
 }
 /// Removes access to a target (Lite). Returns the allowed ids afterwards.
 #[tauri::command]
@@ -553,13 +566,7 @@ async fn allow_access(app: tauri::AppHandle, target_id: String) -> Result<Vec<St
     // The dialog, canonicalize and the bookmark calls can hang on an unresponsive mount, like the picker itself.
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let path = state
-            .targets
-            .lock()
-            .unwrap()
-            .get(&target_id)
-            .map(|(_, path)| path.clone())
-            .ok_or("Choose a registered folder or volume first.")?;
+        let (_, path) = registered_target(&state, &target_id)?;
         // The dialog opens at the place being allowed (`/` for the startup disk).
         if let Some(file) = app
             .dialog()
@@ -978,13 +985,8 @@ fn open_scan_target(state: &AppState, target_id: String) -> Result<OpenedTarget,
     // Refuse before the target is touched (opening a protected folder can prompt). Checked again before
     // registration, under the lock that registration holds.
     state.access_setup.lock().unwrap().require_scan_allowed()?;
-    let (resolved_id, root, disk) = {
-        let targets = state.targets.lock().unwrap();
-        let (target, root) = targets
-            .get(&target_id)
-            .ok_or("Choose a registered folder or volume first.")?;
-        (target_id, root.clone(), target.volume)
-    };
+    let (target, root) = registered_target(state, &target_id)?;
+    let (resolved_id, disk) = (target_id, target.volume);
     // Before the disk is touched: a location the person has not allowed is not ours to read.
     require_allowed_location(state, &root)?;
     // Cloned out so no lock is held while the disk is read: on an unresponsive mount validate_target and

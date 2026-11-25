@@ -44,6 +44,17 @@
         : slot.summary?.state === "failed"
           ? "Scan failed"
           : "Scanned";
+  // The row's tag, and the words a screen reader gets: a place that must be allowed first says so, unless a scan is
+  // running on it.
+  function rowTag(slot: ScanSlot | undefined, place: (typeof app.targets)[number]) {
+    const scan = slot ? slotTag(slot) : "";
+    if ((slot && slotScanning(slot)) || !app.needsAccess(place))
+      return { tag: scan, note: scan };
+    return {
+      tag: "Needs access",
+      note: scan ? `${scan}, needs access` : "Needs access",
+    };
+  }
   // Fraction scanned, known only for a whole volume (used space is the total); null means unknown.
   function scanProgress(slot: ScanSlot, disk?: (typeof app.targets)[number]) {
     if (!slot.summary || slot.summary.state !== "running") return undefined;
@@ -101,10 +112,7 @@
         : `${compactBytes(disk.freeBytes ?? 0)} free of ${compactBytes(disk.totalBytes ?? 0)}`}
     {@const slot = app.scanSlots[disk.path]}
     {@const scanned = !!slot}
-    {@const needsAccess =
-      (!slot || !slotScanning(slot)) && app.needsAccess(disk)}
-    {@const tag = !needsAccess ? (slot ? slotTag(slot) : "") : "Needs access"}
-    {@const tagNote = slot && needsAccess ? `${slotTag(slot)}, needs access` : tag}
+    {@const { tag, note: tagNote } = rowTag(slot, disk)}
     {@const progress = slot ? scanProgress(slot, disk) : undefined}
     {@const active =
       (welcomeShown && app.target?.path === disk.path) ||
@@ -146,10 +154,7 @@
     </button>
   {/each}
   {#if folderSlot}
-    {@const needsAccess =
-      !slotScanning(folderSlot) && app.needsAccess(folderSlot.target)}
-    {@const tag = needsAccess ? "Needs access" : slotTag(folderSlot)}
-    {@const tagNote = needsAccess ? `${slotTag(folderSlot)}, needs access` : tag}
+    {@const { tag, note: tagNote } = rowTag(folderSlot, folderSlot.target)}
     {@const progress = scanProgress(folderSlot)}
     {@const active =
       shownSlot === FOLDER_SLOT ||
