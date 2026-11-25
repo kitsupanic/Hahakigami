@@ -1297,6 +1297,69 @@ fn the_full_edition_scans_anywhere_without_a_store() {
     pick_folder(&state, root).unwrap();
     assert!(state.allowed_locations.lock().unwrap().is_none());
 }
+/// A folder registered as a disk, as discovery lists it.
+fn listed_disk(state: &AppState, path: &Path) -> platform::Target {
+    let mut target = platform::target(path, "disk".into());
+    target.volume = true;
+    register(state, target, path.to_path_buf()).unwrap()
+}
+#[test]
+fn a_disk_is_allowed_once_its_own_folder_is_picked_and_not_before() {
+    let store = tempfile::tempdir().unwrap();
+    let file = store.path().join("allowed-locations.json");
+    let state = lite_state(&file);
+    let (_a_dir, a_path) = disk_root();
+    let (_b_dir, b_path) = disk_root();
+    let a = listed_disk(&state, &a_path);
+    let b = listed_disk(&state, &b_path);
+    assert_eq!(allowed_ids(&state), Vec::<String>::new());
+    allow_picked(&state, &a.id, a_path.clone()).unwrap();
+    let allowed = allowed_ids(&state);
+    assert!(
+        allowed.contains(&a.id) && !allowed.contains(&b.id),
+        "{allowed:?}"
+    );
+    assert_eq!(scan_of(&state, &a_path).unwrap().entries, 2);
+    assert!(scan_of(&state, &b_path)
+        .err()
+        .unwrap()
+        .starts_with(allowed_locations::NEEDS_ACCESS));
+    // Still allowed in a new process, as after a relaunch.
+    let relaunched = lite_state(&file);
+    let again = listed_disk(&relaunched, &a_path);
+    assert!(allowed_ids(&relaunched).contains(&again.id));
+}
+#[test]
+fn picking_another_folder_than_the_disk_allows_nothing() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, disk_path) = disk_root();
+    let inner = disk_path.join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    let disk = listed_disk(&state, &disk_path);
+    let refused = allow_picked(&state, &disk.id, inner).err().unwrap();
+    assert!(refused.contains("disk"), "{refused}");
+    assert_eq!(allowed_ids(&state), Vec::<String>::new());
+    // Nothing was remembered: a scan of the disk is still refused.
+    assert!(scan_of(&state, &disk_path)
+        .err()
+        .unwrap()
+        .starts_with(allowed_locations::NEEDS_ACCESS));
+}
+#[test]
+fn allowing_access_to_an_unregistered_target_is_refused() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, path) = disk_root();
+    assert!(allow_picked(&state, "nope", path).is_err());
+}
+#[test]
+fn the_full_edition_lists_every_registered_target_as_allowed() {
+    let state = AppState::default();
+    let (_dir, path) = disk_root();
+    let disk = listed_disk(&state, &path);
+    assert_eq!(allowed_ids(&state), vec![disk.id]);
+}
 #[test]
 fn scan_lifecycle_rejects_unregistered_targets_and_invalidates_old_results() {
     tauri::async_runtime::block_on(async {

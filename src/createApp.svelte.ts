@@ -77,6 +77,13 @@ export default function createApp() {
   let edition = $state.raw<Edition | null>(isTauri() ? null : unknownEdition);
   const productName = () => (edition ?? unknownEdition).productName;
   let choosingFolder = $state(false);
+  // The target whose Open dialog is up for "Allow access…".
+  let allowingId = $state.raw<string | null>(null);
+  // The ids of the listed targets the app may read, as the backend last said. Null until it has said, and always in
+  // the Full edition, which reads anywhere.
+  let allowedIds = $state.raw<ReadonlySet<string> | null>(null);
+  // Starts of the running Scan all that the backend refused for lack of access: skipped, like the disks never started.
+  let batchRefused = 0;
   let folderRequest = 0;
   let disposed = false;
   // The live scans. beginStart is the app's side of every start.
@@ -597,18 +604,37 @@ export default function createApp() {
       accessBusy = false;
     }
   }
+  // Another picker, a dialog or a session operation holds the window: no Open dialog now.
+  const pickerBlocked = () =>
+    !isTauri() ||
+    disposed ||
+    targetsLoading ||
+    sessionBlocked ||
+    quickLook.isPending() ||
+    accessOpen ||
+    !!trash ||
+    clearQueueOpen;
+  // Whether a Scan target must still be allowed before it can be scanned (Lite edition only).
+  function needsAccess(place: Target) {
+    return (
+      !!edition?.scanTargetsRequireAllowedLocation &&
+      allowedIds !== null &&
+      !allowedIds.has(listedPlace(place).id)
+    );
+  }
+  // Asks which listed targets are allowed. A disk that came back is allowed again by the backend's lookup.
+  async function loadAllowed() {
+    if (!isTauri() || !edition?.scanTargetsRequireAllowedLocation) return;
+    try {
+      const ids = await invoke<string[] | null>("allowed_target_ids");
+      if (!disposed) allowedIds = new Set(ids ?? []);
+    } catch {
+      // Nothing is known to be allowed: the backend still refuses what it should.
+      if (!disposed) allowedIds = new Set();
+    }
+  }
   async function chooseFolder(): Promise<Target | null | void> {
-    if (
-      !isTauri() ||
-      disposed ||
-      targetsLoading ||
-      sessionBlocked ||
-      quickLook.isPending() ||
-      accessOpen ||
-      !!trash ||
-      clearQueueOpen
-    )
-      return;
+    if (pickerBlocked()) return;
     choosingFolder = true;
     const request = ++folderRequest;
     // Another scan may take the view while the dialog is open; the chosen folder still counts.
@@ -616,6 +642,10 @@ export default function createApp() {
     quickLook.dismiss();
     try {
       const chosen = await invoke<Target | null>("choose_folder");
+      if (!current()) return;
+      // A picked folder is an Allowed location now: the scan that follows must see it as such.
+      if (chosen && edition?.scanTargetsRequireAllowedLocation)
+        await loadAllowed();
       if (!current()) return;
       if (chosen) target = listPlace(chosen, true);
       return chosen;
@@ -628,6 +658,33 @@ export default function createApp() {
         });
     } finally {
       if (request === folderRequest) choosingFolder = false;
+    }
+  }
+  // Allow access…: the Open dialog opens at the place; picking it makes it an Allowed location. It does not scan:
+  // once allowed, the place scans with the normal action. Cancelling changes nothing.
+  async function allowAccess(place: Target) {
+    if (pickerBlocked()) return;
+    choosingFolder = true;
+    allowingId = place.id;
+    const request = ++folderRequest;
+    const current = () => !disposed && request === folderRequest;
+    quickLook.dismiss();
+    try {
+      const ids = await invoke<string[] | null>("allow_access", {
+        targetId: place.id,
+      });
+      if (current()) allowedIds = new Set(ids ?? []);
+    } catch (e) {
+      if (current())
+        fail(e, {
+          title: "Couldn’t allow access",
+          reason: `${place.name} was not allowed. Choose Allow access… and pick it in the Open dialog to try again.`,
+        });
+    } finally {
+      if (request === folderRequest) {
+        choosingFolder = false;
+        allowingId = null;
+      }
     }
   }
   // The sidebar's Scan folder: pick a folder, then scan it in view (the queue page would hide it).
@@ -649,7 +706,9 @@ export default function createApp() {
     if (isTauri())
       invoke<Edition>("get_edition")
         .then((answers) => {
-          if (!cancelled) edition = answers ?? unknownEdition;
+          if (cancelled) return;
+          edition = answers ?? unknownEdition;
+          void loadAllowed();
         })
         .catch(() => {
           if (!cancelled) edition = unknownEdition;
@@ -661,6 +720,7 @@ export default function createApp() {
           targets = t;
           // The startup disk (first volume) is selected at launch.
           target = t.find((item) => item.volume) ?? t[0] ?? null;
+          void loadAllowed();
         })
         .catch((e) => {
           if (!cancelled) fail(e);
@@ -695,6 +755,8 @@ export default function createApp() {
         const found = (await invoke<Target[]>("discover_targets")).filter(
           (item) => item.volume,
         );
+        // Before the new list shows, so a disk that came back never flashes "Allow access…".
+        await loadAllowed();
         if (cancelled || busy) return;
         // A volume still in the mount table but missing from `found` failed to register this time; it is not ejected.
         const present = new Set([
@@ -789,17 +851,20 @@ export default function createApp() {
         setError: (message) => setError(message),
       })
     : null;
-  function start(t = target) {
-    if (!t) return Promise.resolve();
-    // A saved scan keeps the target it started with, whose id the backend may have replaced since: scan the place
-    // as it is listed now.
-    const listed = targets.find(
+  // A saved scan keeps the target it started with, whose id the backend may have replaced since: the place as it is
+  // listed now.
+  const listedPlace = (t: Target) =>
+    targets.find(
       (x) =>
         x.path === t.path &&
         !!x.volume === !!t.volume &&
         !!x.home === !!t.home,
-    );
-    return scans.start(listed ?? t);
+    ) ?? t;
+  function start(t = target) {
+    if (!t) return Promise.resolve();
+    const place = listedPlace(t);
+    // Not allowed yet: asking for access is the start.
+    return needsAccess(place) ? allowAccess(place) : scans.start(place);
   }
   // The app's side of a start, for the scan slots: its gates, then what the view does as the scan
   // reports. Only a start that no newer start or navigation overtook (`g`) takes the view.
@@ -880,13 +945,19 @@ export default function createApp() {
       failed(e) {
         const accessOff = String(e).includes("FULL_DISK_ACCESS_OFF");
         // Lite refuses a target outside every Allowed location. The sentence after the code is the message.
-        const needsAccess = String(e).startsWith(`${NEEDS_ACCESS}: `);
-        const message = needsAccess
+        const needsAccessError = String(e).startsWith(`${NEEDS_ACCESS}: `);
+        const message = needsAccessError
           ? String(e).slice(NEEDS_ACCESS.length + 2)
           : String(e);
         // Scan all reports its failures together, but a disk swapped at its path still needs rediscovery.
         if (t.volume && String(e).includes("The chosen folder changed"))
           rediscover = true;
+        // The list said allowed and the backend disagrees: the disk is skipped, and the list is read again.
+        if (needsAccessError && how.batch) {
+          ++batchRefused;
+          void loadAllowed();
+          return true;
+        }
         if (how.batch && !accessOff) return false;
         // The backend probed again and found access off: keep that state even if the view moved on.
         if (accessOff)
@@ -906,10 +977,12 @@ export default function createApp() {
             blockScan(blocking);
             void loadAccess();
           }
-        } else if (needsAccess) {
+        } else if (needsAccessError) {
+          // The view said allowed and the backend disagrees: show what it knows now.
+          void loadAllowed();
           fail(message, {
             title: "Allow access first",
-            reason: `${t.name} hasn’t been allowed yet. Use Scan folder to choose it, then scan again.`,
+            reason: `${t.name} hasn’t been allowed yet. Choose Allow access… for it, then scan again.`,
           });
         } else {
           fail(e);
@@ -934,13 +1007,22 @@ export default function createApp() {
       key:
         (exploring ? displayedSlot : null) ?? (target ? slotKey(target) : null),
     };
-    const failures = await scans.scanAll(() => disks, {
+    // A disk that is not allowed is skipped, never asked about: Scan all opens no dialog.
+    const scannable = () => disks.filter((disk) => !needsAccess(disk));
+    const notScanned = disks.length - scannable().length;
+    batchRefused = 0;
+    const failures = await scans.scanAll(scannable, {
       takeView: (key) =>
         key === pressed.key &&
         target?.id === pressed.id &&
         generation.current === pressed.generation &&
         homeOpen === pressed.home,
     });
+    const skipped = notScanned + batchRefused;
+    if (skipped)
+      showToast(
+        `${skipped} ${skipped === 1 ? "disk" : "disks"} skipped: allow access to ${skipped === 1 ? "it" : "them"} first.`,
+      );
     if (failures.length)
       setError(failures.join("\n"), {
         title: "Couldn’t scan every disk",
@@ -1719,6 +1801,14 @@ export default function createApp() {
     rescan,
     rescanDisplayed,
     scanAllDisks,
+    needsAccess,
+    allowAccess,
+    // The place the header scan button or the welcome page would scan, if it must be allowed first.
+    get scanNeedsAccess() {
+      const place = displayedTargetSelected && !homeOpen ? liveTarget : target;
+      return !!place && needsAccess(place);
+    },
+    allowingAccess: (place: Target) => allowingId === place.id,
     get batchProgress() {
       return scans.batchProgress;
     },

@@ -305,7 +305,9 @@
   const resultLocation = $derived(app.resultLocation);
   const displayedTargetSelected = $derived(app.displayedTargetSelected);
   const scanActionLabel = $derived(
-    displayedTargetSelected
+    app.scanNeedsAccess
+      ? "Allow access…"
+      : displayedTargetSelected
       ? `Rescan ${locationName(resultLocation?.name, resultLocation?.path)}`
       : `Scan ${locationName(target?.name, target?.path)}`,
   );
@@ -1289,7 +1291,11 @@
                 <span>{cancelling ? "Stopping…" : "Stop"}</span>
               {:else}
                 <Icon name="refresh" size={16} /><span
-                  >{displayedTargetSelected ? "Rescan" : "Scan"}</span
+                  >{app.scanNeedsAccess
+                    ? "Allow access…"
+                    : displayedTargetSelected
+                      ? "Rescan"
+                      : "Scan"}</span
                 >
               {/if}
             </button>
@@ -1386,7 +1392,9 @@
                     aria-describedby="welcome-note"
                     aria-busy={!!target && app.scanStarting(target)}
                     title={target
-                      ? `Scan ${locationName(target.name, target.path)}`
+                      ? app.needsAccess(target)
+                        ? `Allow access to ${locationName(target.name, target.path)}`
+                        : `Scan ${locationName(target.name, target.path)}`
                       : "Scan selected location"}
                     disabled={!app.can.rescan}
                     onclick={() => void app.start(target)}
@@ -1395,9 +1403,13 @@
                         ? "Starting scan…"
                         : app.targetsLoading
                           ? "Loading locations…"
-                          : target
-                            ? `Scan ${locationName(target.name, target.path)}`
-                            : "Scan location"}</span
+                          : target && app.allowingAccess(target)
+                            ? "Allowing access…"
+                            : target && app.needsAccess(target)
+                              ? "Allow access…"
+                              : target
+                                ? `Scan ${locationName(target.name, target.path)}`
+                                : "Scan location"}</span
                     ></button
                   >
                   <button

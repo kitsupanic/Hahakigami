@@ -101,7 +101,8 @@
         : `${compactBytes(disk.freeBytes ?? 0)} free of ${compactBytes(disk.totalBytes ?? 0)}`}
     {@const slot = app.scanSlots[disk.path]}
     {@const scanned = !!slot}
-    {@const tag = slot ? slotTag(slot) : ""}
+    {@const needsAccess = !slot && app.needsAccess(disk)}
+    {@const tag = slot ? slotTag(slot) : needsAccess ? "Needs access" : ""}
     {@const progress = slot ? scanProgress(slot, disk) : undefined}
     {@const active =
       (welcomeShown && app.target?.path === disk.path) ||
@@ -111,15 +112,15 @@
       class:active
       class:scanned
       aria-current={active ? "page" : undefined}
-      aria-label={`${disk.name}, ${size}${scanned ? `, ${tag}` : ""}`}
-      title={`${disk.path}${scanned ? `\n${tag}` : ""}`}
+      aria-label={`${disk.name}, ${size}${tag ? `, ${tag}` : ""}`}
+      title={`${disk.path}${tag ? `\n${tag}` : ""}`}
       disabled={app.sessionBlocked}
       onclick={() => app.openDisk(disk)}
     >
       <Icon name="disk" size={22} /><span
         class="nav-copy"
         ><span class="disk-name"
-          ><strong>{disk.name}</strong>{#if scanned}<em class:done={tag === "Scanned"}>{tag}</em>{/if}</span
+          ><strong>{disk.name}</strong>{#if tag}<em class:done={tag === "Scanned"}>{tag}</em>{/if}</span
         ><small>{size}</small>{#if progress !== undefined}<span
             class="scan-track"
             class:indeterminate={progress === null}
