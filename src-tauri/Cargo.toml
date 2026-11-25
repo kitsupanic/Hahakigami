@@ -10,11 +10,24 @@ name = "hahakigami_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+# Cargo features only add, so the Full edition is the default and the Lite edition builds with
+# `--no-default-features --features lite`. Automation scans (the CLI and the MCP server) are off in Lite.
+default = ["automation"]
+automation = ["dep:clap", "dep:rmcp", "dep:tokio"]
+lite = []
 performance-benchmark = ["tauri/test"]
 
 [[example]]
 name = "native_performance"
 required-features = ["performance-benchmark"]
+
+[[test]]
+name = "automation_cli"
+required-features = ["automation"]
+
+[[test]]
+name = "automation_mcp"
+required-features = ["automation"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -29,9 +42,9 @@ zstd = "=0.14.2"
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
 tauri-plugin-clipboard-manager = "=2.4.1"
-clap = { version = "=4.6.7", features = ["derive"] }
-rmcp = { version = "=3.7.0", default-features = false, features = ["server", "macros", "transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+clap = { version = "=4.6.7", features = ["derive"], optional = true }
+rmcp = { version = "=3.7.0", default-features = false, features = ["server", "macros", "transport-io"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"], optional = true }
 # Already locked through tauri; matches names across NFC/NFD spellings.
 icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 

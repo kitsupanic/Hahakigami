@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, createTestRoot, type Root } from "./testUtils";
+import { act, createTestRoot, type Root, fullEdition } from "./testUtils";
 import App from "./App.svelte";
 import type createApp from "./createApp.svelte";
 import type { NodeView, ScanSummary } from "./types";
@@ -137,6 +137,8 @@ beforeEach(async () => {
   mock.invoke.mockReset();
   mock.invoke.mockImplementation(async (command, args = {}) => {
     switch (command) {
+      case "get_edition":
+        return fullEdition;
       case "get_explorer_preferences":
         return { sort: "sizeDescending", warning: null };
       case "full_disk_access_status":

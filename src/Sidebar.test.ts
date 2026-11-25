@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createTestRoot, type Root } from "./testUtils";
+import { act, createTestRoot, fullEdition, type Root } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Sidebar from "./Sidebar.svelte";
 import type createApp from "./createApp.svelte";
@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 let container: HTMLDivElement, root: Root;
 function app(overrides = {}) {
   const fake = {
+    productName: fullEdition.productName,
     accessOpen: false,
     trash: null,
     clearQueueOpen: false,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-edition"
+description = "Enables the get_edition command without any pre-configured scope."
+commands.allow = ["get_edition"]
+
+[[permission]]
+identifier = "deny-get-edition"
+description = "Denies the get_edition command without any pre-configured scope."
+commands.deny = ["get_edition"]

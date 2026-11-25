@@ -4,6 +4,19 @@ export interface FullDiskAccess {
   scanAnyway: boolean;
   appPath: string;
 }
+/** Where the editions differ, answered by the app. The UI renders by these, never by edition name. */
+export interface Edition {
+  productName: string;
+  automationScans: boolean;
+  scanTargetsRequireAllowedLocation: boolean;
+}
+/** Used outside the desktop app (browser preview) and if the answers cannot be read: the most
+ * restrictive answers, and no name, so no edition shows another's. */
+export const unknownEdition: Edition = {
+  productName: "",
+  automationScans: false,
+  scanTargetsRequireAllowedLocation: true,
+};
 /** Rows the file list asks for at a time. */
 export const PAGE_SIZE = 150;
 type ScanQos = "automatic" | "userInitiated" | "background";

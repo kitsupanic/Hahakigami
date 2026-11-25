@@ -49,3 +49,9 @@ export function createTestRoot(container: HTMLElement): Root {
 export const performanceMapRecord: {
   current: { order: string[]; lastPaint: (() => void) | null } | null;
 } = { current: null };
+/** What the app answers to `get_edition` in the Full edition; the default in every App test. */
+export const fullEdition = {
+  productName: "Hahakigami",
+  automationScans: true,
+  scanTargetsRequireAllowedLocation: false,
+};

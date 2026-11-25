@@ -8,8 +8,11 @@
   import { latestOnly } from "./latestQuery";
   import { countLabel } from "./uiFormat";
   // The Coverage tab of ScanDetails. Details load only while the tab is shown.
-  let { summary, active = false }: { summary: ScanSummary; active?: boolean } =
-    $props();
+  let {
+    summary,
+    active = false,
+    productName = "",
+  }: { summary: ScanSummary; active?: boolean; productName?: string } = $props();
   let scanIdentity = $derived(summary.scanId);
   let restricted = $derived(issueSplit(summary).restricted);
   let other = $derived(issueSplit(summary).other);
@@ -101,7 +104,7 @@
       await writeText(
         JSON.stringify(
           {
-            app: "Hahakigami",
+            app: productName,
             version: 1,
             scanId: snapshot.scanId,
             rootNodeId: first.nodeId,

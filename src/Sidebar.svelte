@@ -74,7 +74,7 @@
   {/if}
   <div class="brand">
     <span class="logo"><img src={appIcon} alt="" width="24" height="24" /></span>
-    <div>Hahakigami</div>
+    <div>{app.productName}</div>
   </div>
   <div class="side-label disks-label">
     <span>Disks</span>

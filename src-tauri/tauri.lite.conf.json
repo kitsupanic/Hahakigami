@@ -1,0 +1,25 @@
+{
+  "productName": "Hahakigami Lite",
+  "identifier": "app.hahakigami.lite",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hahakigami Lite",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 18, "y": 24 },
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ]
+  },
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "entitlements": "entitlements/lite.entitlements"
+    }
+  }
+}
