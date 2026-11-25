@@ -1,5 +1,5 @@
 import unittest
-from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command, verify_entitlements, check_lite_options, lite_overlay, lite_build_arguments, LITE_ENTITLEMENTS, LITE_CONFIG, LITE_REQUIRED_ENTITLEMENTS
+from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command, verify_entitlements, check_lite_options, lite_overlay, lite_build_arguments, LITE_ENTITLEMENTS, LITE_CONFIG, LITE_REQUIRED_ENTITLEMENTS, APPLE_DISTRIBUTION, INSTALLER, check_store_options, appstore_environment, with_provisioning_profile, installer_command, verify_package_signature, verify_provisioning_profile_embedded, check_provisioning_profile, PROVISIONING_PROFILE_NAME
 
 class LocalSigningTests(unittest.TestCase):
     def test_existing_development_identity_selection_fails_closed(self):
@@ -90,11 +90,12 @@ LITE_PLIST = '<?xml version="1.0"?><plist version="1.0"><dict>' + ''.join(f'<key
 
 
 class LiteBuildTests(unittest.TestCase):
-    def test_lite_cannot_be_combined_with_adhoc_benchmark_or_release_yet(self):
+    def test_lite_cannot_be_combined_with_adhoc_or_benchmark(self):
         from pathlib import Path
         check_lite_options(lite=True, release=False, adhoc=False, benchmark_output=None)
+        check_lite_options(lite=True, release=True, adhoc=False, benchmark_output=None)
         check_lite_options(lite=False, release=True, adhoc=True, benchmark_output=None)
-        for options in [{'adhoc': True}, {'benchmark_output': Path('/tmp/benchmark')}, {'release': True}]:
+        for options in [{'adhoc': True}, {'benchmark_output': Path('/tmp/benchmark')}, {'release': True, 'adhoc': True}]:
             with self.assertRaises(ValueError): check_lite_options(**{'lite': True, 'release': False, 'adhoc': False, 'benchmark_output': None, **options})
 
     def test_lite_bundle_must_carry_the_sandbox_and_its_other_entitlements(self):
@@ -129,3 +130,107 @@ class LiteBuildTests(unittest.TestCase):
         self.assertEqual(configs[0], str(LITE_CONFIG))
         self.assertIn('signingIdentity', configs[1])
         self.assertLess(arguments.index('--config'), arguments.index('--'))
+
+
+def listing(*entries):
+    return ''.join(f'  {number}) {sha * 40} "{name}"\n' for number, (sha, name) in enumerate(entries, 1))
+
+
+class AppStoreBuildTests(unittest.TestCase):
+    def test_each_signing_kind_selects_only_its_own_certificate(self):
+        output = listing(('A', 'Apple Development: Fixture (TEAM)'), ('B', 'Apple Distribution: Fixture (TEAM)'),
+                         ('C', 'Mac Installer Distribution: Fixture (TEAM)'), ('D', 'Developer ID Application: Fixture (TEAM)'),
+                         ('E', '3rd Party Mac Developer Installer: Fixture (TEAM)'))
+        self.assertEqual(development_identities(output, APPLE_DISTRIBUTION), ['B' * 40])
+        self.assertEqual(development_identities(output, INSTALLER), ['C' * 40])
+        self.assertEqual(development_identities(output), ['A' * 40])
+
+    def test_a_missing_identity_fails_naming_the_kind_and_never_falls_back(self):
+        development, distribution, installer = 'A' * 40, 'B' * 40, 'C' * 40
+        output = listing(('A', 'Apple Development: Fixture (TEAM)'), ('D', 'Developer ID Application: Fixture (TEAM)'))
+        for kind, option in [(APPLE_DISTRIBUTION, '--identity'), (INSTALLER, '--installer-identity')]:
+            with self.assertRaisesRegex(ValueError, f'{kind}.*{option}'):
+                select_identity(development_identities(output, kind), kind=kind, option=option)
+            # Another kind's SHA-1 is not accepted, even when asked for by name.
+            with self.assertRaises(ValueError): select_identity(development_identities(output, kind), development, kind=kind, option=option)
+        self.assertEqual(select_identity([distribution], kind=APPLE_DISTRIBUTION), distribution)
+        self.assertEqual(select_identity([distribution, installer], installer.lower(), kind=INSTALLER, option='--installer-identity'), installer)
+        with self.assertRaises(ValueError): select_identity([distribution, installer], kind=APPLE_DISTRIBUTION, option='--identity')
+        with self.assertRaises(ValueError): select_identity([distribution], '-', kind=APPLE_DISTRIBUTION)
+
+    def test_only_the_store_release_takes_an_installer_identity_or_a_provisioning_profile(self):
+        from pathlib import Path
+        profile = Path('/tmp/fixture.provisionprofile')
+        check_store_options(lite=True, release=True, installer_identity='C' * 40, provisioning_profile=profile)
+        check_store_options(lite=False, release=True, installer_identity=None, provisioning_profile=None)
+        check_store_options(lite=True, release=False, installer_identity=None, provisioning_profile=None)
+        for options in [{'lite': False, 'installer_identity': 'C' * 40}, {'lite': False, 'provisioning_profile': profile},
+                        {'release': False, 'installer_identity': 'C' * 40}, {'release': False, 'provisioning_profile': profile},
+                        {'provisioning_profile': None}]:
+            with self.assertRaises(ValueError): check_store_options(**{'lite': True, 'release': True, 'installer_identity': None, 'provisioning_profile': profile, **options})
+
+    def test_the_store_environment_refuses_app_store_connect_and_notarization_credentials(self):
+        base = {'PATH': '/bin', 'APPLE_CERTIFICATE': 'x', 'APPLE_CERTIFICATE_PASSWORD': 'x', 'APPLE_TEAM_ID': 'TEAM'}
+        self.assertEqual(appstore_environment(base, 'B' * 40), {'PATH': '/bin', 'APPLE_SIGNING_IDENTITY': 'B' * 40})
+        for credentials in [{'APPLE_API_KEY': 'k'}, {'APPLE_API_ISSUER': 'i'}, {'APPLE_API_KEY_PATH': '/k.p8'}, {'APPLE_ID': 'a'},
+                            {'APPLE_PASSWORD': 'p'}, {'APP_STORE_CONNECT_API_KEY': 'k'}, {'API_PRIVATE_KEYS_DIR': '/keys'},
+                            {'FASTLANE_PASSWORD': 'p'}, {'FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD': 'p'}]:
+            with self.assertRaises(ValueError) as caught: appstore_environment({**base, **credentials}, 'B' * 40)
+            self.assertIn(next(iter(credentials)), str(caught.exception))
+            self.assertNotIn('/keys', str(caught.exception))
+        # An empty variable carries no credential.
+        appstore_environment({**base, 'APPLE_ID': ''}, 'B' * 40)
+
+    def test_the_provisioning_profile_is_embedded_by_path_and_the_overrides_are_not_mutated(self):
+        from pathlib import Path
+        overrides = {'bundle': {'macOS': {'signingIdentity': 'B' * 40}}}
+        result = with_provisioning_profile(overrides, Path('/profiles/Lite Store.provisionprofile'))
+        self.assertEqual(result['bundle']['macOS'], {'signingIdentity': 'B' * 40, 'files': {PROVISIONING_PROFILE_NAME: '/profiles/Lite Store.provisionprofile'}})
+        self.assertEqual(PROVISIONING_PROFILE_NAME, 'embedded.provisionprofile')
+        self.assertNotIn('files', overrides['bundle']['macOS'])
+
+    def test_the_provisioning_profile_must_be_an_existing_provisionprofile_file(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory).resolve() / 'Lite.provisionprofile'
+            with self.assertRaises(ValueError): check_provisioning_profile(profile)
+            profile.write_bytes(b'profile')
+            self.assertEqual(check_provisioning_profile(profile), profile)
+            other = Path(directory) / 'Lite.mobileprovision'; other.write_bytes(b'profile')
+            with self.assertRaises(ValueError): check_provisioning_profile(other)
+            with self.assertRaises(ValueError): check_provisioning_profile(Path(directory))
+
+    def test_the_built_app_must_contain_the_embedded_profile(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / 'Hahakigami Lite.app'
+            (bundle / 'Contents').mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, 'provisioning profile'): verify_provisioning_profile_embedded(bundle)
+            (bundle / 'Contents' / PROVISIONING_PROFILE_NAME).write_bytes(b'')
+            with self.assertRaisesRegex(ValueError, 'provisioning profile'): verify_provisioning_profile_embedded(bundle)
+            (bundle / 'Contents' / PROVISIONING_PROFILE_NAME).write_bytes(b'profile')
+            verify_provisioning_profile_embedded(bundle)
+
+    def test_the_installer_is_built_from_the_app_and_signed_with_the_selected_identity(self):
+        from pathlib import Path
+        command = installer_command(Path('/b/Hahakigami Lite.app'), Path('/b/pkg/Hahakigami Lite.pkg'), 'C' * 40)
+        self.assertEqual(command, ['/usr/bin/productbuild', '--component', '/b/Hahakigami Lite.app', '/Applications',
+                                   '--sign', 'C' * 40, '/b/pkg/Hahakigami Lite.pkg'])
+
+    def test_the_package_must_be_signed_by_a_mac_installer_distribution_certificate(self):
+        signed = ('Package "Hahakigami Lite.pkg":\n   Status: signed by a developer certificate issued by Apple for distribution\n'
+                  '   Certificate Chain:\n    1. Mac Installer Distribution: Fixture (TEAM)\n       SHA256 Fingerprint: AA BB\n'
+                  '    2. Apple Worldwide Developer Relations Certification Authority\n')
+        verify_package_signature(signed)
+        for changed in [signed.replace('Mac Installer Distribution', 'Developer ID Installer'),
+                        signed.replace('1. Mac Installer Distribution', '2. Mac Installer Distribution').replace('2. Apple Worldwide', '1. Apple Worldwide'),
+                        'Package "x.pkg":\n   Status: no signature\n', '']:
+            with self.assertRaises(ValueError): verify_package_signature(changed)
+
+    def test_an_apple_distribution_app_is_checked_without_the_hardened_runtime_or_a_developer_id(self):
+        metadata = 'Identifier=app.hahakigami.lite\nAuthority=Apple Distribution: Fixture (TEAM)\nTeamIdentifier=TEAM\nSealed Resources version=2\ndesignated => identifier "app.hahakigami.lite" and anchor apple generic and certificate leaf[subject.CN] = "Apple Distribution: Fixture (TEAM)" and certificate 1[field.1.2.840.113635.100.6.2.1]\n'
+        verify_metadata(metadata, 'app.hahakigami.lite', False, APPLE_DISTRIBUTION)
+        for changed in [metadata.replace('Authority=Apple Distribution', 'Authority=Apple Development'), metadata.replace('app.hahakigami.lite', 'app.hahakigami.desktop')]:
+            with self.assertRaises(ValueError): verify_metadata(changed, 'app.hahakigami.lite', False, APPLE_DISTRIBUTION)
