@@ -5717,3 +5717,35 @@ fn a_firmlink_starts_its_own_volume_region_within_one_device() {
         Some(safety::Volume::Uuid("0".into()))
     );
 }
+
+/// Every command the frontend can invoke must also be in build.rs's app manifest and allowed in the main window's
+/// capability, or Tauri refuses it at run time ("not allowed by ACL"). Frontend tests mock `invoke`, so only this
+/// catches a command that was registered in the handler but never permitted.
+#[test]
+fn every_invoked_command_is_permitted() {
+    let lib = include_str!("lib.rs");
+    let start = lib
+        .find("generate_handler![")
+        .expect("lib.rs registers its commands");
+    let handler = &lib[start + "generate_handler![".len()..];
+    let handler = &handler[..handler.find(']').unwrap()];
+    let commands: Vec<&str> = handler
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    assert!(commands.contains(&"allow_access"));
+    let manifest = include_str!("../build.rs");
+    let capability = include_str!("../capabilities/main.json");
+    for command in commands {
+        assert!(
+            manifest.contains(&format!("\"{command}\"")),
+            "{command} is missing from build.rs"
+        );
+        let permission = format!("\"allow-{}\"", command.replace('_', "-"));
+        assert!(
+            capability.contains(&permission),
+            "{permission} is missing from capabilities/main.json"
+        );
+    }
+}
