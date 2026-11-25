@@ -1,8 +1,5 @@
 use serde::Serialize;
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -395,18 +392,27 @@ fn capacity(path: &Path) -> (Option<u64>, Option<u64>) {
     (None, None)
 }
 
+/// The System Settings link for Privacy & Security → Full Disk Access.
+const FULL_DISK_ACCESS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+/// Selects `path` in a Finder window. Calls NSWorkspace directly: the App Sandbox blocks shelling out.
 pub fn reveal(path: &Path) -> Result<(), String> {
+    // NSWorkspace says nothing about a missing item, so check first, as `open -R` once did.
+    std::fs::symlink_metadata(path).map_err(|_| "macOS could not open the requested location.")?;
     #[cfg(target_os = "macos")]
     {
-        run_open([
-            std::ffi::OsStr::new("-R"),
-            std::ffi::OsStr::new("--"),
-            path.as_os_str(),
-        ])
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::{NSArray, NSURL};
+        objc2::rc::autoreleasepool(|_| {
+            let url = NSURL::from_path(path, path.is_dir(), None).ok_or("Invalid native path")?;
+            NSWorkspace::sharedWorkspace()
+                .activateFileViewerSelectingURLs(&NSArray::from_slice(&[&*url]));
+            Ok(())
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = path;
         Err("Finder integration is available on macOS.".into())
     }
 }
@@ -414,26 +420,21 @@ pub fn reveal(path: &Path) -> Result<(), String> {
 pub fn full_disk_access() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        run_open([std::ffi::OsStr::new(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-        )])
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::{NSString, NSURL};
+        objc2::rc::autoreleasepool(|_| {
+            let url = NSURL::URLWithString(&NSString::from_str(FULL_DISK_ACCESS_URL))
+                .ok_or("Invalid settings link")?;
+            if NSWorkspace::sharedWorkspace().openURL(&url) {
+                Ok(())
+            } else {
+                Err("macOS could not open the requested location.".into())
+            }
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
         Err("Full Disk Access is a macOS setting.".into())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn run_open<const N: usize>(args: [&std::ffi::OsStr; N]) -> Result<(), String> {
-    let status = Command::new("/usr/bin/open")
-        .args(args)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("macOS could not open the requested location.".into())
     }
 }
 
@@ -463,6 +464,26 @@ pub fn trash(path: &Path, is_directory: bool) -> Result<Option<PathBuf>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn revealing_a_missing_item_fails_without_asking_finder() {
+        let missing = std::env::temp_dir().join("hahakigami-no-such-item-89");
+        assert_eq!(
+            reveal(&missing).unwrap_err(),
+            "macOS could not open the requested location."
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_settings_link_is_a_valid_url_for_the_full_disk_access_pane() {
+        let url = objc2_foundation::NSURL::URLWithString(&objc2_foundation::NSString::from_str(
+            FULL_DISK_ACCESS_URL,
+        ))
+        .expect("NSURL accepts the settings link");
+        assert_eq!(
+            url.absoluteString().unwrap().to_string(),
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        );
+    }
     #[test]
     fn the_user_database_names_an_absolute_home_folder() {
         let home = passwd_home().expect("the passwd entry has a home folder");
