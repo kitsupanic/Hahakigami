@@ -1854,7 +1854,7 @@ async fn commit_cleanup_queue<R: tauri::Runtime>(
 fn get_edition() -> edition::Edition {
     edition::CURRENT
 }
-// Off the main thread: `full_disk_access` waits for `/usr/bin/open`.
+// Off the main thread: opening System Settings can block.
 #[tauri::command]
 async fn open_full_disk_access() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(platform::full_disk_access)
