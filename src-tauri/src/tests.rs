@@ -1354,6 +1354,125 @@ fn allowing_access_to_an_unregistered_target_is_refused() {
     assert!(allow_picked(&state, "nope", path).is_err());
 }
 #[test]
+fn removing_access_forgets_the_disk_now_and_after_a_relaunch_and_leaves_the_others() {
+    let store = tempfile::tempdir().unwrap();
+    let file = store.path().join("allowed-locations.json");
+    let state = lite_state(&file);
+    let (_a_dir, a_path) = disk_root();
+    let (_b_dir, b_path) = disk_root();
+    let a = listed_disk(&state, &a_path);
+    let b = listed_disk(&state, &b_path);
+    allow_picked(&state, &a.id, a_path.clone()).unwrap();
+    allow_picked(&state, &b.id, b_path.clone()).unwrap();
+    remove_access_to(&state, &a.id).unwrap();
+    let allowed = allowed_ids(&state);
+    assert!(
+        !allowed.contains(&a.id) && allowed.contains(&b.id),
+        "{allowed:?}"
+    );
+    assert!(scan_of(&state, &a_path)
+        .err()
+        .unwrap()
+        .starts_with(allowed_locations::NEEDS_ACCESS));
+    assert_eq!(scan_of(&state, &b_path).unwrap().entries, 2);
+    let relaunched = lite_state(&file);
+    let (a_again, b_again) = (
+        listed_disk(&relaunched, &a_path),
+        listed_disk(&relaunched, &b_path),
+    );
+    let allowed = allowed_ids(&relaunched);
+    assert!(
+        !allowed.contains(&a_again.id) && allowed.contains(&b_again.id),
+        "{allowed:?}"
+    );
+    // It can be allowed again with one pick.
+    allow_picked(&relaunched, &a_again.id, a_path).unwrap();
+    assert!(allowed_ids(&relaunched).contains(&a_again.id));
+}
+#[test]
+fn removing_access_to_a_picked_folder_makes_the_next_scan_need_access() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, root) = disk_root();
+    let folder = pick_folder(&state, root.clone()).unwrap();
+    assert_eq!(scan_of(&state, &root).unwrap().entries, 2);
+    remove_access_to(&state, &folder.id).unwrap();
+    assert!(scan_of(&state, &root)
+        .err()
+        .unwrap()
+        .starts_with(allowed_locations::NEEDS_ACCESS));
+}
+#[test]
+fn removing_access_that_was_already_lost_is_not_an_error() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, path) = disk_root();
+    let disk = listed_disk(&state, &path);
+    remove_access_to(&state, &disk.id).unwrap();
+    assert_eq!(allowed_ids(&state), Vec::<String>::new());
+}
+#[test]
+fn removing_access_to_a_folder_that_is_allowed_through_an_outer_location_says_so() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    let (_dir, root) = disk_root();
+    let inner = root.join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    pick_folder(&state, root.clone()).unwrap();
+    let folder = register_picked(&state, inner.clone()).unwrap();
+    let refused = remove_access_to(&state, &folder.id).err().unwrap();
+    assert!(refused.contains(&root.display().to_string()), "{refused}");
+    // The outer location is untouched.
+    assert_eq!(scan_of(&state, &inner).unwrap().entries, 1);
+}
+#[test]
+fn removing_access_keeps_the_scan_and_never_drops_cleanup_queue_entries() {
+    tauri::async_runtime::block_on(async {
+        let dir = fixture();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let file = root.join("item");
+        std::fs::write(&file, b"recorded").unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let app = app(lite_state(&store.path().join("allowed-locations.json")));
+        let state = app.state::<AppState>();
+        *state.cleanup_queue.lock().unwrap() =
+            cleanup_queue::Queue::load(root.join("queue-storage"));
+        let folder = pick_folder(&state, root.clone()).unwrap();
+        let scan = snapshot(root.clone());
+        let id = scan
+            .iter_nodes()
+            .find(|n| n.path().unwrap() == file)
+            .unwrap()
+            .id;
+        install(&state, scan);
+        let added = add_cleanup_queue(app.state(), "fixture".into(), vec![id])
+            .await
+            .unwrap();
+        assert_eq!(added.entries[0].status, "ready");
+        remove_access_to(&state, &folder.id).unwrap();
+        assert_eq!(allowed_ids(&state), Vec::<String>::new());
+        // The scan on screen still vouches for the entry, which was not dropped.
+        let kept = list_cleanup_queue(app.state()).await.unwrap();
+        assert_eq!(kept.entries.len(), 1);
+        assert_eq!(kept.entries[0].status, "ready");
+        // Once that scan is gone, it simply needs a scan again: Matched scan rules, not access.
+        state.scans.discard("fixture");
+        let kept = list_cleanup_queue(app.state()).await.unwrap();
+        assert_eq!(kept.entries.len(), 1);
+        assert_eq!(kept.entries[0].status, "needsScan");
+    });
+}
+#[test]
+fn removing_access_needs_a_registered_target_and_a_store() {
+    let store = tempfile::tempdir().unwrap();
+    let state = lite_state(&store.path().join("allowed-locations.json"));
+    assert!(remove_access_to(&state, "nope").is_err());
+    let full = AppState::default();
+    let (_dir, path) = disk_root();
+    let disk = listed_disk(&full, &path);
+    assert!(remove_access_to(&full, &disk.id).is_err());
+}
+#[test]
 fn the_full_edition_lists_every_registered_target_as_allowed() {
     let state = AppState::default();
     let (_dir, path) = disk_root();

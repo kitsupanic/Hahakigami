@@ -83,8 +83,6 @@ impl AllowedLocations {
     }
 
     /// Forgets `path` and ends access to it. False when it was not a remembered location.
-    // Not wired to a command yet: "Remove access" is #93.
-    #[allow(dead_code)]
     pub fn remove(&mut self, path: &Path) -> bool {
         let Some(index) = self.entries.iter().position(|e| e.path == path) else {
             return false;
@@ -107,7 +105,7 @@ impl AllowedLocations {
     }
 
     /// Every Allowed location, in the order they were remembered.
-    // Not wired to a command yet: the disks list reads it for "Allow access…" (#92, #93).
+    // Nothing in the app lists locations yet: the disks list asks `containing` per target.
     #[allow(dead_code)]
     pub fn locations(&self) -> Vec<PathBuf> {
         self.entries
@@ -544,6 +542,100 @@ mod tests {
         assert_eq!(fake.0.lock().unwrap().accessed, [PathBuf::from("/Users/b")]);
         let relaunched = store(&fake, dir.path());
         assert_eq!(relaunched.locations(), [PathBuf::from("/Users/b")]);
+    }
+
+    #[test]
+    fn a_removed_location_stays_forgotten_even_when_it_could_resolve_again() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Volumes/Backup")).unwrap();
+        assert!(allowed.remove(Path::new("/Volumes/Backup")));
+        allowed.reresolve();
+        assert!(allowed
+            .require_allowed(Path::new("/Volumes/Backup/x"))
+            .unwrap_err()
+            .starts_with("NEEDS_ACCESS: "));
+        assert!(fake.0.lock().unwrap().accessed.is_empty());
+        assert!(store(&fake, dir.path()).locations().is_empty());
+    }
+
+    #[test]
+    fn removing_a_location_that_is_not_allowed_forgets_it_without_ending_any_access() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Volumes/Backup")).unwrap();
+        allowed.remember(Path::new("/Users/a")).unwrap();
+        fake.0
+            .lock()
+            .unwrap()
+            .unreachable
+            .push("/Volumes/Backup".into());
+        drop(allowed);
+        let mut relaunched = store(&fake, dir.path());
+        assert!(relaunched.remove(Path::new("/Volumes/Backup")));
+        // It would have come back with the disk; now it does not.
+        fake.0.lock().unwrap().unreachable.clear();
+        assert_eq!(relaunched.containing(Path::new("/Volumes/Backup")), None);
+        relaunched.reresolve();
+        assert_eq!(relaunched.containing(Path::new("/Volumes/Backup")), None);
+        assert_eq!(
+            store(&fake, dir.path()).locations(),
+            [PathBuf::from("/Users/a")]
+        );
+    }
+
+    #[test]
+    fn removing_a_location_keeps_the_ones_inside_and_around_it() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/")).unwrap();
+        allowed.remember(Path::new("/Users/a")).unwrap();
+        allowed.remember(Path::new("/Users/a/Projects")).unwrap();
+        assert!(allowed.remove(Path::new("/Users/a")));
+        assert_eq!(
+            allowed.containing(Path::new("/Users/a/Projects/x")),
+            Some(Path::new("/Users/a/Projects"))
+        );
+        assert_eq!(
+            allowed.containing(Path::new("/Users/a/x")),
+            Some(Path::new("/"))
+        );
+        assert_eq!(
+            fake.0.lock().unwrap().accessed,
+            [PathBuf::from("/"), PathBuf::from("/Users/a/Projects")]
+        );
+    }
+
+    #[test]
+    fn a_location_that_never_resolves_stays_in_the_file_until_it_is_allowed_again_or_removed() {
+        let (fake, dir) = (Fake::default(), tempfile::tempdir().unwrap());
+        store(&fake, dir.path())
+            .remember(Path::new("/Users/a/Deleted"))
+            .unwrap();
+        fake.0
+            .lock()
+            .unwrap()
+            .unreachable
+            .push("/Users/a/Deleted".into());
+        // Launch after launch it is simply not allowed: no error, and the entry is kept for a disk that returns.
+        for _ in 0..2 {
+            let mut allowed = store(&fake, dir.path());
+            assert!(allowed
+                .require_allowed(Path::new("/Users/a/Deleted"))
+                .unwrap_err()
+                .starts_with("NEEDS_ACCESS: "));
+        }
+        // Granting it again replaces the dead entry instead of piling up beside it.
+        fake.0.lock().unwrap().unreachable.clear();
+        let mut allowed = store(&fake, dir.path());
+        allowed.remember(Path::new("/Users/a/Deleted")).unwrap();
+        assert_eq!(allowed.locations(), [PathBuf::from("/Users/a/Deleted")]);
+        assert_eq!(
+            fake.0.lock().unwrap().accessed,
+            [PathBuf::from("/Users/a/Deleted")]
+        );
+        assert!(allowed.remove(Path::new("/Users/a/Deleted")));
+        assert!(!allowed.remove(Path::new("/Users/a/Deleted")));
     }
 
     #[test]

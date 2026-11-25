@@ -82,6 +82,8 @@ export default function createApp() {
   // The ids of the listed targets the app may read, as the backend last said. Null until it has said, and always in
   // the Full edition, which reads anywhere.
   let allowedIds = $state.raw<ReadonlySet<string> | null>(null);
+  // Remove access is waiting for the backend.
+  let removingAccess = $state.raw(false);
   // Starts of the running Scan all that the backend refused for lack of access: skipped, like the disks never started.
   let batchRefused = 0;
   let folderRequest = 0;
@@ -687,6 +689,42 @@ export default function createApp() {
       }
     }
   }
+  // The place the header scan button acts on: the one whose results are on screen, else the selected one.
+  const accessPlace = () =>
+    displayedTargetSelected && !homeOpen ? liveTarget : target;
+  // Remove access applies to a place that is allowed now (Lite only) and is not being scanned or started.
+  function accessRemovable(place: Target | null) {
+    return (
+      !!place &&
+      !!edition?.scanTargetsRequireAllowedLocation &&
+      !!allowedIds?.has(listedPlace(place).id) &&
+      !removingAccess &&
+      !sessionBlocked &&
+      !scans.busy(place) &&
+      !scans.starting(place)
+    );
+  }
+  // Remove access: Lite forgets the Allowed location and ends its access. A scan on screen, the scan slots and the
+  // Cleanup queue are left alone; the place's next scan action is Allow access….
+  async function removeAccess() {
+    const place = accessPlace();
+    if (!accessRemovable(place) || !place) return;
+    removingAccess = true;
+    try {
+      const ids = await invoke<string[] | null>("remove_access", {
+        targetId: listedPlace(place).id,
+      });
+      if (!disposed) allowedIds = new Set(ids ?? []);
+    } catch (e) {
+      if (!disposed)
+        fail(e, {
+          title: "Couldn’t remove access",
+          reason: `Access to ${place.name} was not removed. Try again.`,
+        });
+    } finally {
+      removingAccess = false;
+    }
+  }
   // The sidebar's Scan folder: pick a folder, then scan it in view (the queue page would hide it).
   async function scanFolder() {
     const chosen = await chooseFolder();
@@ -978,12 +1016,12 @@ export default function createApp() {
             void loadAccess();
           }
         } else if (needsAccessError) {
-          // The view said allowed and the backend disagrees: show what it knows now.
+          // The view said allowed and the backend disagrees (access was lost): not an error, the place now
+          // shows Allow access….
           void loadAllowed();
-          fail(message, {
-            title: "Allow access first",
-            reason: `${t.name} hasn’t been allowed yet. Choose Allow access… for it, then scan again.`,
-          });
+          showToast(
+            `${t.name} needs access. Choose Allow access…, then scan again.`,
+          );
         } else {
           fail(e);
         }
@@ -1809,6 +1847,11 @@ export default function createApp() {
       return !!place && needsAccess(place);
     },
     allowingAccess: (place: Target) => allowingId === place.id,
+    // Whether Remove access applies to the place the header scan button or the welcome page would scan.
+    get canRemoveAccess() {
+      return accessRemovable(accessPlace());
+    },
+    removeAccess,
     get batchProgress() {
       return scans.batchProgress;
     },

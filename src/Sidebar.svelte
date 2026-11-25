@@ -101,8 +101,10 @@
         : `${compactBytes(disk.freeBytes ?? 0)} free of ${compactBytes(disk.totalBytes ?? 0)}`}
     {@const slot = app.scanSlots[disk.path]}
     {@const scanned = !!slot}
-    {@const needsAccess = !slot && app.needsAccess(disk)}
-    {@const tag = slot ? slotTag(slot) : needsAccess ? "Needs access" : ""}
+    {@const needsAccess =
+      (!slot || !slotScanning(slot)) && app.needsAccess(disk)}
+    {@const tag = !needsAccess ? (slot ? slotTag(slot) : "") : "Needs access"}
+    {@const tagNote = slot && needsAccess ? `${slotTag(slot)}, needs access` : tag}
     {@const progress = slot ? scanProgress(slot, disk) : undefined}
     {@const active =
       (welcomeShown && app.target?.path === disk.path) ||
@@ -112,8 +114,8 @@
       class:active
       class:scanned
       aria-current={active ? "page" : undefined}
-      aria-label={`${disk.name}, ${size}${tag ? `, ${tag}` : ""}`}
-      title={`${disk.path}${tag ? `\n${tag}` : ""}`}
+      aria-label={`${disk.name}, ${size}${tagNote ? `, ${tagNote}` : ""}`}
+      title={`${disk.path}${tagNote ? `\n${tagNote}` : ""}`}
       disabled={app.sessionBlocked}
       onclick={() => app.openDisk(disk)}
     >
@@ -144,7 +146,10 @@
     </button>
   {/each}
   {#if folderSlot}
-    {@const tag = slotTag(folderSlot)}
+    {@const needsAccess =
+      !slotScanning(folderSlot) && app.needsAccess(folderSlot.target)}
+    {@const tag = needsAccess ? "Needs access" : slotTag(folderSlot)}
+    {@const tagNote = needsAccess ? `${slotTag(folderSlot)}, needs access` : tag}
     {@const progress = scanProgress(folderSlot)}
     {@const active =
       shownSlot === FOLDER_SLOT ||
@@ -153,8 +158,8 @@
       class="side-nav disk-nav folder-nav scanned"
       class:active
       aria-current={active ? "page" : undefined}
-      aria-label={`${folderSlot.target.name}, folder, ${tag}`}
-      title={`${folderSlot.target.path}\n${tag}`}
+      aria-label={`${folderSlot.target.name}, folder, ${tagNote}`}
+      title={`${folderSlot.target.path}\n${tagNote}`}
       disabled={app.sessionBlocked}
       onclick={() => app.openDisk(folderSlot.target)}
     >
