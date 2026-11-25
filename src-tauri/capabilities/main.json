@@ -44,6 +44,7 @@
     "allow-open-full-disk-access",
     "allow-full-disk-access-status",
     "allow-scan-without-full-disk-access",
-    "allow-restart-app"
+    "allow-restart-app",
+    "allow-get-edition"
   ]
 }

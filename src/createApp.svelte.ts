@@ -22,6 +22,8 @@ import { cleanupResult } from "./cleanupResults";
 import type { AppToast } from "./toastTypes";
 import { createPerformanceHarness } from "./performanceHarness.svelte";
 import {
+  unknownEdition,
+  type Edition,
   type FullDiskAccess,
   type NodeView,
   type Page,
@@ -69,6 +71,9 @@ export default function createApp() {
     errorContext = value ? context : null;
   }
   let targetsLoading = $state.raw(isTauri());
+  // Null until the app has answered, so Lite never shows another name meanwhile.
+  let edition = $state.raw<Edition | null>(isTauri() ? null : unknownEdition);
+  const productName = () => (edition ?? unknownEdition).productName;
   let choosingFolder = $state(false);
   let folderRequest = 0;
   let disposed = false;
@@ -617,7 +622,7 @@ export default function createApp() {
         fail(e, {
           title: "Couldn’t choose the folder",
           reason:
-            "Hahakigami could not open the folder picker. Try again, or pick a location from the sidebar.",
+            "The folder picker could not open. Try again, or pick a location from the sidebar.",
         });
     } finally {
       if (request === folderRequest) choosingFolder = false;
@@ -639,6 +644,14 @@ export default function createApp() {
   onMount(() => {
     let cancelled = false;
     if (isTauri()) void loadAccess(() => !cancelled);
+    if (isTauri())
+      invoke<Edition>("get_edition")
+        .then((answers) => {
+          if (!cancelled) edition = answers ?? unknownEdition;
+        })
+        .catch(() => {
+          if (!cancelled) edition = unknownEdition;
+        });
     if (isTauri())
       invoke<Target[]>("discover_targets")
         .then((t) => {
@@ -920,7 +933,7 @@ export default function createApp() {
       setError(failures.join("\n"), {
         title: "Couldn’t scan every disk",
         reason:
-          "Hahakigami could not start a scan on these disks. Scans on the other disks are not affected.",
+          "A scan could not start on these disks. Scans on the other disks are not affected.",
       });
   }
   const scanIdentity = $derived(summary?.scanId);
@@ -1917,6 +1930,12 @@ export default function createApp() {
     previewRow,
     get toast() {
       return toast;
+    },
+    get edition() {
+      return edition;
+    },
+    get productName() {
+      return productName();
     },
     dismissToast,
     openAccess,

@@ -14,10 +14,12 @@
   let {
     summary,
     description,
+    productName = "",
     lead,
   }: {
     summary: ScanSummary;
     description: string;
+    productName?: string;
     /** The strip's Scanned and Time cells, which open Summary like the totals. */
     lead?: Snippet;
   } = $props();
@@ -184,7 +186,7 @@
         aria-labelledby={`${id}-tab-coverage`}
         hidden={tab !== "coverage"}
       >
-        <ScanIssues {summary} active={tab === "coverage"} />
+        <ScanIssues {summary} {productName} active={tab === "coverage"} />
       </div>
     {/if}
     <div

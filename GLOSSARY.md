@@ -4,6 +4,22 @@ Disk-space measurements and retained results for local storage analysis.
 
 ## Language
 
+**Edition**:
+One of the two ways the app is shipped from the same source: the Full edition and the Lite edition. Each is a separate app with its own name, so both can be installed at once and they share no saved state.
+_Avoid_: Variant, flavour, build type, SKU
+
+**Full edition**:
+The edition shipped as Hahakigami, downloaded directly rather than from the Mac App Store. It has every feature, including Automation scans.
+_Avoid_: Pro, direct build, GitHub version
+
+**Lite edition**:
+The edition shipped as Hahakigami Lite on the Mac App Store. It lacks only what Apple's App Sandbox forbids; nothing is held back to push people to the Full edition, and it never mentions the Full edition.
+_Avoid_: Free version, App Store build, sandboxed build, demo
+
+**Allowed location**:
+A disk or folder the person has picked in an Open dialog so the Lite edition may read it, remembered across launches. In the Lite edition every Scan target is an Allowed location or lies inside one. Full Disk Access still widens what a scan inside it can read.
+_Avoid_: Grant, bookmark, authorized folder, permitted folder
+
 **Automation scan**:
 A filesystem-metadata measurement requested by an agent or script, independently of the desktop explorer's Disk scans.
 _Avoid_: Desktop session, remote scan
@@ -25,7 +41,7 @@ Where the app keeps a Disk scan while the session lasts. Every disk has its own,
 _Avoid_: Session slot, scan cache
 
 **Scan all disks**:
-The action that starts a fresh Disk scan of every disk in the Disks list. A disk that is already scanning is cancelled and scanned again. Folder scans are not touched.
+The action that starts a fresh Disk scan of every disk in the Disks list. A disk that is already scanning is cancelled and scanned again. Folder scans are not touched. In the Lite edition it covers only disks that are Allowed locations and says how many it skipped.
 _Avoid_: Scan everything, rescan all
 
 **Scan budget**:

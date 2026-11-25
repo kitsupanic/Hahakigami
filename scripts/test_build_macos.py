@@ -1,5 +1,5 @@
 import unittest
-from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command
+from build_macos import RELEASE, release_environment, development_identities, select_identity, local_environment, verify_metadata, leaf_certificate_sha1, prepare_benchmark_output, benchmark_windows, benchmark_frontend_command, verify_entitlements, check_lite_options, lite_overlay, lite_build_arguments, LITE_ENTITLEMENTS, LITE_CONFIG, LITE_REQUIRED_ENTITLEMENTS
 
 class LocalSigningTests(unittest.TestCase):
     def test_existing_development_identity_selection_fails_closed(self):
@@ -84,3 +84,48 @@ class LocalSigningTests(unittest.TestCase):
         verify_metadata(metadata, 'app.hahakigami.desktop', False, RELEASE)
         for changed in [metadata.replace('0x10000(runtime)', '0x0(none)'), metadata.replace('Developer ID Application', 'Apple Development')]:
             with self.assertRaises(ValueError): verify_metadata(changed, 'app.hahakigami.desktop', False, RELEASE)
+
+
+LITE_PLIST = '<?xml version="1.0"?><plist version="1.0"><dict>' + ''.join(f'<key>{key}</key><true/>' for key in LITE_REQUIRED_ENTITLEMENTS) + '</dict></plist>'
+
+
+class LiteBuildTests(unittest.TestCase):
+    def test_lite_cannot_be_combined_with_adhoc_benchmark_or_release_yet(self):
+        from pathlib import Path
+        check_lite_options(lite=True, release=False, adhoc=False, benchmark_output=None)
+        check_lite_options(lite=False, release=True, adhoc=True, benchmark_output=None)
+        for options in [{'adhoc': True}, {'benchmark_output': Path('/tmp/benchmark')}, {'release': True}]:
+            with self.assertRaises(ValueError): check_lite_options(**{'lite': True, 'release': False, 'adhoc': False, 'benchmark_output': None, **options})
+
+    def test_lite_bundle_must_carry_the_sandbox_and_its_other_entitlements(self):
+        verify_entitlements(LITE_PLIST)
+        verify_entitlements(LITE_PLIST.replace('<true/>', '\n\t<true/>'))
+        self.assertEqual(len(LITE_REQUIRED_ENTITLEMENTS), 4)
+        for key in LITE_REQUIRED_ENTITLEMENTS:
+            with self.assertRaises(ValueError): verify_entitlements(LITE_PLIST.replace(f'<key>{key}</key><true/>', ''))
+            with self.assertRaises(ValueError): verify_entitlements(LITE_PLIST.replace(f'<key>{key}</key><true/>', f'<key>{key}</key><false/>'))
+        with self.assertRaises(ValueError): verify_entitlements('')
+
+    def test_the_sandbox_failure_names_the_sandbox(self):
+        with self.assertRaisesRegex(ValueError, 'App Sandbox'): verify_entitlements(LITE_PLIST.replace('<key>com.apple.security.app-sandbox</key><true/>', ''))
+
+    def test_lite_overlay_names_the_lite_app(self):
+        import json
+        overlay = json.loads(LITE_CONFIG.read_text())
+        self.assertEqual(lite_overlay(overlay), ('Hahakigami Lite', 'app.hahakigami.lite'))
+
+    def test_shipped_entitlements_file_has_exactly_the_required_keys(self):
+        import plistlib
+        entitlements = plistlib.loads(LITE_ENTITLEMENTS.read_bytes())
+        self.assertEqual(entitlements, {key: True for key in LITE_REQUIRED_ENTITLEMENTS})
+
+    def test_lite_compiles_without_the_default_automation_feature(self):
+        arguments = lite_build_arguments({'bundle': {'macOS': {'signingIdentity': 'A' * 40}}})
+        self.assertEqual(arguments[arguments.index('--') + 1:], ['--no-default-features'])
+        self.assertEqual(arguments[arguments.index('--features') + 1], 'lite')
+        self.assertNotIn('automation', ' '.join(arguments))
+        # Everything tauri itself reads comes before `--`; the overlay merges before the signing override.
+        configs = [arguments[i + 1] for i, value in enumerate(arguments) if value == '--config']
+        self.assertEqual(configs[0], str(LITE_CONFIG))
+        self.assertIn('signingIdentity', configs[1])
+        self.assertLess(arguments.index('--config'), arguments.index('--'))

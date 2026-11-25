@@ -34,6 +34,7 @@ fn main() {
             "full_disk_access_status",
             "scan_without_full_disk_access",
             "restart_app",
+            "get_edition",
         ]),
     ))
     .expect("Tauri build configuration");

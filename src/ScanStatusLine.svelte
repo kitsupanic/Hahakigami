@@ -8,10 +8,12 @@
   let {
     summary,
     cancelling,
+    productName = "",
     controls,
   }: {
     summary: ScanSummary;
     cancelling: boolean;
+    productName?: string;
     /** The map's view controls, kept on this row so the strip is the one toolbar under the header. */
     controls?: Snippet;
   } = $props();
@@ -96,7 +98,7 @@
     title={status}>{status}</span
   >
   {#key summary.scanId}
-    <ScanDetails {summary} {description}>
+    <ScanDetails {summary} {description} {productName}>
       {#snippet lead()}
       <span
         class="scan-timestamp status-cell"

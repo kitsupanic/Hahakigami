@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createTestRoot as createRoot, type Root } from "./testUtils";
+import { act, createTestRoot as createRoot, type Root, fullEdition } from "./testUtils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import type createApp from "./createApp.svelte";
@@ -94,6 +94,8 @@ beforeEach(async () => {
       if (holding.has(command))
         return new Promise((resolve) => (held[command] ??= []).push(resolve));
       switch (command) {
+        case "get_edition":
+          return fullEdition;
         case "get_explorer_preferences":
           return { sort: "sizeDescending", warning: null };
         case "full_disk_access_status":

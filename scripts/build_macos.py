@@ -2,6 +2,7 @@
 """Build the macOS app with an existing keychain identity; never grant access.
 
 Default: local build signed with Apple Development. --release: Developer ID build, notarized and stapled.
+--lite: sandboxed Hahakigami Lite, signed with Apple Development (not yet combinable with --release).
 """
 import argparse
 import hashlib
@@ -16,6 +17,12 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+LITE_CONFIG = ROOT / 'src-tauri/tauri.lite.conf.json'
+# The App Sandbox plus what Lite uses inside it (ADR 0007); network.client is what lets WebKit render.
+LITE_SANDBOX_ENTITLEMENT = 'com.apple.security.app-sandbox'
+LITE_REQUIRED_ENTITLEMENTS = (LITE_SANDBOX_ENTITLEMENT, 'com.apple.security.files.user-selected.read-write',
+                              'com.apple.security.files.bookmarks.app-scope', 'com.apple.security.network.client')
+LITE_ENTITLEMENTS = ROOT / 'src-tauri/entitlements/lite.entitlements'
 DEVELOPMENT, RELEASE = 'Apple Development', 'Developer ID Application'
 # Notarization credentials tauri reads; either set is enough. Certificate import vars are never passed.
 NOTARY_CREDENTIALS = (('APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH'), ('APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'))
@@ -84,6 +91,34 @@ def verify_metadata(metadata, identifier, adhoc, kind=DEVELOPMENT):
                 raise ValueError(f'The designated requirement lacks {needed!r}.')
 
 
+def check_lite_options(lite, release, adhoc, benchmark_output):
+    if lite and (release or adhoc or benchmark_output):
+        raise ValueError('--lite cannot be combined with --release, --adhoc or --benchmark-output yet.')
+
+
+def lite_overlay(overlay):
+    """Product name and identifier of the Lite edition, from its Tauri config overlay."""
+    return overlay['productName'], overlay['identifier']
+
+
+def lite_build_arguments(overrides):
+    """Extra `tauri build` arguments for Lite. The overlay (name, identifier, entitlements) merges before the
+    signing overrides. Cargo features only add, so Lite leaves out the default `automation` feature (CLI, MCP)."""
+    return ['--features', 'lite', '--config', str(LITE_CONFIG), '--config', json.dumps(overrides),
+            '--', '--no-default-features']
+
+
+def verify_entitlements(output):
+    """The Lite signature must carry the App Sandbox and the entitlements Lite uses inside it."""
+    def granted(key):
+        return re.search(rf'<key>{re.escape(key)}</key>\s*<true/>', output)
+    if not granted(LITE_SANDBOX_ENTITLEMENT):
+        raise ValueError('The Lite bundle signature does not carry the App Sandbox entitlement.')
+    for key in LITE_REQUIRED_ENTITLEMENTS:
+        if not granted(key):
+            raise ValueError(f'The Lite bundle signature lacks the {key} entitlement.')
+
+
 def leaf_certificate_sha1(bundle):
     """SHA-1 of the certificate the bundle was signed with (codesign writes the leaf as <prefix>0)."""
     with tempfile.TemporaryDirectory() as directory:
@@ -127,6 +162,7 @@ def main():
     parser.add_argument('--identity', help='SHA-1 of an existing valid Apple Development identity')
     parser.add_argument('--benchmark-output', type=Path, help='Build an isolated benchmark-only app into a new absolute output directory.')
     parser.add_argument('--adhoc', action='store_true', help='Explicitly build without a stable development identity')
+    parser.add_argument('--lite', action='store_true', help='Sandboxed Hahakigami Lite build (Apple Development identity)')
     parser.add_argument('--release', action='store_true', help='Developer ID build for other Macs: notarize, staple, add a DMG')
     args = parser.parse_args()
     kind = RELEASE if args.release else DEVELOPMENT
@@ -135,12 +171,13 @@ def main():
     try:
         if args.release and (args.adhoc or args.benchmark_output):
             raise ValueError('--release cannot be combined with --adhoc or --benchmark-output.')
+        check_lite_options(args.lite, args.release, args.adhoc, args.benchmark_output)
         identities = [] if args.adhoc else development_identities(subprocess.run(
             ['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning'], check=True,
             capture_output=True, text=True, timeout=30).stdout, kind)
         identity = select_identity(identities, args.identity, args.adhoc, kind)
         config = json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text())
-        name, identifier = config['productName'], config['identifier']
+        name, identifier = lite_overlay(json.loads(LITE_CONFIG.read_text())) if args.lite else (config['productName'], config['identifier'])
         if Path(name).name != name:
             raise ValueError('Product name must be one bundle filename.')
         if args.benchmark_output and (not args.benchmark_output.is_absolute() or args.adhoc):
@@ -162,7 +199,7 @@ def main():
                 'frontendDist': str(output / 'dist'),
                 'beforeBuildCommand': benchmark_frontend_command(json.loads((ROOT / 'package.json').read_text()), output),
             }
-        command += ['--config', json.dumps(overrides)]
+        command += lite_build_arguments(overrides) if args.lite else ['--config', json.dumps(overrides)]
         subprocess.run(command, cwd=ROOT, env=environment, check=True)
         # Cargo honours CARGO_TARGET_DIR (relative to cwd=ROOT), so verify the bundle it just built.
         bundle = ROOT / environment.get('CARGO_TARGET_DIR', 'target') / 'release/bundle/macos' / f'{name}.app'
@@ -170,6 +207,10 @@ def main():
         display = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', '--requirements', '-', str(bundle)],
                                  check=True, capture_output=True, text=True)
         verify_metadata(display.stdout + display.stderr, identifier, args.adhoc, kind)
+        if args.lite:
+            entitlements = subprocess.run(['/usr/bin/codesign', '--display', '--entitlements', ':-', str(bundle)],
+                                          check=True, capture_output=True, text=True, timeout=30)
+            verify_entitlements(entitlements.stdout + entitlements.stderr)
         if identity != '-' and leaf_certificate_sha1(bundle) != identity:
             raise ValueError('The bundle was not signed with the selected identity.')
         if args.release:

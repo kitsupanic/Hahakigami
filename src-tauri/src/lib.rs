@@ -1,4 +1,5 @@
 mod access_setup;
+#[cfg(feature = "automation")]
 mod automation;
 mod baseline;
 mod budget;
@@ -7,13 +8,16 @@ mod cache_codec;
 mod cache_store;
 mod cleanup;
 mod cleanup_queue;
+#[cfg(feature = "automation")]
 pub mod cli;
+mod edition;
 mod events;
 mod explorer_preferences;
 mod file_type_map;
 mod file_types;
 mod filters;
 mod instance;
+#[cfg(feature = "automation")]
 mod mcp;
 #[cfg(feature = "performance-benchmark")]
 pub mod performance;
@@ -1846,6 +1850,10 @@ async fn commit_cleanup_queue<R: tauri::Runtime>(
 ) -> Result<TrashResult, String> {
     commit_cleanup(state, scan_id, token, app, true).await
 }
+#[tauri::command]
+fn get_edition() -> edition::Edition {
+    edition::CURRENT
+}
 // Off the main thread: `full_disk_access` waits for `/usr/bin/open`.
 #[tauri::command]
 async fn open_full_disk_access() -> Result<(), String> {
@@ -1974,7 +1982,8 @@ pub fn run() {
             open_full_disk_access,
             full_disk_access_status,
             scan_without_full_disk_access,
-            restart_app
+            restart_app,
+            get_edition
         ])
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {

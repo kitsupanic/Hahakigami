@@ -127,6 +127,7 @@
     typeof navigator !== "undefined" &&
     navigator.platform.startsWith("Mac");
   const app = createApp();
+  const productName = $derived(app.productName);
   const mapColorMode = $derived(app.mapColorMode);
   const fileTypes = createFileTypes({
     get summary() {
@@ -1060,7 +1061,7 @@
     {#if !summary || queueOpen}
       <div class="window-toolbar-fallback" data-tauri-drag-region="deep">
         {@render navigationButtons()}
-        <strong>Hahakigami</strong>
+        <strong>{productName}</strong>
       </div>
     {/if}
     {#if queueOpen}
@@ -1334,6 +1335,7 @@
         <ScanStatusLine
           {summary}
           {cancelling}
+          {productName}
           controls={viewControls}
         />
       {/if}
@@ -1585,10 +1587,10 @@
               <p id="access-message" class:access-callout={accessOff}>
                 {#if accessOff}
                   {accessReturned
-                    ? "If you just turned it on, macOS applies it when Hahakigami relaunches."
+                    ? `If you just turned it on, macOS applies it when ${productName} relaunches.`
                     : "Without it, macOS asks about each protected folder during a scan."}
                 {:else if access?.status === "on"}
-                  Hahakigami can scan protected folders without macOS asking
+                  {productName} can scan protected folders without macOS asking
                   about each one.
                 {:else}
                   Scans aren’t blocked. If macOS asks about protected folders,
@@ -1606,7 +1608,7 @@
                       >Open System Settings…</button
                     >
                   {:else}
-                    Turn on Hahakigami in <strong
+                    Turn on {productName} in <strong
                       >Privacy &amp; Security › Full Disk Access</strong
                     >. If it isn’t listed, add it with + using this path:
                   {/if}
@@ -1747,7 +1749,7 @@
     <FailureModal
       title={app.errorContext?.title ?? "Something went wrong"}
       reason={app.errorContext?.reason ??
-        "Hahakigami could not finish that. Try again."}
+        "That could not be finished. Try again."}
       details={error}
       opener={dialogOpener}
       onClose={() => app.setError("")}
