@@ -2,6 +2,88 @@
 
 Paths under `benchmark-results/` are local raw reports; that folder is gitignored, so it is not in a fresh clone. Cited `benchmark-results-*.json` summaries were removed before open-sourcing and remain in git history.
 
+## Lite edition release checklist
+
+The App Sandbox can't be unit tested, so every Hahakigami Lite release is
+checked by hand on signed builds before upload (ADR 0007). The checklist
+repeats the sandbox spike's checks (branch `prototype/sandbox-reach`) and adds
+the Lite-only flows. Record each run under [Lite runs](#lite-runs). File any
+failure as its own issue, and don't upload until it's fixed.
+
+### Setup
+
+Build both editions from the same commit:
+
+```bash
+pnpm desktop:build
+pnpm desktop:build --lite
+```
+
+- Use a Mac where Hahakigami Lite has no Allowed locations yet. Lite's data
+  lives in its sandbox container
+  (`~/Library/Containers/app.hahakigami.lite`). To start fresh, delete that
+  container while Lite is quit.
+- Have one external disk you can eject, and one throwaway folder inside your
+  home folder with a few files in it.
+- Start with Full Disk Access **off** for Hahakigami Lite in System Settings.
+  Turn it on only at step 11.
+
+### Checks
+
+1. **Window renders.** Lite launches to its welcome page. The window title, app
+   menu and About say "Hahakigami Lite". No UI text mentions any other edition
+   of the app.
+2. **Disks are listed.** Every disk the Full edition lists appears in the
+   Disks list, and each one shows "Allow access…".
+3. **Allow access for a disk.** Choose "Allow access…" for the startup disk.
+   The Open dialog opens at `/` (Macintosh HD). Click Open. The disk now shows
+   the normal Scan action and scans with it. No second dialog appears.
+4. **Scan all disks.** With only the startup disk allowed, Scan all disks scans
+   that disk alone and reports how many disks it skipped. It opens no dialog.
+5. **Allowed location after relaunch.** Use Scan folder to scan the throwaway
+   folder. Quit and relaunch Lite. Both the startup disk and the folder scan
+   without the Open dialog.
+6. **Incremental rescan.** Change one file in the throwaway folder and rescan
+   it. The rescan is incremental: it reuses the Rescan baseline and finishes in
+   a fraction of the first scan's time.
+7. **External disk.** Allow the external disk and scan it. Eject it and
+   reconnect it, then relaunch Lite. Each time it is still allowed and scans
+   with no dialog.
+8. **Remove access.** Choose Remove access for the throwaway folder. Its scan
+   results stay on screen and the scan action turns into "Allow access…".
+   After a relaunch, it still needs access.
+9. **Lost access.** Allow the throwaway folder again, quit Lite, rename the
+   folder in Finder, then relaunch. The renamed folder either scans normally or
+   shows "Allow access…". No error dialog appears either way.
+10. **Reach without Full Disk Access.** Full Disk Access is off for both
+    editions. Scan the startup disk in Lite and in the Full edition, and record
+    both On disk totals. They should match within a small margin.
+11. **Full Disk Access status.** Lite reports Full Disk Access as off. Turn it
+    on for Hahakigami Lite in System Settings (the in-app settings link opens
+    the right pane) and relaunch. Lite reports it as on.
+12. **Reach with Full Disk Access.** With Full Disk Access on for both
+    editions, scan the startup disk in each and record both totals. They match,
+    and each is at least the total from step 10.
+13. **Move to Trash.** Move one file inside an allowed location to the Trash.
+    It lands in the Trash and leaves the scan. Put it back afterwards.
+14. **Quick Look.** Quick Look previews a file inside an allowed location.
+15. **Reveal in Finder.** Reveal in Finder selects that file in a Finder
+    window.
+16. **Full edition unaffected.** In the Full edition, every disk is scannable
+    without "Allow access…". Reveal in Finder and the Full Disk Access settings
+    link still work. `Hahakigami.app/Contents/MacOS/hahakigami scan <folder>`
+    still prints a JSON result. The same command on the Lite binary
+    (`Hahakigami Lite.app/Contents/MacOS/…`) starts the app normally instead.
+
+### Lite runs
+
+Add a row for every release candidate. Totals come from steps 10 and 12.
+"Pass" means every check passed.
+
+| Date | Commit | Lite total, no FDA | Full total, no FDA | Lite total, FDA | Full total, FDA | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Sandbox spike (not a release) | `prototype/sandbox-reach` | 81.5 GiB | — | 83.8 GiB | — | Reference |
+
 ## Six-second gate on the cleaned GitHub scope — 14 October 2026
 
 **Outcome: T3 timing acceptance is met by the unchanged H scanner on the cleaned scope.**
