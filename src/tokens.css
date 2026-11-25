@@ -320,7 +320,7 @@
 }
 /* Secondary controls sit on the board fill with a warm edge. */
 :root[data-theme="guardian"]
-  :is(.toolbar-navigation, .rescan-action:not(.primary), .toolbar-sidebar-toggle, .details-primary > .icon-action) {
+  :is(.toolbar-navigation, .rescan-action:not(.primary), .header-controls .remove-access, .toolbar-sidebar-toggle, .details-primary > .icon-action) {
   background: var(--control-surface);
   border-color: var(--control-line);
 }

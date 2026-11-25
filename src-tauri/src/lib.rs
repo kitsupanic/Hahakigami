@@ -510,6 +510,42 @@ fn allow_picked(state: &AppState, target_id: &str, picked: PathBuf) -> Result<()
     }
     pick_folder(state, picked).map(|_| ())
 }
+/// Forgets the Allowed location that is the registered target `target_id` and ends access to it. A scan already
+/// done stays where it is; only the next scan needs access again. A target allowed only through an outer location
+/// is refused, since forgetting it would change nothing.
+fn remove_access_to(state: &AppState, target_id: &str) -> Result<(), String> {
+    let (name, path) = {
+        let targets = state.targets.lock().unwrap();
+        let (target, path) = targets
+            .get(target_id)
+            .ok_or("Choose a registered folder or volume first.")?;
+        (target.name.clone(), path.clone())
+    };
+    let mut guard = state.allowed_locations.lock().unwrap();
+    let allowed = guard
+        .as_mut()
+        .ok_or("This edition does not restrict access, so there is none to remove.")?;
+    allowed.remove(&path);
+    match allowed.containing(&path) {
+        Some(outer) => Err(format!(
+            "{name} is allowed through {}. Remove access to that location instead.",
+            outer.display()
+        )),
+        None => Ok(()),
+    }
+}
+/// Removes access to a target (Lite). Returns the allowed ids afterwards.
+#[tauri::command]
+async fn remove_access(app: tauri::AppHandle, target_id: String) -> Result<Vec<String>, String> {
+    // Ending access and rewriting the store can stall on an unresponsive mount.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        remove_access_to(&state, &target_id)?;
+        Ok(allowed_ids(&state))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 /// Opens the Open dialog at a target that is not allowed yet. Returns the allowed ids afterwards; a cancelled dialog
 /// changes nothing.
 #[tauri::command]
@@ -2061,6 +2097,7 @@ pub fn run() {
             mounted_volumes,
             choose_folder,
             allow_access,
+            remove_access,
             allowed_target_ids,
             start_scan,
             cancel_scan,

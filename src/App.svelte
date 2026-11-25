@@ -304,6 +304,10 @@
   const filterKey = $derived(app.filterKey);
   const resultLocation = $derived(app.resultLocation);
   const displayedTargetSelected = $derived(app.displayedTargetSelected);
+  // The place Remove access would act on: what the header scan button acts on.
+  const accessLocation = $derived(
+    displayedTargetSelected ? resultLocation : target,
+  );
   const scanActionLabel = $derived(
     app.scanNeedsAccess
       ? "Allow access…"
@@ -1299,6 +1303,13 @@
                 >
               {/if}
             </button>
+            {#if app.canRemoveAccess}
+              <button
+                class="remove-access"
+                title={`Remove access to ${locationName(accessLocation?.name, accessLocation?.path)}`}
+                onclick={() => void app.removeAccess()}>Remove access</button
+              >
+            {/if}
             <button
               class="toolbar-sidebar-toggle"
               aria-label={listVisible ? "Hide file list" : "Show file list"}
@@ -1412,6 +1423,14 @@
                                 : "Scan location"}</span
                     ></button
                   >
+                  {#if app.canRemoveAccess}
+                    <button
+                      class="remove-access"
+                      title={`Remove access to ${locationName(target?.name, target?.path)}`}
+                      onclick={() => void app.removeAccess()}
+                      ><span>Remove access</span></button
+                    >
+                  {/if}
                   <button
                     class="welcome-scan-all"
                     title="Scan every disk"

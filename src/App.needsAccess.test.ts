@@ -77,18 +77,14 @@ async function mount() {
   await flush();
 }
 
-it("explains a scan refused for lack of access in plain words, not as a failure or a Full Disk Access problem", async () => {
+it("says a scan refused for lack of access in plain words, in a toast and not as a failure dialog", async () => {
   await mount();
   await act(() => app().start(disk));
   await flush();
-  const dialog = container.querySelector(".failure-results")!;
-  expect(dialog.querySelector("h2")?.textContent).toBe("Allow access first");
-  expect(dialog.querySelector(".failure-reason")?.textContent).toMatch(
-    /Startup disk/,
-  );
-  expect(dialog.querySelector(".failure-reason")?.textContent).toContain(
-    "Allow access…",
-  );
+  expect(container.querySelector(".failure-results")).toBeNull();
+  const toast = container.querySelector(".toast")?.textContent ?? "";
+  expect(toast).toContain("Startup disk needs access");
+  expect(toast).toContain("Allow access…");
   expect(container.textContent).not.toContain("NEEDS_ACCESS");
   expect(container.textContent).not.toContain("Full Disk Access");
   expect(container.textContent).not.toContain("Scan failed");
@@ -97,7 +93,5 @@ it("keeps the disk selectable and scannable again after the refusal", async () =
   await mount();
   await act(() => app().start(disk));
   await flush();
-  await act(() => app().setError(""));
-  expect(container.querySelector(".failure-results")).toBeNull();
   expect(app().can.rescan).toBe(true);
 });
