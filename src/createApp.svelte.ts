@@ -76,7 +76,8 @@ export default function createApp() {
   // Null until the app has answered, so Lite never shows another name meanwhile.
   let edition = $state.raw<Edition | null>(isTauri() ? null : unknownEdition);
   const productName = () => (edition ?? unknownEdition).productName;
-  let choosingFolder = $state(false);
+  // An Open dialog (Choose folder or Allow access…) is up.
+  let pickerOpen = $state(false);
   // The target whose Open dialog is up for "Allow access…".
   let allowingId = $state.raw<string | null>(null);
   // The ids of the listed targets the app may read, as the backend last said. Null until it has said, and always in
@@ -128,7 +129,7 @@ export default function createApp() {
   let clearQueueOpen = $state(false);
   const cleanupQueue = createCleanupQueue(tauriQueuePort, {
     available: () => !performanceBuild && isTauri(),
-    mutable: () => !choosingFolder && !busy,
+    mutable: () => !pickerOpen && !busy,
     reporter() {
       const id = cleanupReport?.id;
       return (state, view, error = null) =>
@@ -147,7 +148,7 @@ export default function createApp() {
   const queueBusy = $derived(cleanupQueue.busy);
   const refreshQueue = cleanupQueue.refresh;
   function showQueue(value: boolean) {
-    if (value && (busy || trash || queueBusy || choosingFolder)) return;
+    if (value && (busy || trash || queueBusy || pickerOpen)) return;
     quickLook.dismiss();
     queueOpen = value;
     if (value) {
@@ -426,7 +427,7 @@ export default function createApp() {
   // The Scan target of the scan on screen.
   let liveTarget = $state.raw<Target | null>(null);
   const activeId: { current: string | null } = { current: null };
-  const blocked = $derived(busy || choosingFolder);
+  const blocked = $derived(busy || pickerOpen);
   const running = $derived(summary?.state === "running");
   const sessionBlocked = $derived(blocked || quickLook.pending || queueBusy);
   const previewDialog = $derived(accessOpen || !!trash || clearQueueOpen);
@@ -637,7 +638,7 @@ export default function createApp() {
   }
   async function chooseFolder(): Promise<Target | null | void> {
     if (pickerBlocked()) return;
-    choosingFolder = true;
+    pickerOpen = true;
     const request = ++folderRequest;
     // Another scan may take the view while the dialog is open; the chosen folder still counts.
     const current = () => !disposed && request === folderRequest;
@@ -659,14 +660,14 @@ export default function createApp() {
             "The folder picker could not open. Try again, or pick a location from the sidebar.",
         });
     } finally {
-      if (request === folderRequest) choosingFolder = false;
+      if (request === folderRequest) pickerOpen = false;
     }
   }
   // Allow access…: the Open dialog opens at the place; picking it makes it an Allowed location. It does not scan:
   // once allowed, the place scans with the normal action. Cancelling changes nothing.
   async function allowAccess(place: Target) {
     if (pickerBlocked()) return;
-    choosingFolder = true;
+    pickerOpen = true;
     allowingId = place.id;
     const request = ++folderRequest;
     const current = () => !disposed && request === folderRequest;
@@ -684,7 +685,7 @@ export default function createApp() {
         });
     } finally {
       if (request === folderRequest) {
-        choosingFolder = false;
+        pickerOpen = false;
         allowingId = null;
       }
     }
@@ -914,7 +915,7 @@ export default function createApp() {
       target: t,
       scanAll: how.batch ? (true as const) : undefined,
     };
-    if (choosingFolder || quickLook.isPending() || scanBlocked(blocking))
+    if (pickerOpen || quickLook.isPending() || scanBlocked(blocking))
       return null;
     quickLook.dismiss();
     // -1 never matches the current generation, so this start never takes the view.
@@ -1766,7 +1767,9 @@ export default function createApp() {
         !sessionBlocked &&
         !scans.busy(place) &&
         !!access &&
-        (shown || (isTauri() && !targetsLoading))
+        (shown || (isTauri() && !targetsLoading)) &&
+        // A place that needs access starts with the Open dialog, which has its own gates.
+        (!needsAccess(place) || !pickerBlocked())
       );
     },
     // Header and welcome-page buttons. Like rescan, minus the per-slot check: busy disks are restarted.
@@ -1790,6 +1793,10 @@ export default function createApp() {
         !scans.busy(liveTarget) &&
         !!access
       );
+    },
+    // Remove access applies to the place the header scan button or the welcome page would scan.
+    get removeAccess() {
+      return accessRemovable(accessPlace());
     },
     get stopScan() {
       return (
@@ -1843,14 +1850,13 @@ export default function createApp() {
     allowAccess,
     // The place the header scan button or the welcome page would scan, if it must be allowed first.
     get scanNeedsAccess() {
-      const place = displayedTargetSelected && !homeOpen ? liveTarget : target;
+      const place = accessPlace();
       return !!place && needsAccess(place);
     },
-    allowingAccess: (place: Target) => allowingId === place.id,
-    // Whether Remove access applies to the place the header scan button or the welcome page would scan.
-    get canRemoveAccess() {
-      return accessRemovable(accessPlace());
+    get accessPlace() {
+      return accessPlace();
     },
+    allowingAccess: (place: Target) => allowingId === place.id,
     removeAccess,
     get batchProgress() {
       return scans.batchProgress;
@@ -2090,8 +2096,8 @@ export default function createApp() {
     relaunch,
     chooseFolder,
     scanFolder,
-    get choosingFolder() {
-      return choosingFolder;
+    get pickerOpen() {
+      return pickerOpen;
     },
     get targetsLoading() {
       return targetsLoading;

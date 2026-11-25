@@ -39,7 +39,10 @@ impl Bookmarks for NativeBookmarks {
         let url = unsafe {
             NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(
                 &data,
-                NSURLBookmarkResolutionOptions::WithSecurityScope,
+                // Startup must never mount a share or ask the person anything.
+                NSURLBookmarkResolutionOptions::WithSecurityScope
+                    | NSURLBookmarkResolutionOptions::WithoutUI
+                    | NSURLBookmarkResolutionOptions::WithoutMounting,
                 None,
                 &mut stale,
             )

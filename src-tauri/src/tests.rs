@@ -1426,6 +1426,24 @@ fn removing_access_to_a_folder_that_is_allowed_through_an_outer_location_says_so
     assert_eq!(scan_of(&state, &inner).unwrap().entries, 1);
 }
 #[test]
+fn a_refused_removal_changes_nothing() {
+    let store = tempfile::tempdir().unwrap();
+    let file = store.path().join("allowed-locations.json");
+    let state = lite_state(&file);
+    let (_dir, root) = disk_root();
+    let inner = root.join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    pick_folder(&state, root.clone()).unwrap();
+    let folder = pick_folder(&state, inner.clone()).unwrap();
+    assert!(remove_access_to(&state, &folder.id).is_err());
+    // Its own entry is still there: removing the outer location leaves the folder allowed.
+    let outer = register_picked(&state, root.clone()).unwrap();
+    remove_access_to(&state, &outer.id).unwrap();
+    assert_eq!(scan_of(&state, &inner).unwrap().entries, 1);
+    // And it is still in the file.
+    assert_eq!(scan_of(&lite_state(&file), &inner).unwrap().entries, 1);
+}
+#[test]
 fn removing_access_keeps_the_scan_and_never_drops_cleanup_queue_entries() {
     tauri::async_runtime::block_on(async {
         let dir = fixture();
