@@ -21,8 +21,9 @@ pnpm desktop:build --lite
 
 - Use a Mac where Hahakigami Lite has no Allowed locations yet. Lite's data
   lives in its sandbox container
-  (`~/Library/Containers/app.hahakigami.lite`). To start fresh, delete that
-  container while Lite is quit.
+  (`~/Library/Containers/app.hahakigami.lite`). If any disk is already allowed
+  at launch, quit Lite and move that container to the Trash in Finder.
+  Terminal can't delete it, because macOS protects other apps' containers.
 - Have one external disk you can eject, and one throwaway folder inside your
   home folder with a few files in it.
 - Start with Full Disk Access **off** for Hahakigami Lite in System Settings.
