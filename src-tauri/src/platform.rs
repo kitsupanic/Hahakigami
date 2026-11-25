@@ -144,11 +144,13 @@ pub fn target(path: &Path, name: String) -> Target {
 /// The home folder for the protection rules: the user database first, so an empty or redirected `$HOME`
 /// (`env -i`, a dev shell) cannot leave the real home folder unprotected; `$HOME` only if that lookup fails.
 pub fn home_dir() -> Option<PathBuf> {
-    passwd_home().or_else(|| {
-        std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from)
-    })
+    choose_home(passwd_home(), std::env::var_os("HOME"))
+}
+
+/// The user database's home wins. In the sandboxed Lite edition `$HOME` is the app's container, not the person's
+/// home folder.
+fn choose_home(passwd: Option<PathBuf>, env: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    passwd.or_else(|| env.filter(|h| !h.is_empty()).map(PathBuf::from))
 }
 
 /// The effective user's home folder from the user database.
@@ -712,6 +714,29 @@ fn parse_volume_uuid(buffer: &[u8]) -> Option<String> {
     let id = uuid::Uuid::from_bytes(bytes);
     (!id.is_nil()).then(|| id.to_string())
 }
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn the_password_database_home_wins_over_a_container_home() {
+        let real = PathBuf::from("/Users/real");
+        let container = OsString::from("/Users/real/Library/Containers/app/Data");
+        assert_eq!(choose_home(Some(real.clone()), Some(container)), Some(real));
+    }
+
+    #[test]
+    fn the_environment_home_is_only_a_fallback_and_must_not_be_empty() {
+        assert_eq!(
+            choose_home(None, Some(OsString::from("/Users/env"))),
+            Some(PathBuf::from("/Users/env"))
+        );
+        assert_eq!(choose_home(None, Some(OsString::new())), None);
+        assert_eq!(choose_home(None, None), None);
+    }
+}
+
 #[cfg(test)]
 mod volume_tests {
     use super::*;
