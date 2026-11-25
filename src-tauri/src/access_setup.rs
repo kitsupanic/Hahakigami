@@ -216,17 +216,23 @@ mod probe {
             .is_none_or(|until| major.is_some_and(|major| major < until))
     }
 
+    /// The path to open for a probe: a `~/` path is built from `home`, and skipped without one.
+    fn probe_path(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+        match path.strip_prefix("~/") {
+            Some(relative) => home.map(|home| home.join(relative)),
+            None => Some(PathBuf::from(path)),
+        }
+    }
+
     pub fn status() -> Status {
         let major = macos_major();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        // The real home from the user database: in the Lite sandbox `$HOME` is the app's container.
+        let home = crate::platform::home_dir();
         verdict(PROBES.iter().filter_map(|probe| {
             if !applies(probe, major) {
                 return None;
             }
-            let path = match probe.path.strip_prefix("~/") {
-                Some(relative) => home.as_ref()?.join(relative),
-                None => PathBuf::from(probe.path),
-            };
+            let path = probe_path(probe.path, home.as_deref())?;
             Some((probe.authority, outcome(&path)))
         }))
     }
@@ -330,6 +336,27 @@ mod probe {
                     assert!(!PROMPTING.contains(&name.as_ref()), "{}", probe.path);
                 }
             }
+        }
+
+        #[test]
+        fn home_probes_are_built_from_the_given_home_and_others_stay_absolute() {
+            let home = Path::new("/Users/real");
+            assert_eq!(
+                probe_path("~/Library/Safari/Bookmarks.plist", Some(home)),
+                Some(PathBuf::from("/Users/real/Library/Safari/Bookmarks.plist"))
+            );
+            assert_eq!(
+                probe_path(
+                    "/Library/Application Support/com.apple.TCC/TCC.db",
+                    Some(home)
+                ),
+                Some(PathBuf::from(
+                    "/Library/Application Support/com.apple.TCC/TCC.db"
+                ))
+            );
+            // Without a home, a home probe is skipped; an absolute one still runs.
+            assert_eq!(probe_path("~/Library/Messages/chat.db", None), None);
+            assert!(probe_path("/Library/Preferences/x.plist", None).is_some());
         }
 
         /// Run with `cargo test -- --ignored`. The answer depends on this Mac's grants.
