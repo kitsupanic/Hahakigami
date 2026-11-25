@@ -2,7 +2,9 @@
 """Build the macOS app with an existing keychain identity; never grant access.
 
 Default: local build signed with Apple Development. --release: Developer ID build, notarized and stapled.
---lite: sandboxed Hahakigami Lite, signed with Apple Development (not yet combinable with --release).
+--lite: sandboxed Hahakigami Lite, signed with Apple Development.
+--lite --release: Lite for the Mac App Store, signed with Apple Distribution and wrapped in an installer .pkg signed
+with Mac Installer Distribution. Upload is manual (Transporter); this script never receives App Store Connect credentials.
 """
 import argparse
 import hashlib
@@ -24,15 +26,22 @@ LITE_REQUIRED_ENTITLEMENTS = (LITE_SANDBOX_ENTITLEMENT, 'com.apple.security.file
                               'com.apple.security.files.bookmarks.app-scope', 'com.apple.security.network.client')
 LITE_ENTITLEMENTS = ROOT / 'src-tauri/entitlements/lite.entitlements'
 DEVELOPMENT, RELEASE = 'Apple Development', 'Developer ID Application'
+APPLE_DISTRIBUTION, INSTALLER = 'Apple Distribution', 'Mac Installer Distribution'
+# The Mac App Store needs the profile the person downloaded for the Lite bundle ID inside the app. The script only
+# embeds a path it is given; it never creates or downloads one.
+PROVISIONING_PROFILE_NAME = 'embedded.provisionprofile'
 # Notarization credentials tauri reads; either set is enough. Certificate import vars are never passed.
 NOTARY_CREDENTIALS = (('APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH'), ('APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'))
+# Anything that could upload to App Store Connect (Transporter, altool, fastlane). A team ID alone is not a secret.
+STORE_CREDENTIAL_NAMES = {name for names in NOTARY_CREDENTIALS for name in names} - {'APPLE_TEAM_ID'} | {'API_PRIVATE_KEYS_DIR'}
+STORE_CREDENTIAL_PREFIXES = ('APP_STORE_CONNECT', 'FASTLANE_')
 
 
 def development_identities(output, kind=DEVELOPMENT):
     return re.findall(rf'^\s*\d+\) ([0-9A-Fa-f]{{40}}) "{kind}: [^"\n]+"\s*$', output, re.MULTILINE)
 
 
-def select_identity(identities, requested=None, adhoc=False, kind=DEVELOPMENT):
+def select_identity(identities, requested=None, adhoc=False, kind=DEVELOPMENT, option='--identity'):
     identities = list(dict.fromkeys(value.upper() for value in identities))
     if adhoc:
         if requested:
@@ -40,11 +49,11 @@ def select_identity(identities, requested=None, adhoc=False, kind=DEVELOPMENT):
         return '-'
     if requested:
         if requested.upper() not in identities:
-            raise ValueError(f'--identity must match an existing valid {kind} certificate SHA-1.')
+            raise ValueError(f'{option} must match an existing valid {kind} certificate SHA-1.')
         return requested.upper()
     if len(identities) != 1:
-        raise ValueError(f'Expected one existing {kind} identity. Choose its SHA-1 with --identity' +
-                         ('.' if kind == RELEASE else '; --adhoc explicitly opts into unstable permission identity.'))
+        raise ValueError(f'Expected one existing {kind} identity. Choose its SHA-1 with {option}' +
+                         ('; --adhoc explicitly opts into unstable permission identity.' if kind == DEVELOPMENT else '.'))
     return identities[0]
 
 
@@ -64,6 +73,16 @@ def release_environment(environment, identity):
             return env
     raise ValueError('Release builds need notarization credentials: ' +
                      ' or '.join(', '.join(names) for names in NOTARY_CREDENTIALS) + '.')
+
+
+def appstore_environment(environment, identity):
+    """Local environment for the App Store build; refuse (rather than drop) anything that could reach App Store Connect."""
+    present = sorted(name for name, value in environment.items() if value and
+                     (name in STORE_CREDENTIAL_NAMES or name.startswith(STORE_CREDENTIAL_PREFIXES)))
+    if present:
+        raise ValueError('The App Store build never receives App Store Connect or notarization credentials; unset: ' +
+                         ', '.join(present) + '. Upload the .pkg manually with Transporter.')
+    return local_environment(environment, identity)
 
 
 def verify_metadata(metadata, identifier, adhoc, kind=DEVELOPMENT):
@@ -92,8 +111,46 @@ def verify_metadata(metadata, identifier, adhoc, kind=DEVELOPMENT):
 
 
 def check_lite_options(lite, release, adhoc, benchmark_output):
-    if lite and (release or adhoc or benchmark_output):
-        raise ValueError('--lite cannot be combined with --release, --adhoc or --benchmark-output yet.')
+    if lite and (adhoc or benchmark_output):
+        raise ValueError('--lite cannot be combined with --adhoc or --benchmark-output.')
+
+
+def check_store_options(lite, release, installer_identity, provisioning_profile):
+    store = lite and release
+    if (installer_identity or provisioning_profile) and not store:
+        raise ValueError('--installer-identity and --provisioning-profile only apply to --lite --release.')
+    if store and not provisioning_profile:
+        raise ValueError('--lite --release needs --provisioning-profile: the path to the Mac App Store provisioning '
+                         'profile for the Lite bundle ID that you downloaded from the developer account.')
+
+
+def check_provisioning_profile(path):
+    path = path.expanduser().resolve()
+    if path.suffix != '.provisionprofile' or not path.is_file():
+        raise ValueError('--provisioning-profile must be an existing .provisionprofile file.')
+    return path
+
+
+def with_provisioning_profile(overrides, profile):
+    """Overrides that make tauri copy the profile to Contents/embedded.provisionprofile before signing."""
+    macos = {**overrides['bundle']['macOS'], 'files': {PROVISIONING_PROFILE_NAME: str(profile)}}
+    return {**overrides, 'bundle': {**overrides['bundle'], 'macOS': macos}}
+
+
+def verify_provisioning_profile_embedded(bundle):
+    embedded = Path(bundle) / 'Contents' / PROVISIONING_PROFILE_NAME
+    if not embedded.is_file() or embedded.stat().st_size == 0:
+        raise ValueError('The Lite bundle has no embedded provisioning profile.')
+
+
+def installer_command(bundle, package, identity):
+    return ['/usr/bin/productbuild', '--component', str(bundle), '/Applications', '--sign', identity, str(package)]
+
+
+def verify_package_signature(output):
+    """`pkgutil --check-signature` output: the leaf of the certificate chain must be Mac Installer Distribution."""
+    if not re.search(rf'^\s*1\.\s+{INSTALLER}: ', output, re.MULTILINE):
+        raise ValueError(f'The installer package is not signed with a {INSTALLER} certificate.')
 
 
 def lite_overlay(overlay):
@@ -125,6 +182,13 @@ def leaf_certificate_sha1(bundle):
         subprocess.run(['/usr/bin/codesign', '-d', f'--extract-certificates={directory}/cert', str(bundle)],
                        check=True, capture_output=True, timeout=30)
         return hashlib.sha1(Path(directory, 'cert0').read_bytes()).hexdigest().upper()
+
+
+def keychain_identities(kind):
+    """Valid identities of one kind. Installer certificates are not code-signing identities, so list without a policy."""
+    policy = [] if kind == INSTALLER else ['-p', 'codesigning']
+    return development_identities(subprocess.run(['/usr/bin/security', 'find-identity', '-v', *policy], check=True,
+                                                 capture_output=True, text=True, timeout=30).stdout, kind)
 
 
 def prepare_benchmark_output(output):
@@ -159,23 +223,27 @@ def benchmark_frontend_command(package, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--identity', help='SHA-1 of an existing valid Apple Development identity')
+    parser.add_argument('--identity', help='SHA-1 of an existing valid signing identity (Apple Development, Developer ID Application with --release, Apple Distribution with --lite --release)')
+    parser.add_argument('--installer-identity', help='SHA-1 of an existing valid Mac Installer Distribution identity (--lite --release)')
+    parser.add_argument('--provisioning-profile', type=Path, help='Existing Mac App Store .provisionprofile for the Lite bundle ID (--lite --release)')
     parser.add_argument('--benchmark-output', type=Path, help='Build an isolated benchmark-only app into a new absolute output directory.')
     parser.add_argument('--adhoc', action='store_true', help='Explicitly build without a stable development identity')
-    parser.add_argument('--lite', action='store_true', help='Sandboxed Hahakigami Lite build (Apple Development identity)')
+    parser.add_argument('--lite', action='store_true', help='Sandboxed Hahakigami Lite build (Apple Development identity; with --release, a Mac App Store installer package)')
     parser.add_argument('--release', action='store_true', help='Developer ID build for other Macs: notarize, staple, add a DMG')
     args = parser.parse_args()
-    kind = RELEASE if args.release else DEVELOPMENT
+    store = args.lite and args.release
+    kind = APPLE_DISTRIBUTION if store else RELEASE if args.release else DEVELOPMENT
     if platform.system() != 'Darwin':
         parser.error('This local build command requires macOS.')
     try:
         if args.release and (args.adhoc or args.benchmark_output):
             raise ValueError('--release cannot be combined with --adhoc or --benchmark-output.')
         check_lite_options(args.lite, args.release, args.adhoc, args.benchmark_output)
-        identities = [] if args.adhoc else development_identities(subprocess.run(
-            ['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning'], check=True,
-            capture_output=True, text=True, timeout=30).stdout, kind)
-        identity = select_identity(identities, args.identity, args.adhoc, kind)
+        check_store_options(args.lite, args.release, args.installer_identity, args.provisioning_profile)
+        profile = check_provisioning_profile(args.provisioning_profile) if store else None
+        identity = select_identity([] if args.adhoc else keychain_identities(kind), args.identity, args.adhoc, kind)
+        installer = select_identity(keychain_identities(INSTALLER), args.installer_identity, kind=INSTALLER,
+                                    option='--installer-identity') if store else None
         config = json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text())
         name, identifier = lite_overlay(json.loads(LITE_CONFIG.read_text())) if args.lite else (config['productName'], config['identifier'])
         if Path(name).name != name:
@@ -187,9 +255,11 @@ def main():
             prepare_benchmark_output(output)
         print(f'Building with an existing {kind} identity.' if identity != '-' else
               'Building ad-hoc: macOS grants may need to be renewed after each build.', flush=True)
-        environment = (release_environment if args.release else local_environment)(os.environ, identity)
+        environment = (appstore_environment if store else release_environment if args.release else local_environment)(os.environ, identity)
         overrides = {'bundle': {'macOS': {'signingIdentity': identity}}}
-        command = ['pnpm', 'tauri', 'build', '--bundles', 'app,dmg' if args.release else 'app']
+        if store:
+            overrides = with_provisioning_profile(overrides, profile)
+        command = ['pnpm', 'tauri', 'build', '--bundles', 'app,dmg' if args.release and not store else 'app']
         if output:
             environment['CARGO_TARGET_DIR'] = str(output / 'target')
             environment['VITE_PERFORMANCE_BENCHMARK'] = '1'
@@ -213,7 +283,17 @@ def main():
             verify_entitlements(entitlements.stdout + entitlements.stderr)
         if identity != '-' and leaf_certificate_sha1(bundle) != identity:
             raise ValueError('The bundle was not signed with the selected identity.')
-        if args.release:
+        if store:
+            verify_provisioning_profile_embedded(bundle)
+            package = bundle.parents[1] / 'pkg' / f'{name}.pkg'
+            package.parent.mkdir(exist_ok=True)
+            package.unlink(missing_ok=True)
+            subprocess.run(installer_command(bundle, package, installer), check=True, timeout=600)
+            check = subprocess.run(['/usr/sbin/pkgutil', '--check-signature', str(package)], check=True,
+                                   capture_output=True, text=True, timeout=60)
+            verify_package_signature(check.stdout + check.stderr)
+            print(f'Verified App Store installer: {package}\nUpload it manually with Transporter.', flush=True)
+        elif args.release:
             subprocess.run(['/usr/bin/xcrun', 'stapler', 'validate', str(bundle)], check=True, timeout=60)
             subprocess.run(['/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose', str(bundle)], check=True, timeout=60)
             dmgs = sorted(bundle.parents[1].glob('dmg/*.dmg'))
