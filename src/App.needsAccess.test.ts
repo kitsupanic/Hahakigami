@@ -55,6 +55,9 @@ beforeEach(() => {
         return [disk];
       case "list_cleanup_queue":
         return { entries: [], revision: 0, warning: null, blocked: false };
+      // The view believes the disk is allowed; the backend refuses all the same (its bookmark stopped working).
+      case "allowed_target_ids":
+        return [disk.id];
       case "start_scan":
         throw "NEEDS_ACCESS: Allow access to / before scanning it.";
       default:
@@ -82,6 +85,9 @@ it("explains a scan refused for lack of access in plain words, not as a failure 
   expect(dialog.querySelector("h2")?.textContent).toBe("Allow access first");
   expect(dialog.querySelector(".failure-reason")?.textContent).toMatch(
     /Startup disk/,
+  );
+  expect(dialog.querySelector(".failure-reason")?.textContent).toContain(
+    "Allow access…",
   );
   expect(container.textContent).not.toContain("NEEDS_ACCESS");
   expect(container.textContent).not.toContain("Full Disk Access");

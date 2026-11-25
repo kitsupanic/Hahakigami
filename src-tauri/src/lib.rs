@@ -474,6 +474,80 @@ fn require_allowed_location(state: &AppState, root: &Path) -> Result<(), String>
         None => Ok(()),
     }
 }
+/// The ids of the registered targets the app may read: every one in the Full edition, those inside an Allowed
+/// location in Lite. A disk that was away comes back allowed here, because the lookup tries its bookmark again.
+fn allowed_ids(state: &AppState) -> Vec<String> {
+    let listed: Vec<(String, PathBuf)> = state
+        .targets
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, (_, path))| (id.clone(), path.clone()))
+        .collect();
+    let mut ids: Vec<String> = listed
+        .into_iter()
+        .filter(|(_, path)| require_allowed_location(state, path).is_ok())
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    ids
+}
+/// Allows the registered target `target_id` by the folder the person picked for it. Only the target itself will do:
+/// another folder is refused and remembered nowhere, so the person is never left allowing something that does not
+/// make the disk scannable.
+fn allow_picked(state: &AppState, target_id: &str, picked: PathBuf) -> Result<(), String> {
+    let (name, path) = {
+        let targets = state.targets.lock().unwrap();
+        let (target, path) = targets
+            .get(target_id)
+            .ok_or("Choose a registered folder or volume first.")?;
+        (target.name.clone(), path.clone())
+    };
+    if plain_spelling(picked.clone()) != path {
+        return Err(format!(
+            "Choose {name} in the Open dialog to allow access to it."
+        ));
+    }
+    pick_folder(state, picked).map(|_| ())
+}
+/// Opens the Open dialog at a target that is not allowed yet. Returns the allowed ids afterwards; a cancelled dialog
+/// changes nothing.
+#[tauri::command]
+async fn allow_access(app: tauri::AppHandle, target_id: String) -> Result<Vec<String>, String> {
+    // The dialog, canonicalize and the bookmark calls can hang on an unresponsive mount, like the picker itself.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let path = state
+            .targets
+            .lock()
+            .unwrap()
+            .get(&target_id)
+            .map(|(_, path)| path.clone())
+            .ok_or("Choose a registered folder or volume first.")?;
+        // The dialog opens at the place being allowed (`/` for the startup disk).
+        if let Some(file) = app
+            .dialog()
+            .file()
+            .set_directory(&path)
+            .blocking_pick_folder()
+        {
+            let picked = file.into_path().map_err(|e| e.to_string())?;
+            let picked = std::fs::canonicalize(picked).map_err(|e| e.to_string())?;
+            allow_picked(&state, &target_id, picked)?;
+        }
+        Ok(allowed_ids(&state))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+/// The ids of the listed targets the app may read.
+#[tauri::command]
+async fn allowed_target_ids(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    // Resolving a bookmark can stall on an unresponsive mount.
+    tauri::async_runtime::spawn_blocking(move || allowed_ids(&app.state::<AppState>()))
+        .await
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 async fn choose_folder(app: tauri::AppHandle) -> Result<Option<platform::Target>, String> {
     // canonicalize, statvfs and register's lstat/statfs can hang on an unresponsive mount, like the picker itself.
@@ -1986,6 +2060,8 @@ pub fn run() {
             discover_targets,
             mounted_volumes,
             choose_folder,
+            allow_access,
+            allowed_target_ids,
             start_scan,
             cancel_scan,
             discard_scan,

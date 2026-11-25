@@ -19,6 +19,7 @@ function app(overrides = {}) {
     scanSlots: {},
     shown: null,
     openDisk: vi.fn(),
+    needsAccess: () => false,
     blocked: false,
     sessionBlocked: false,
     running: false,
