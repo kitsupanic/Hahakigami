@@ -17,7 +17,7 @@ The edition shipped as Hahakigami Lite on the Mac App Store. It lacks only what 
 _Avoid_: Free version, App Store build, sandboxed build, demo
 
 **Allowed location**:
-A disk or folder the person has picked in an Open dialog so the Lite edition may read it, remembered across launches. In the Lite edition every Scan target is an Allowed location or lies inside one. Full Disk Access still widens what a scan inside it can read.
+A disk or folder the person has picked in an Open dialog so the Lite edition may read it, remembered across launches. In the Lite edition every Scan target is an Allowed location or lies inside one. Allowing the startup disk covers every disk, since other disks are mounted inside it. Full Disk Access still widens what a scan inside it can read.
 _Avoid_: Grant, bookmark, authorized folder, permitted folder
 
 **Automation scan**:

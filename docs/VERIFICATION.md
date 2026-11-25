@@ -27,50 +27,64 @@ pnpm desktop:build --lite
 - Have one external disk you can eject, and one throwaway folder inside your
   home folder with a few files in it.
 - Start with Full Disk Access **off** for Hahakigami Lite in System Settings.
-  Turn it on only at step 11.
+  Turn it on only at step 14.
 
 ### Checks
+
+Disks other than the startup disk are mounted inside it (at
+`/Volumes/<name>`), so allowing the startup disk allows every disk (ADR 0007).
+Checks 3–6 therefore run before the startup disk is allowed.
 
 1. **Window renders.** Lite launches to its welcome page. The window title, app
    menu and About say "Hahakigami Lite". No UI text mentions any other edition
    of the app.
 2. **Disks are listed.** Every disk the Full edition lists appears in the
-   Disks list, and each one shows "Allow access…".
-3. **Allow access for a disk.** Choose "Allow access…" for the startup disk.
-   The Open dialog opens at `/` (Macintosh HD). Click Open. The disk now shows
-   the normal Scan action and scans with it. No second dialog appears.
-4. **Scan all disks.** With only the startup disk allowed, Scan all disks scans
-   that disk alone and reports how many disks it skipped. It opens no dialog.
-5. **Allowed location after relaunch.** Use Scan folder to scan the throwaway
-   folder. Quit and relaunch Lite. Both the startup disk and the folder scan
-   without the Open dialog.
-6. **Incremental rescan.** Change one file in the throwaway folder and rescan
-   it. The rescan is incremental: it reuses the Rescan baseline and finishes in
-   a fraction of the first scan's time.
-7. **External disk.** Allow the external disk and scan it. Eject it and
-   reconnect it, then relaunch Lite. Each time it is still allowed and scans
-   with no dialog.
-8. **Remove access.** Choose Remove access for the throwaway folder. Its scan
-   results stay on screen and the scan action turns into "Allow access…".
-   After a relaunch, it still needs access.
-9. **Lost access.** Allow the throwaway folder again, quit Lite, rename the
-   folder in Finder, then relaunch. The renamed folder either scans normally or
-   shows "Allow access…". No error dialog appears either way.
-10. **Reach without Full Disk Access.** Full Disk Access is off for both
+   Disks list, and each one shows "Needs access", with "Allow access…" as its
+   scan action.
+3. **Allowed folder.** Use Scan folder to scan the throwaway folder. It scans,
+   and every disk still needs access.
+4. **Scan all disks skips.** With only the folder allowed, Scan all disks
+   starts no scan, reports how many disks it skipped, and opens no dialog.
+5. **Allow access for an external disk.** Choose "Allow access…" for the
+   external disk. The Open dialog opens at that disk. Click Open: the disk
+   scans with the normal action, and the startup disk still needs access.
+6. **External disk comes back.** Eject the external disk and reconnect it,
+   then quit and relaunch Lite. Each time it is still allowed and scans with no
+   dialog.
+7. **Allow access for the startup disk.** Choose "Allow access…" for the
+   startup disk. The Open dialog opens at `/` (Macintosh HD). Click Open
+   without entering a folder. The startup disk scans with the normal action,
+   and every other disk now shows its normal scan action too.
+8. **Scan all disks scans everything.** Scan all disks scans every disk and
+   reports nothing skipped.
+9. **Allowed locations after relaunch.** Quit and relaunch Lite. The startup
+   disk, the external disk and the folder all scan without the Open dialog.
+10. **Incremental rescan.** Change one file in the throwaway folder and rescan
+    it. The rescan is incremental: it reuses the Rescan baseline and finishes
+    in a fraction of the first scan's time.
+11. **Remove access.** With the startup disk's results on screen, choose
+    Remove access. Its results stay on screen and its scan action turns into
+    "Allow access…". Disks you never allowed on their own go back to "Needs
+    access". The external disk and the folder stay allowed. After a relaunch
+    the startup disk still needs access.
+12. **Lost access.** Quit Lite, rename the throwaway folder in Finder, then
+    relaunch. The renamed folder either scans normally or shows "Allow
+    access…". No error dialog appears either way. Allow the startup disk again
+    for the checks that follow.
+13. **Reach without Full Disk Access.** Full Disk Access is off for both
     editions. Scan the startup disk in Lite and in the Full edition, and record
     both On disk totals. They should match within a small margin.
-11. **Full Disk Access status.** Lite reports Full Disk Access as off. Turn it
+14. **Full Disk Access status.** Lite reports Full Disk Access as off. Turn it
     on for Hahakigami Lite in System Settings (the in-app settings link opens
     the right pane) and relaunch. Lite reports it as on.
-12. **Reach with Full Disk Access.** With Full Disk Access on for both
+15. **Reach with Full Disk Access.** With Full Disk Access on for both
     editions, scan the startup disk in each and record both totals. They match,
-    and each is at least the total from step 10.
-13. **Move to Trash.** Move one file inside an allowed location to the Trash.
+    and each is at least the total from step 13.
+16. **Move to Trash.** Move one file inside an allowed location to the Trash.
     It lands in the Trash and leaves the scan. Put it back afterwards.
-14. **Quick Look.** Quick Look previews a file inside an allowed location.
-15. **Reveal in Finder.** Reveal in Finder selects that file in a Finder
-    window.
-16. **Full edition unaffected.** In the Full edition, every disk is scannable
+17. **Quick Look and Reveal.** Quick Look previews a file inside an allowed
+    location, and Reveal in Finder selects it in a Finder window.
+18. **Full edition unaffected.** In the Full edition, every disk is scannable
     without "Allow access…". Reveal in Finder and the Full Disk Access settings
     link still work. `Hahakigami.app/Contents/MacOS/hahakigami scan <folder>`
     still prints a JSON result. The same command on the Lite binary
@@ -78,7 +92,7 @@ pnpm desktop:build --lite
 
 ### Lite runs
 
-Add a row for every release candidate. Totals come from steps 10 and 12.
+Add a row for every release candidate. Totals come from steps 13 and 15.
 "Pass" means every check passed.
 
 | Date | Commit | Lite total, no FDA | Full total, no FDA | Lite total, FDA | Full total, FDA | Result |
