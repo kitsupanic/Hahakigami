@@ -98,6 +98,7 @@ Add a row for every release candidate. Totals come from steps 13 and 15.
 | Date | Commit | Lite total, no FDA | Full total, no FDA | Lite total, FDA | Full total, FDA | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | Sandbox spike (not a release) | `prototype/sandbox-reach` | 81.5 GiB | — | 83.8 GiB | — | Reference |
+| 2026-11-27 | `d908ac8` | 98.7 GiB | 98.7 GiB | not noted | not noted | Pass |
 
 ## Six-second gate on the cleaned GitHub scope — 14 October 2026
 
