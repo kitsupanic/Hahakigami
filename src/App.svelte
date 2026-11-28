@@ -304,10 +304,18 @@
   const filterKey = $derived(app.filterKey);
   const resultLocation = $derived(app.resultLocation);
   const displayedTargetSelected = $derived(app.displayedTargetSelected);
+  // What the header scan button does, and the place it acts on (which Remove access acts on too).
+  const scanVerb = $derived(
+    app.scanNeedsAccess
+      ? "Allow access…"
+      : displayedTargetSelected
+        ? "Rescan"
+        : "Scan",
+  );
   const scanActionLabel = $derived(
-    displayedTargetSelected
-      ? `Rescan ${locationName(resultLocation?.name, resultLocation?.path)}`
-      : `Scan ${locationName(target?.name, target?.path)}`,
+    app.scanNeedsAccess
+      ? scanVerb
+      : `${scanVerb} ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`,
   );
   const filterLocation = $derived(
     filters.scopeId == null
@@ -1288,11 +1296,16 @@
               {#if running}
                 <span>{cancelling ? "Stopping…" : "Stop"}</span>
               {:else}
-                <Icon name="refresh" size={16} /><span
-                  >{displayedTargetSelected ? "Rescan" : "Scan"}</span
-                >
+                <Icon name="refresh" size={16} /><span>{scanVerb}</span>
               {/if}
             </button>
+            {#if app.can.removeAccess}
+              <button
+                class="remove-access"
+                title={`Remove access to ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`}
+                onclick={() => void app.removeAccess()}>Remove access</button
+              >
+            {/if}
             <button
               class="toolbar-sidebar-toggle"
               aria-label={listVisible ? "Hide file list" : "Show file list"}
@@ -1345,6 +1358,7 @@
         <div class="analysis-main">
           <div class:has-scan={!!summary} class="explorer-content">
             {#if !summary}
+              {@const welcomeNeedsAccess = !!target && app.needsAccess(target)}
               <section class="welcome" aria-labelledby="welcome-title">
                 <img class="welcome-icon" src={appIcon} alt="" />
                 <h1 id="welcome-title">See what’s using your space.</h1>
@@ -1355,7 +1369,7 @@
                   class="welcome-target"
                   id="welcome-target"
                   title={target?.path}
-                  aria-busy={app.choosingFolder}
+                  aria-busy={app.pickerOpen}
                   disabled={!app.can.chooseFolder}
                   onclick={() => void app.chooseFolder()}
                 >
@@ -1372,7 +1386,7 @@
                           : "No location selected"}</strong
                     >
                     <span
-                      >{app.choosingFolder
+                      >{app.pickerOpen
                         ? "Choosing folder…"
                         : target
                           ? "Choose another location"
@@ -1386,7 +1400,9 @@
                     aria-describedby="welcome-note"
                     aria-busy={!!target && app.scanStarting(target)}
                     title={target
-                      ? `Scan ${locationName(target.name, target.path)}`
+                      ? welcomeNeedsAccess
+                        ? `Allow access to ${locationName(target.name, target.path)}`
+                        : `Scan ${locationName(target.name, target.path)}`
                       : "Scan selected location"}
                     disabled={!app.can.rescan}
                     onclick={() => void app.start(target)}
@@ -1395,11 +1411,23 @@
                         ? "Starting scan…"
                         : app.targetsLoading
                           ? "Loading locations…"
-                          : target
-                            ? `Scan ${locationName(target.name, target.path)}`
-                            : "Scan location"}</span
+                          : target && app.allowingAccess(target)
+                            ? "Allowing access…"
+                            : welcomeNeedsAccess
+                              ? "Allow access…"
+                              : target
+                                ? `Scan ${locationName(target.name, target.path)}`
+                                : "Scan location"}</span
                     ></button
                   >
+                  {#if app.can.removeAccess}
+                    <button
+                      class="remove-access"
+                      title={`Remove access to ${locationName(app.accessPlace?.name, app.accessPlace?.path)}`}
+                      onclick={() => void app.removeAccess()}
+                      ><span>Remove access</span></button
+                    >
+                  {/if}
                   <button
                     class="welcome-scan-all"
                     title="Scan every disk"

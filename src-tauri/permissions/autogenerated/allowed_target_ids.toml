@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-allowed-target-ids"
+description = "Enables the allowed_target_ids command without any pre-configured scope."
+commands.allow = ["allowed_target_ids"]
+
+[[permission]]
+identifier = "deny-allowed-target-ids"
+description = "Denies the allowed_target_ids command without any pre-configured scope."
+commands.deny = ["allowed_target_ids"]

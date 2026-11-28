@@ -175,14 +175,14 @@ it("keeps selection and feedback on cancellation and reports a current picker fa
   expect(
     container.querySelector("[role=dialog] details")?.textContent,
   ).toContain("Picker unavailable");
-  expect(app().choosingFolder).toBe(false);
+  expect(app().pickerOpen).toBe(false);
 });
 it("blocks the picker, location changes, and scanning during a native picker", async () => {
   const picking = deferred<Target | null>();
   response("choose_folder", () => picking.promise);
   await mount();
   await click("Choose folder");
-  expect(app().choosingFolder).toBe(true);
+  expect(app().pickerOpen).toBe(true);
   for (const name of ["Choose folder", "Scan location"])
     expect(button(name).disabled).toBe(true);
   await act(() => {
@@ -192,7 +192,7 @@ it("blocks the picker, location changes, and scanning during a native picker", a
   expect(calls("choose_folder")).toHaveLength(1);
   expect(calls("start_scan")).toHaveLength(0);
   await act(() => picking.resolve(folder));
-  expect(app().choosingFolder).toBe(false);
+  expect(app().pickerOpen).toBe(false);
   expect(button("Choose folder").disabled).toBe(false);
 });
 it("waits for discovery before opening a picker so discovery cannot replace a picked target", async () => {
@@ -289,7 +289,7 @@ it.each(["scan", "navigation", "target"])(
     });
     // Neither another scan nor a disk refresh replacing the target may drop the chosen folder.
     expect(app().target?.id).toBe(folder.id);
-    expect(app().choosingFolder).toBe(false);
+    expect(app().pickerOpen).toBe(false);
   },
 );
 

@@ -44,6 +44,17 @@
         : slot.summary?.state === "failed"
           ? "Scan failed"
           : "Scanned";
+  // The row's tag, and the words a screen reader gets: a place that must be allowed first says so, unless a scan is
+  // running on it.
+  function rowTag(slot: ScanSlot | undefined, place: (typeof app.targets)[number]) {
+    const scan = slot ? slotTag(slot) : "";
+    if ((slot && slotScanning(slot)) || !app.needsAccess(place))
+      return { tag: scan, note: scan };
+    return {
+      tag: "Needs access",
+      note: scan ? `${scan}, needs access` : "Needs access",
+    };
+  }
   // Fraction scanned, known only for a whole volume (used space is the total); null means unknown.
   function scanProgress(slot: ScanSlot, disk?: (typeof app.targets)[number]) {
     if (!slot.summary || slot.summary.state !== "running") return undefined;
@@ -101,7 +112,7 @@
         : `${compactBytes(disk.freeBytes ?? 0)} free of ${compactBytes(disk.totalBytes ?? 0)}`}
     {@const slot = app.scanSlots[disk.path]}
     {@const scanned = !!slot}
-    {@const tag = slot ? slotTag(slot) : ""}
+    {@const { tag, note: tagNote } = rowTag(slot, disk)}
     {@const progress = slot ? scanProgress(slot, disk) : undefined}
     {@const active =
       (welcomeShown && app.target?.path === disk.path) ||
@@ -111,15 +122,15 @@
       class:active
       class:scanned
       aria-current={active ? "page" : undefined}
-      aria-label={`${disk.name}, ${size}${scanned ? `, ${tag}` : ""}`}
-      title={`${disk.path}${scanned ? `\n${tag}` : ""}`}
+      aria-label={`${disk.name}, ${size}${tagNote ? `, ${tagNote}` : ""}`}
+      title={`${disk.path}${tagNote ? `\n${tagNote}` : ""}`}
       disabled={app.sessionBlocked}
       onclick={() => app.openDisk(disk)}
     >
       <Icon name="disk" size={22} /><span
         class="nav-copy"
         ><span class="disk-name"
-          ><strong>{disk.name}</strong>{#if scanned}<em class:done={tag === "Scanned"}>{tag}</em>{/if}</span
+          ><strong>{disk.name}</strong>{#if tag}<em class:done={tag === "Scanned"}>{tag}</em>{/if}</span
         ><small>{size}</small>{#if progress !== undefined}<span
             class="scan-track"
             class:indeterminate={progress === null}
@@ -143,7 +154,7 @@
     </button>
   {/each}
   {#if folderSlot}
-    {@const tag = slotTag(folderSlot)}
+    {@const { tag, note: tagNote } = rowTag(folderSlot, folderSlot.target)}
     {@const progress = scanProgress(folderSlot)}
     {@const active =
       shownSlot === FOLDER_SLOT ||
@@ -152,8 +163,8 @@
       class="side-nav disk-nav folder-nav scanned"
       class:active
       aria-current={active ? "page" : undefined}
-      aria-label={`${folderSlot.target.name}, folder, ${tag}`}
-      title={`${folderSlot.target.path}\n${tag}`}
+      aria-label={`${folderSlot.target.name}, folder, ${tagNote}`}
+      title={`${folderSlot.target.path}\n${tagNote}`}
       disabled={app.sessionBlocked}
       onclick={() => app.openDisk(folderSlot.target)}
     >
