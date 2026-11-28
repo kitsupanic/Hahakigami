@@ -183,19 +183,25 @@ fn passwd_home() -> Option<PathBuf> {
     }
 }
 
-/// "/" and the `/Volumes/*` mounts, from the mount table only (no statvfs, so it never blocks).
+/// "/" and the `/Volumes/*` mounts Finder shows, from the mount table only (no statvfs, so it never blocks).
 pub fn volume_paths() -> Vec<PathBuf> {
-    // A home folder mounted at /Volumes/<name> is listed as home, not as a disk.
     let home = std::env::var_os("HOME").map(PathBuf::from);
+    let hidden = hidden_mounts();
     let mut paths = vec![PathBuf::from("/")];
     // An unreadable mount table only costs the extra disks; "/" is always listed.
     paths.extend(
         mounted_paths()
             .unwrap_or_default()
             .into_iter()
-            .filter(|path| is_volume_mount(path) && home.as_ref() != Some(path)),
+            .filter(|path| is_listed_volume(path, home.as_deref(), &hidden)),
     );
     paths
+}
+
+/// A `/Volumes/*` mount that is a disk of its own. A home folder mounted at /Volumes/<name> is listed as home, and
+/// a mount macOS marks `nobrowse` (the Recovery volume, installers' helper mounts) is hidden, as in Finder.
+fn is_listed_volume(path: &Path, home: Option<&Path>, hidden: &[PathBuf]) -> bool {
+    is_volume_mount(path) && home != Some(path) && !hidden.iter().any(|mount| mount == path)
 }
 
 /// `volume_paths` without network mounts: the paths `discover` lists as disks, still from the mount table only.
@@ -337,6 +343,29 @@ pub fn mounted_paths() -> Option<Vec<PathBuf>> {
 /// Mount points and whether each is local, from the mount table only (MNT_NOWAIT: no probing of the mounts).
 #[cfg(target_os = "macos")]
 fn mounted_flags() -> Option<Vec<(PathBuf, bool)>> {
+    mount_table().map(|mounts| {
+        mounts
+            .iter()
+            .map(mount_of)
+            .filter(|(path, _)| !path.as_os_str().is_empty())
+            .collect()
+    })
+}
+
+/// Mount points marked `nobrowse` (MNT_DONTBROWSE), which Finder doesn't show.
+#[cfg(target_os = "macos")]
+fn hidden_mounts() -> Vec<PathBuf> {
+    mount_table()
+        .unwrap_or_default()
+        .iter()
+        .filter(|info| info.f_flags & libc::MNT_DONTBROWSE as u32 != 0)
+        .map(|info| mount_of(info).0)
+        .collect()
+}
+
+/// The mount table (MNT_NOWAIT: no probing of the mounts).
+#[cfg(target_os = "macos")]
+fn mount_table() -> Option<Vec<libc::statfs>> {
     // getfsstat writes into caller-owned memory. Unlike getmntinfo, concurrent
     // calls never invalidate another caller's native array.
     for _ in 0..4 {
@@ -359,19 +388,17 @@ fn mounted_flags() -> Option<Vec<(PathBuf, bool)>> {
         unsafe {
             mounts.set_len(written as usize);
         }
-        return Some(
-            mounts
-                .iter()
-                .map(mount_of)
-                .filter(|(path, _)| !path.as_os_str().is_empty())
-                .collect(),
-        );
+        return Some(mounts);
     }
     None
 }
 #[cfg(not(target_os = "macos"))]
 fn mounted_flags() -> Option<Vec<(PathBuf, bool)>> {
     Some(vec![])
+}
+#[cfg(not(target_os = "macos"))]
+fn hidden_mounts() -> Vec<PathBuf> {
+    vec![]
 }
 
 #[allow(clippy::unnecessary_cast)] // statvfs field widths differ on Unix targets.
@@ -510,6 +537,33 @@ mod tests {
         assert!(!is_disk_path(Path::new("/Volumes/.timemachine/x")));
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         assert!(!is_disk_path(&home));
+    }
+    #[test]
+    fn nobrowse_mounts_and_a_mounted_home_are_not_listed_as_disks() {
+        let hidden = [
+            PathBuf::from("/Volumes/Recovery"),
+            PathBuf::from("/System/Volumes/Data"),
+        ];
+        assert!(is_listed_volume(
+            Path::new("/Volumes/Media Drive"),
+            None,
+            &hidden
+        ));
+        assert!(!is_listed_volume(
+            Path::new("/Volumes/Recovery"),
+            None,
+            &hidden
+        ));
+        assert!(!is_listed_volume(
+            Path::new("/Volumes/ada"),
+            Some(Path::new("/Volumes/ada")),
+            &[]
+        ));
+        assert!(!is_listed_volume(
+            Path::new("/Volumes/.timemachine"),
+            None,
+            &[]
+        ));
     }
     #[test]
     fn mount_flags_tell_local_disks_from_network_shares_that_discovery_drops() {
