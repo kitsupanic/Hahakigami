@@ -38,15 +38,15 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-zstd = "=0.14.2"
+zstd = "=0.14.5"
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
-tauri-plugin-clipboard-manager = "=2.4.1"
-clap = { version = "=4.6.7", features = ["derive"], optional = true }
-rmcp = { version = "=3.7.0", default-features = false, features = ["server", "macros", "transport-io"], optional = true }
+tauri-plugin-clipboard-manager = "=2.5.0"
+clap = { version = "=4.6.10", features = ["derive"], optional = true }
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "macros", "transport-io"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"], optional = true }
 # Already locked through tauri; matches names across NFC/NFD spellings.
-icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_normalizer = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -58,4 +58,4 @@ objc2-foundation = { version = "0.3", features = ["NSFileManager", "NSURL", "NSE
 disk-scan = { path = "../crates/disk-scan", features = ["test-support"] }
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
-rmcp = { version = "=3.7.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-child-process"] }
