@@ -8,6 +8,7 @@ with Mac Installer Distribution. Upload is manual (Transporter); this script nev
 """
 import argparse
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -29,6 +30,8 @@ LITE_REQUIRED_ENTITLEMENTS = (LITE_SANDBOX_ENTITLEMENT, 'com.apple.security.file
 LITE_ENTITLEMENTS = ROOT / 'src-tauri/entitlements/lite.entitlements'
 DEVELOPMENT, RELEASE = 'Apple Development', 'Developer ID Application'
 APPLE_DISTRIBUTION, INSTALLER = 'Apple Distribution', 'Mac Installer Distribution'
+# The older common name Apple still gives some installer certificates; it is the same kind of certificate.
+INSTALLER_NAMES = (INSTALLER, '3rd Party Mac Developer Installer')
 # The Mac App Store needs the profile the person downloaded for the Lite bundle ID inside the app. The script only
 # embeds a path it is given; it never creates or downloads one.
 PROVISIONING_PROFILE_NAME = 'embedded.provisionprofile'
@@ -39,23 +42,28 @@ STORE_CREDENTIAL_NAMES = {name for names in NOTARY_CREDENTIALS for name in names
 STORE_CREDENTIAL_PREFIXES = ('APP_STORE_CONNECT', 'FASTLANE_')
 
 
+def kind_prefixes(kind):
+    """A regex for the common-name prefixes of one kind; the installer kind has two names."""
+    return '|'.join(re.escape(name) for name in (INSTALLER_NAMES if kind == INSTALLER else (kind,)))
+
+
 def identity_names(output, kind=DEVELOPMENT):
     """(SHA-1, full name) of each listed identity of one kind, like `Apple Distribution: Name (TEAMID)`."""
-    return re.findall(rf'^\s*\d+\) ([0-9A-Fa-f]{{40}}) "({kind}: [^"\n]+)"\s*$', output, re.MULTILINE)
+    return re.findall(rf'^\s*\d+\) ([0-9A-Fa-f]{{40}}) "((?:{kind_prefixes(kind)}): [^"\n]+)"\s*$', output, re.MULTILINE)
 
 
 def development_identities(output, kind=DEVELOPMENT):
     return [sha for sha, _ in identity_names(output, kind)]
 
 
-def identity_name(output, sha, kind):
-    """The full name of the selected identity. Fails when another valid identity has the same name, because tools
-    that select by name (productbuild) could not tell the two apart."""
+def identity_name(output, sha, kind, unique=True):
+    """The full name of the selected identity. Unless `unique` is off, fails when another valid identity has the same
+    name, because tools that select by name (productbuild) could not tell the two apart."""
     named = {value.upper(): name for value, name in identity_names(output, kind)}
     name = named.get(sha.upper())
     if name is None:
         raise ValueError(f'The selected {kind} identity is not in the keychain listing.')
-    if sum(other == name for other in named.values()) > 1:
+    if unique and sum(other == name for other in named.values()) > 1:
         raise ValueError(f'More than one valid {kind} identity is named "{name}", so it cannot be chosen by name. '
                          'Remove the one you do not use from the keychain, or sign with a different certificate.')
     return name
@@ -138,7 +146,7 @@ def verify_metadata(metadata, identifier, adhoc, kind=DEVELOPMENT):
                 raise ValueError(f'The designated requirement lacks {needed!r}.')
 
 
-def check_lite_options(lite, release, adhoc, benchmark_output):
+def check_lite_options(lite, adhoc, benchmark_output):
     if lite and (adhoc or benchmark_output):
         raise ValueError('--lite cannot be combined with --adhoc or --benchmark-output.')
 
@@ -176,17 +184,19 @@ def installer_command(bundle, package, identity):
 
 
 def verify_package_signature(output):
-    """`pkgutil --check-signature` output: the leaf of the certificate chain must be Mac Installer Distribution."""
-    if not re.search(rf'^\s*1\.\s+{INSTALLER}: ', output, re.MULTILINE):
+    """`pkgutil --check-signature` output: the leaf of the certificate chain must be a Mac Installer Distribution
+    certificate (or one with the older name)."""
+    if not re.search(rf'^\s*1\.\s+(?:{kind_prefixes(INSTALLER)}): ', output, re.MULTILINE):
         raise ValueError(f'The installer package is not signed with a {INSTALLER} certificate.')
 
 
 APPLICATION_IDENTIFIER, TEAM_IDENTIFIER = 'com.apple.application-identifier', 'com.apple.developer.team-identifier'
 
 
-def store_identifiers(profile, team, bundle_identifier):
+def store_identifiers(profile, team, bundle_identifier, identity, now=None):
     """(application identifier, team identifier) the Mac App Store build is signed with, read from the provisioning
-    profile. Fails unless the profile is for this app and for the team of the Apple Distribution identity."""
+    profile. Fails unless the profile is current, is an App Store profile (no device list), is for this app and the
+    team of the Apple Distribution identity, and includes that identity's certificate (`identity` is its SHA-1)."""
     entitlements = profile.get('Entitlements') or {}
     expected = f'{team}.{bundle_identifier}'
     if entitlements.get(APPLICATION_IDENTIFIER) != expected:
@@ -194,6 +204,19 @@ def store_identifiers(profile, team, bundle_identifier):
                          f'{entitlements.get(APPLICATION_IDENTIFIER)!r}).')
     if entitlements.get(TEAM_IDENTIFIER) != team or team not in (profile.get('TeamIdentifier') or []):
         raise ValueError(f'The provisioning profile belongs to another team than the Apple Distribution identity ({team}).')
+    expires = profile.get('ExpirationDate')
+    if not isinstance(expires, datetime):
+        raise ValueError('The provisioning profile has no expiration date.')
+    # plistlib gives naive datetimes, which are UTC.
+    if expires.replace(tzinfo=expires.tzinfo or timezone.utc) <= (now or datetime.now(timezone.utc)):
+        raise ValueError(f'The provisioning profile expired on {expires:%Y-%m-%d}. Download a new one.')
+    if 'ProvisionedDevices' in profile:
+        raise ValueError('The provisioning profile lists devices, so it is a development profile. '
+                         'Download a Mac App Store profile.')
+    certificates = {hashlib.sha1(der).hexdigest().upper() for der in profile.get('DeveloperCertificates') or []}
+    if identity.upper() not in certificates:
+        raise ValueError('The provisioning profile does not include the selected Apple Distribution certificate. '
+                         'Add it to the profile in the developer account and download it again.')
     return entitlements[APPLICATION_IDENTIFIER], entitlements[TEAM_IDENTIFIER]
 
 
@@ -310,7 +333,7 @@ def main():
     try:
         if args.release and (args.adhoc or args.benchmark_output):
             raise ValueError('--release cannot be combined with --adhoc or --benchmark-output.')
-        check_lite_options(args.lite, args.release, args.adhoc, args.benchmark_output)
+        check_lite_options(args.lite, args.adhoc, args.benchmark_output)
         check_store_options(args.lite, args.release, args.installer_identity, args.provisioning_profile)
         profile = check_provisioning_profile(args.provisioning_profile) if store else None
         identity = select_identity([] if args.adhoc else keychain_identities(kind), args.identity, args.adhoc, kind)
@@ -336,9 +359,9 @@ def main():
         if store:
             overrides = with_provisioning_profile(overrides, profile)
             # The App Store needs the signature to carry the application and team identifiers the profile grants.
-            identifiers = store_identifiers(read_provisioning_profile(profile),
-                                            identity_team(identity_name(keychain_listing(APPLE_DISTRIBUTION), identity, APPLE_DISTRIBUTION)),
-                                            identifier)
+            # Signing is by SHA-1, so two certificates sharing a name do not matter here.
+            team = identity_team(identity_name(keychain_listing(APPLE_DISTRIBUTION), identity, APPLE_DISTRIBUTION, unique=False))
+            identifiers = store_identifiers(read_provisioning_profile(profile), team, identifier, identity)
             entitlements_file = Path(scratch.enter_context(tempfile.TemporaryDirectory())) / 'lite-store.entitlements'
             entitlements_file.write_bytes(store_entitlements(identifiers))
             overrides = with_entitlements(overrides, entitlements_file)

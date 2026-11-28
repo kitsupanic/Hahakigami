@@ -209,10 +209,10 @@ REPO_URL="https://github.com/kitsupanic/Hahakigami"
 SUPPORT_URL="$REPO_URL/issues"
 PRIVACY_URL="$REPO_URL/blob/main/PRIVACY.md"
 
-# identity_sha1 PATTERN [POLICY...]: SHA-1 of the one valid identity whose name starts with PATTERN.
+# identity_sha1 PATTERN [POLICY...]: SHA-1 of each valid identity whose name starts with PATTERN (a regex; use a|b for alternatives).
 identity_sha1() {
   local pattern="$1"; shift
-  security find-identity -v "$@" 2>/dev/null | grep -E "\"${pattern}: " | awk '{print $2}' || true
+  security find-identity -v "$@" 2>/dev/null | grep -E "\"(${pattern}): " | awk '{print $2}' || true
 }
 
 # copy TEXT: put TEXT on the clipboard and show it.
@@ -231,8 +231,12 @@ wait_for_identity() {
     if (( count > 1 )); then
       warn "found $count valid '$pattern' identities. Keep one (revoke the extras in Manage Certificates) or pick by SHA-1:" >&2
       printf '%s\n' "$sha" | sed 's/^/    /' >&2
-      ask PICKED "SHA-1 to use:" >&2
-      printf '%s' "$PICKED"; return
+      while :; do
+        ask PICKED "SHA-1 to use:" >&2 || return 1
+        PICKED=$(printf '%s' "$PICKED" | tr '[:lower:]' '[:upper:]')
+        if printf '%s\n' "$sha" | grep -qxF "$PICKED"; then printf '%s' "$PICKED"; return; fi
+        warn "'$PICKED' is not one of the SHA-1 values listed above." >&2
+      done
     fi
     warn "no valid $label identity in your keychain yet." >&2
     pause "Create it as described above, then press Enter to check again." >&2
@@ -272,16 +276,9 @@ stage "Mac Installer Distribution certificate"
 say "Signs the .pkg that Transporter uploads."
 step "In the same Manage Certificates sheet: + → Mac Installer Distribution."
 pause "Done? Press Enter to check the keychain."
-INSTALLER_KIND="Mac Installer Distribution"
-if [[ -z "$(identity_sha1 "$INSTALLER_KIND")" && -n "$(identity_sha1 "3rd Party Mac Developer Installer")" ]]; then
-  INSTALLER_KIND="3rd Party Mac Developer Installer"
-  warn "Your installer certificate is named '3rd Party Mac Developer Installer', the older name for the same certificate."
-  warn "scripts/build_macos.py looks for 'Mac Installer Distribution'. Tell the agent before the #98 build."
-  SKIPPED+=("build_macos.py: accept a '3rd Party Mac Developer Installer' identity")
-fi
-INSTALLER_SHA1=$(wait_for_identity "Mac Installer Distribution" "$INSTALLER_KIND")
+note "Older accounts show the same certificate as '3rd Party Mac Developer Installer'; that name works too."
+INSTALLER_SHA1=$(wait_for_identity "Mac Installer Distribution" "Mac Installer Distribution|3rd Party Mac Developer Installer")
 write_env INSTALLER_SHA1 "$INSTALLER_SHA1"
-write_env INSTALLER_KIND "$INSTALLER_KIND"
 pause
 
 # ── 4 ─────────────────────────────────────────────────────────────────────
